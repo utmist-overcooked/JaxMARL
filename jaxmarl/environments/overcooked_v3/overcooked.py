@@ -249,8 +249,11 @@ class OvercookedV3(MultiAgentEnv):
                 # - ingredients_layers: 2 + num_ing
                 # - recipe_layers: 2 + num_ing
                 # - extra_layers: 1 (pot timer)
-                # Total: 26 + 5 * num_ingredients
+                # - order_layers (if enabled): max_orders * (2 + num_ing)
+                # Total: 26 + 5 * num_ingredients [+ max_orders * (2 + num_ing)]
                 num_layers = 26 + 5 * num_ingredients
+                if self.enable_order_queue:
+                    num_layers += self.max_orders * (2 + num_ingredients)
                 return (view_height, view_width, num_layers)
             elif obs_type == ObservationType.FEATURIZED:
                 # Simplified feature vector
@@ -519,7 +522,7 @@ class OvercookedV3(MultiAgentEnv):
             is_interact = action == Actions.interact
 
             def _interact(carry, agent):
-                grid, correct_delivery, reward, pot_timers = carry
+                grid, correct_delivery, reward, pot_timers, o_types, o_exps, o_mask = carry
 
                 (
                     new_grid,
@@ -528,8 +531,13 @@ class OvercookedV3(MultiAgentEnv):
                     interact_reward,
                     shaped_reward,
                     new_pot_timers,
+                    new_o_types,
+                    new_o_exps,
+                    new_o_mask,
                 ) = self.process_interact(
-                    grid, agent, new_agents.inventory, state.recipe, pot_timers, state.pot_positions, state.pot_active_mask
+                    grid, agent, new_agents.inventory, state.recipe,
+                    pot_timers, state.pot_positions, state.pot_active_mask,
+                    o_types, o_exps, o_mask,
                 )
 
                 carry = (
@@ -537,6 +545,9 @@ class OvercookedV3(MultiAgentEnv):
                     correct_delivery | new_correct_delivery,
                     reward + interact_reward,
                     new_pot_timers,
+                    new_o_types,
+                    new_o_exps,
+                    new_o_mask,
                 )
                 return carry, (new_agent, shaped_reward)
 
@@ -544,9 +555,14 @@ class OvercookedV3(MultiAgentEnv):
                 is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
             )
 
-        carry = (grid, False, 0.0, state.pot_cooking_timer)
+        carry = (
+            grid, False, 0.0, state.pot_cooking_timer,
+            state.order_types, state.order_expirations, state.order_active_mask,
+        )
         xs = (new_agents, actions)
-        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards) = (
+        (new_grid, new_correct_delivery, reward, new_pot_timers,
+         new_order_types, new_order_expirations, new_order_active_mask,
+        ), (new_agents, shaped_rewards) = (
             jax.lax.scan(_interact_wrapper, carry, xs)
         )
 
@@ -561,6 +577,9 @@ class OvercookedV3(MultiAgentEnv):
                 grid=new_grid,
                 pot_cooking_timer=new_pot_timers,
                 new_correct_delivery=new_correct_delivery,
+                order_types=new_order_types,
+                order_expirations=new_order_expirations,
+                order_active_mask=new_order_active_mask,
             ),
             reward,
             shaped_rewards,
@@ -575,6 +594,9 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
+        order_types: chex.Array = None,
+        order_expirations: chex.Array = None,
+        order_active_mask: chex.Array = None,
     ):
         """Process an interact action for an agent."""
         inventory = agent.inventory
@@ -714,7 +736,45 @@ class OvercookedV3(MultiAgentEnv):
         new_agent = agent.replace(inventory=new_inventory)
 
         # Reward calculation
-        is_correct_recipe = inventory == plated_recipe
+        new_order_types = order_types
+        new_order_expirations = order_expirations
+        new_order_active_mask = order_active_mask
+
+        if self.enable_order_queue:
+            # Determine which soup type the agent is delivering
+            delivered_soup_type = jnp.int32(0)
+            for st in range(1, self.layout.num_ingredients + 1):
+                plated = SoupType.to_plated_recipe(st)
+                delivered_soup_type = jnp.where(inventory == plated, st, delivered_soup_type)
+
+            # Find matching orders, prefer earliest-expiring
+            matches = order_active_mask & (order_types == delivered_soup_type)
+            sentinel = jnp.int32(999999)
+            effective_expirations = jnp.where(matches, order_expirations, sentinel)
+            best_order_idx = jnp.argmin(effective_expirations)
+            has_matching_order = jnp.any(matches)
+
+            is_correct_recipe = has_matching_order
+
+            # Deactivate fulfilled order
+            did_fulfill = successful_delivery & is_correct_recipe
+            new_order_active_mask = jax.lax.select(
+                did_fulfill,
+                order_active_mask.at[best_order_idx].set(False),
+                order_active_mask,
+            )
+            new_order_types = jax.lax.select(
+                did_fulfill,
+                order_types.at[best_order_idx].set(int(SoupType.NONE)),
+                order_types,
+            )
+            new_order_expirations = jax.lax.select(
+                did_fulfill,
+                order_expirations.at[best_order_idx].set(0),
+                order_expirations,
+            )
+        else:
+            is_correct_recipe = inventory == plated_recipe
 
         reward = jnp.array(0.0, dtype=float)
         reward += (
@@ -740,7 +800,8 @@ class OvercookedV3(MultiAgentEnv):
 
         correct_delivery = successful_delivery & is_correct_recipe
 
-        return new_grid, new_agent, correct_delivery, reward, shaped_reward, new_pot_timers
+        return (new_grid, new_agent, correct_delivery, reward, shaped_reward,
+                new_pot_timers, new_order_types, new_order_expirations, new_order_active_mask)
 
     def _update_pot_timers(
         self,
@@ -1092,6 +1153,31 @@ class OvercookedV3(MultiAgentEnv):
 
             return jnp.concatenate([pos_layers, dir_layers, inv_layers], axis=-1)
 
+        # Build order queue observation layers (same for all agents)
+        if self.enable_order_queue:
+            # Active flags: [max_orders] -> [height, width, max_orders]
+            active_layers = jnp.broadcast_to(
+                state.order_active_mask[None, None, :].astype(jnp.float32),
+                (height, width, self.max_orders),
+            )
+            # Normalized expirations: [max_orders] -> [height, width, max_orders]
+            expiration_layers = jnp.broadcast_to(
+                (state.order_expirations / self.order_expiration_time).astype(jnp.float32)[None, None, :],
+                (height, width, self.max_orders),
+            )
+            # Soup type one-hot: [max_orders, num_ingredients] -> [height, width, max_orders * num_ingredients]
+            soup_type_indices = jnp.arange(1, num_ingredients + 1)
+            soup_type_one_hot = (
+                state.order_types[:, None] == soup_type_indices[None, :]
+            ).astype(jnp.float32)
+            soup_type_layers = jnp.broadcast_to(
+                soup_type_one_hot.reshape(1, 1, -1),
+                (height, width, self.max_orders * num_ingredients),
+            )
+            order_layers = jnp.concatenate(
+                [active_layers, expiration_layers, soup_type_layers], axis=-1
+            )
+
         def _agent_obs(agent_id):
             agent_layers = jax.vmap(_agent_layers)(state.agents)
             agent_layer = agent_layers[agent_id]
@@ -1106,18 +1192,19 @@ class OvercookedV3(MultiAgentEnv):
             )
             ingredient_pile_layers = static_objects[..., None] == ingredient_pile_encoding
 
-            return jnp.concatenate(
-                [
-                    agent_layer,
-                    other_agent_layers,
-                    static_layers,
-                    ingredient_pile_layers,
-                    ingredients_layers,
-                    recipe_layers,
-                    extra_layers,
-                ],
-                axis=-1,
-            )
+            layers = [
+                agent_layer,
+                other_agent_layers,
+                static_layers,
+                ingredient_pile_layers,
+                ingredients_layers,
+                recipe_layers,
+                extra_layers,
+            ]
+            if self.enable_order_queue:
+                layers.append(order_layers)
+
+            return jnp.concatenate(layers, axis=-1)
 
         return jax.vmap(_agent_obs)(jnp.arange(self.num_agents))
 

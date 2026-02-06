@@ -218,3 +218,20 @@ class SoupType(IntEnum):
     NONE = 0
     ONION_SOUP = 1
     TOMATO_SOUP = 2
+
+    @staticmethod
+    def to_recipe_encoding(soup_type):
+        """Convert SoupType value to bit-encoded recipe (3 of that ingredient).
+
+        SoupType N maps to ingredient index N-1. Returns 0 for SoupType.NONE.
+        """
+        ingredient_idx = soup_type - 1
+        single_ingredient = DynamicObject.BASE_INGREDIENT << (2 * ingredient_idx)
+        recipe = single_ingredient * 3
+        return jax.lax.select(soup_type == 0, 0, recipe)
+
+    @staticmethod
+    def to_plated_recipe(soup_type):
+        """Convert SoupType to the plated (deliverable) bit-encoded form."""
+        recipe = SoupType.to_recipe_encoding(soup_type)
+        return recipe | int(DynamicObject.PLATE) | int(DynamicObject.COOKED)
