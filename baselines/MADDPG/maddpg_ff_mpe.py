@@ -27,6 +27,14 @@ import hydra
 from omegaconf import OmegaConf
 import wandb
 
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+try:
+    from utils.monitor import TrainingMonitor
+    _MONITOR_AVAILABLE = True
+except ImportError:
+    _MONITOR_AVAILABLE = False
+
 import jaxmarl
 from jaxmarl.wrappers.baselines import (
     MPELogWrapper,
@@ -142,7 +150,7 @@ class Timestep:
 
 # ───────────────────── Training ─────────────────────
 
-def make_train(config, env):
+def make_train(config, env, monitor=None):
 
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
@@ -598,6 +606,23 @@ def make_train(config, env):
                 ret = float(metrics.get("returned_episode_returns", 0.0))
                 test_ret = float(metrics.get("test_returned_episode_returns", 0.0))
 
+                # ── Rich monitor update ──
+                if monitor is not None:
+                    monitor.update(
+                        step=updates,
+                        metrics={
+                            "env_step": step,
+                            "update": f"{updates}/{num_updates}",
+                            "critic_loss": c_loss,
+                            "actor_loss": a_loss,
+                            "qvals": q,
+                            "train_return": ret,
+                            "test_return": test_ret,
+                        },
+                        seed=int(original_seed),
+                    )
+
+                # ── stdout fallback (only when monitor is not active) ──
                 steps_per_update = config["NUM_STEPS"] * config["NUM_ENVS"]
                 print_interval = int(config.get("PRINT_INTERVAL", 1_000_000))
                 should_print = (
@@ -605,12 +630,14 @@ def make_train(config, env):
                     or step % print_interval < steps_per_update
                     or updates == num_updates
                 )
-                if should_print:
+                if monitor is None and should_print:
                     print(
                         f"  step={step:>8d}  update={updates:>5d}/{num_updates}"
                         f"  critic_loss={c_loss:>8.4f}  actor_loss={a_loss:>8.4f}"
                         f"  qvals={q:>8.4f}  train_ret={ret:>8.2f}  test_ret={test_ret:>8.2f}"
                     )
+
+                # ── W&B logging (unchanged) ──
                 if config["WANDB_MODE"] != "disabled":
                     if config.get("WANDB_LOG_ALL_SEEDS", False):
                         metrics.update(
@@ -684,11 +711,38 @@ def single_run(config):
 
     rng = jax.random.PRNGKey(config["SEED"])
     rngs = jax.random.split(rng, config["NUM_SEEDS"])
+
+    # ── Rich monitor setup ──
+    use_monitor = config.get("USE_RICH_MONITOR", True) and _MONITOR_AVAILABLE
+    num_updates = int(
+        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
+    )
+    monitor = None
+    if use_monitor:
+        monitor = TrainingMonitor(
+            total_updates=num_updates,
+            config_dict={
+                "env": config["ENV_NAME"],
+                "total_timesteps": int(config["TOTAL_TIMESTEPS"]),
+                "num_updates": num_updates,
+                "num_envs": config["NUM_ENVS"],
+                "num_seeds": config["NUM_SEEDS"],
+                "actor_lr": config["ACTOR_LR"],
+                "critic_lr": config["CRITIC_LR"],
+                "gamma": config["GAMMA"],
+            },
+            title=f"MADDPG - {env_name}",
+        )
+
     print("Creating training function...")
-    train_vjit = jax.jit(jax.vmap(make_train(config, env)))
+    train_vjit = jax.jit(jax.vmap(make_train(config, env, monitor=monitor)))
     print("JIT compiling and running training (this may take several minutes)...")
     try:
-        outs = jax.block_until_ready(train_vjit(rngs))
+        if monitor is not None:
+            with monitor:
+                outs = jax.block_until_ready(train_vjit(rngs))
+        else:
+            outs = jax.block_until_ready(train_vjit(rngs))
     except Exception as e:
         print(f"Training failed: {e}")
         raise

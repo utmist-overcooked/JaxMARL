@@ -10,6 +10,9 @@
 "WANDB_MODE": "disabled"
 "WANDB_LOG_ALL_SEEDS": False # will log separately the vmapped seeds
 
+# terminal display
+"USE_RICH_MONITOR": True # rich live progress bar + metrics table
+
 # where to save the params (if None, will not save)
 "SAVE_PATH": "models"
 
