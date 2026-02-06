@@ -28,3 +28,7 @@ MAX_POTS = 4
 # Maximum conveyor belt cells
 MAX_ITEM_CONVEYORS = 16
 MAX_PLAYER_CONVEYORS = 8
+
+# Moving walls and buttons
+MAX_MOVING_WALLS = 8
+MAX_BUTTONS = 8

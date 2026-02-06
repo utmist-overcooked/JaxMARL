@@ -433,9 +433,34 @@ class OvercookedV3Visualizer:
 
             return img
 
+        def _render_moving_wall(cell, img):
+            """Render moving wall - red block."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["red"]
+            )
+            # Render any item sitting on the wall
+            img = OvercookedV3Visualizer._render_dynamic_item(cell[1], img)
+            return img
+
+        def _render_button(cell, img):
+            """Render button - grey block with red circle."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["grey"]
+            )
+            # Outer red circle
+            img = rendering.fill_coords(
+                img, rendering.point_in_circle(0.5, 0.5, 0.35), COLORS["red"]
+            )
+            # Inner lighter circle
+            img = rendering.fill_coords(
+                img, rendering.point_in_circle(0.5, 0.5, 0.2),
+                jnp.array([255, 100, 100], dtype=jnp.uint8),
+            )
+            return img
+
         # Build render function lookup
         # Map static object types to render functions
-        render_fns = [_render_empty] * 25  # Enough for all object types
+        render_fns = [_render_empty] * 26  # Enough for all object types (up to 25)
         render_fns[StaticObject.EMPTY] = _render_empty
         render_fns[StaticObject.WALL] = _render_wall
         render_fns[StaticObject.AGENT] = _render_agent
@@ -446,6 +471,8 @@ class OvercookedV3Visualizer:
         render_fns[StaticObject.PLATE_PILE] = _render_plate_pile
         render_fns[StaticObject.ITEM_CONVEYOR] = _render_item_conveyor
         render_fns[StaticObject.PLAYER_CONVEYOR] = _render_player_conveyor
+        render_fns[StaticObject.MOVING_WALL] = _render_moving_wall
+        render_fns[StaticObject.BUTTON] = _render_button
 
         # Handle ingredient piles (10-19)
         is_ingredient_pile = (static_object >= StaticObject.INGREDIENT_PILE_BASE) & \

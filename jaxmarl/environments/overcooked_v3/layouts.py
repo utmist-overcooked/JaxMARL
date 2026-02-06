@@ -1,6 +1,6 @@
 """Layout definitions and parsing for Overcooked V3."""
 
-from jaxmarl.environments.overcooked_v3.common import StaticObject, Direction
+from jaxmarl.environments.overcooked_v3.common import StaticObject, Direction, ButtonAction
 import numpy as np
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
@@ -83,6 +83,25 @@ WWXWW
 """
 
 
+# Moving wall demo - wall moves right, button reverses its direction
+moving_wall_demo = """
+WWWPWWW
+0Ae   X
+W  !  W
+W    AW
+WWWBWWW
+"""
+
+# Moving wall bounce demo - two walls bouncing back and forth
+moving_wall_bounce_demo = """
+WWWWPWWWW
+0A e   AX
+W        W
+W  e !   W
+WWWWBWWWW
+"""
+
+
 @dataclass
 class Layout:
     """Layout definition for Overcooked V3."""
@@ -104,6 +123,12 @@ class Layout:
 
     # Player conveyors: list of (y, x, direction) tuples
     player_conveyor_info: List[Tuple[int, int, int]] = field(default_factory=list)
+
+    # Moving walls: list of (y, x, direction, bounce) tuples
+    moving_wall_info: List[Tuple[int, int, int, bool]] = field(default_factory=list)
+
+    # Buttons: list of (y, x, linked_wall_idx, action_type) tuples
+    button_info: List[Tuple[int, int, int, int]] = field(default_factory=list)
 
     def __post_init__(self):
         if len(self.agent_positions) == 0:
@@ -132,7 +157,13 @@ class Layout:
         return [list(recipe) for recipe in unique_recipes]
 
     @staticmethod
-    def from_string(grid, possible_recipes=None, swap_agents=False):
+    def from_string(
+        grid,
+        possible_recipes=None,
+        swap_agents=False,
+        moving_wall_bounce=None,
+        button_config=None,
+    ):
         """Parse a string representation of the layout.
 
         Symbols:
@@ -156,6 +187,26 @@ class Layout:
             [: left
             {: up
             }: down
+
+            Moving walls (move in direction each step):
+            n: up
+            s: down
+            e: right
+            w: left (west)
+
+            Buttons (interact to trigger linked wall action):
+            !: button (linked to wall by button_config)
+
+        Args:
+            grid: ASCII string layout
+            possible_recipes: List of recipes, or None for auto-detect
+            swap_agents: Reverse agent order
+            moving_wall_bounce: List of bools per moving wall (by parse order),
+                whether wall bounces when blocked. Default: all False.
+            button_config: List of (wall_idx, action_type) per button (by parse
+                order). wall_idx is the moving wall index (parse order).
+                action_type is a ButtonAction enum value.
+                Default: all (0, ButtonAction.TOGGLE_DIRECTION).
 
         Legacy:
             O: onion pile - will be interpreted as ingredient 0
@@ -199,9 +250,19 @@ class Layout:
             "}": Direction.DOWN,
         }
 
+        # Moving wall directions (compass: n=up, s=down, e=east/right, w=west/left)
+        moving_wall_chars = {
+            "n": Direction.UP,
+            "s": Direction.DOWN,
+            "e": Direction.RIGHT,
+            "w": Direction.LEFT,
+        }
+
         agent_positions = []
         item_conveyor_info = []
         player_conveyor_info = []
+        moving_wall_positions = []  # (y, x, direction) before bounce applied
+        button_positions = []       # (y, x)
 
         num_ingredients = 0
         includes_recipe_indicator = False
@@ -227,6 +288,13 @@ class Layout:
                     static_objects[r, c] = StaticObject.PLAYER_CONVEYOR
                     direction = player_conveyor_chars[char]
                     player_conveyor_info.append((r, c, direction))
+                elif char in moving_wall_chars:
+                    static_objects[r, c] = StaticObject.MOVING_WALL
+                    direction = moving_wall_chars[char]
+                    moving_wall_positions.append((r, c, direction))
+                elif char == "!":
+                    static_objects[r, c] = StaticObject.BUTTON
+                    button_positions.append((r, c))
                 else:
                     obj = char_to_static_item.get(char, StaticObject.EMPTY)
                     static_objects[r, c] = obj
@@ -260,6 +328,32 @@ class Layout:
         if num_ingredients == 0:
             num_ingredients = 1
 
+        # Build moving wall info with bounce config
+        if moving_wall_bounce is None:
+            moving_wall_bounce = [False] * len(moving_wall_positions)
+        if len(moving_wall_bounce) != len(moving_wall_positions):
+            raise ValueError(
+                f"moving_wall_bounce length ({len(moving_wall_bounce)}) must match "
+                f"number of moving walls ({len(moving_wall_positions)})"
+            )
+        moving_wall_info = [
+            (y, x, direction, bounce)
+            for (y, x, direction), bounce in zip(moving_wall_positions, moving_wall_bounce)
+        ]
+
+        # Build button info with config
+        if button_config is None:
+            button_config = [(0, ButtonAction.TOGGLE_DIRECTION)] * len(button_positions)
+        if len(button_config) != len(button_positions):
+            raise ValueError(
+                f"button_config length ({len(button_config)}) must match "
+                f"number of buttons ({len(button_positions)})"
+            )
+        button_info = [
+            (y, x, wall_idx, action_type)
+            for (y, x), (wall_idx, action_type) in zip(button_positions, button_config)
+        ]
+
         layout = Layout(
             agent_positions=agent_positions,
             static_objects=static_objects,
@@ -267,6 +361,8 @@ class Layout:
             possible_recipes=possible_recipes,
             item_conveyor_info=item_conveyor_info,
             player_conveyor_info=player_conveyor_info,
+            moving_wall_info=moving_wall_info,
+            button_info=button_info,
         )
 
         return layout
@@ -301,5 +397,18 @@ overcooked_v3_layouts = {
     # 2x2 clockwise conveyor loop for testing
     "player_conveyor_loop": Layout.from_string(
         player_conveyor_loop, possible_recipes=[[0, 0, 0]]
+    ),
+
+    # Moving wall demos
+    "moving_wall_demo": Layout.from_string(
+        moving_wall_demo,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[(0, ButtonAction.TOGGLE_DIRECTION)],
+    ),
+    "moving_wall_bounce_demo": Layout.from_string(
+        moving_wall_bounce_demo,
+        possible_recipes=[[0, 0, 0]],
+        moving_wall_bounce=[True, True],
+        button_config=[(1, ButtonAction.TOGGLE_PAUSE)],
     ),
 }
