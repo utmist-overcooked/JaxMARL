@@ -99,13 +99,18 @@ class Actor(nn.Module):
 
 
 class CentralizedCritic(nn.Module):
-    """Q(all_obs, all_actions) -> scalar Q-value."""
+    """Q(all_obs, all_actions, agent_id) -> scalar Q-value for that agent."""
     hidden_size: int = 64
     num_layers: int = 2
 
     @nn.compact
-    def __call__(self, world_state: jnp.ndarray, all_actions: jnp.ndarray):
-        x = jnp.concatenate([world_state, all_actions], axis=-1)
+    def __call__(
+        self,
+        world_state: jnp.ndarray,
+        all_actions: jnp.ndarray,
+        agent_id: jnp.ndarray,
+    ):
+        x = jnp.concatenate([world_state, all_actions, agent_id], axis=-1)
         for _ in range(self.num_layers):
             x = nn.Dense(
                 self.hidden_size,
@@ -184,13 +189,19 @@ def make_train(config, env):
             num_layers=config["NUM_LAYERS"],
         )
 
+        # Agent one-hot IDs for critic conditioning
+        agent_onehots = jnp.eye(num_agents)  # (num_agents, num_agents)
+
         rng, rng_actor, rng_critic = jax.random.split(rng, 3)
         dummy_obs = jnp.zeros((1, obs_dim))
         dummy_world_state = jnp.zeros((1, world_state_size))
         dummy_actions = jnp.zeros((1, total_action_size))
+        dummy_agent_id = jnp.zeros((1, num_agents))
 
         actor_params = actor_network.init(rng_actor, dummy_obs)
-        critic_params = critic_network.init(rng_critic, dummy_world_state, dummy_actions)
+        critic_params = critic_network.init(
+            rng_critic, dummy_world_state, dummy_actions, dummy_agent_id
+        )
 
         actor_tx = optax.chain(
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
@@ -412,32 +423,53 @@ def make_train(config, env):
                     batch_size, -1
                 )
 
-                # Target Q-value
-                target_q = critic_network.apply(
-                    critic_ts.target_network_params,
-                    next_world_state,
-                    target_next_actions_flat,
-                )  # (batch,)
+                # Per-agent one-hot IDs broadcast to batch:
+                # agent_ids_batch: (num_agents, batch, num_agents)
+                agent_ids_batch = jnp.broadcast_to(
+                    agent_onehots[:, None, :],
+                    (num_agents, batch_size, num_agents),
+                )
 
-                # Per-agent targets: y_i = r_i + gamma * (1-done) * Q_target
+                # Target Q-value per agent (vmap critic over agents)
+                def _target_q_per_agent(agent_id_batch):
+                    return critic_network.apply(
+                        critic_ts.target_network_params,
+                        next_world_state,
+                        target_next_actions_flat,
+                        agent_id_batch,
+                    )
+
+                target_q = jax.vmap(_target_q_per_agent)(
+                    agent_ids_batch
+                )  # (num_agents, batch)
+
+                # Per-agent targets: y_i = r_i + gamma * (1-done) * Q_target_i
                 targets = rewards_all + config["GAMMA"] * (
                     1 - dones_all[None, :]
-                ) * target_q[None, :]  # (num_agents, batch)
+                ) * jax.lax.stop_gradient(target_q)  # (num_agents, batch)
 
                 # ── CRITIC LOSS ──
                 def _critic_loss_fn(critic_params):
-                    q_pred = critic_network.apply(
-                        critic_params, curr_world_state, curr_actions_flat
-                    )  # (batch,)
-                    # MSE against each agent's target, averaged
-                    loss = jnp.mean(
-                        (q_pred[None, :] - jax.lax.stop_gradient(targets)) ** 2
-                    )
+                    def _q_per_agent(agent_id_batch):
+                        return critic_network.apply(
+                            critic_params,
+                            curr_world_state,
+                            curr_actions_flat,
+                            agent_id_batch,
+                        )
+
+                    q_pred = jax.vmap(_q_per_agent)(
+                        agent_ids_batch
+                    )  # (num_agents, batch)
+                    loss = jnp.mean((q_pred - jax.lax.stop_gradient(targets)) ** 2)
                     return loss, q_pred.mean()
 
                 (critic_loss, q_mean), critic_grads = jax.value_and_grad(
                     _critic_loss_fn, has_aux=True
                 )(critic_ts.params)
+
+                # Save pre-update critic params for actor loss
+                critic_params_for_actor = critic_ts.params
                 critic_ts = critic_ts.apply_gradients(grads=critic_grads)
 
                 # ── ACTOR LOSS ──
@@ -450,10 +482,20 @@ def make_train(config, env):
                     new_actions_flat = new_actions.swapaxes(0, 1).reshape(
                         batch_size, -1
                     )
-                    q_val = critic_network.apply(
-                        critic_ts.params, curr_world_state, new_actions_flat
-                    )
-                    actor_loss = -jnp.mean(q_val)
+
+                    # Q-value per agent with pre-update critic
+                    def _q_per_agent(agent_id_batch):
+                        return critic_network.apply(
+                            critic_params_for_actor,
+                            curr_world_state,
+                            new_actions_flat,
+                            agent_id_batch,
+                        )
+
+                    q_vals = jax.vmap(_q_per_agent)(
+                        agent_ids_batch
+                    )  # (num_agents, batch)
+                    actor_loss = -jnp.mean(q_vals)
                     reg_loss = config["ACTION_REG"] * jnp.mean(new_actions ** 2)
                     return actor_loss + reg_loss, -actor_loss
 
@@ -545,9 +587,31 @@ def make_train(config, env):
                 )
                 metrics.update({"test_" + k: v for k, v in test_state.items()})
 
-            if config["WANDB_MODE"] != "disabled":
+            # log to wandb every step, but only print to stdout periodically
+            def _log_callback(metrics, original_seed):
+                step = int(metrics["env_step"])
+                updates = int(metrics["update_steps"])
+                num_updates = int(config["NUM_UPDATES"])
+                c_loss = float(metrics["critic_loss"])
+                a_loss = float(metrics["actor_loss"])
+                q = float(metrics["qvals"])
+                ret = float(metrics.get("returned_episode_returns", 0.0))
+                test_ret = float(metrics.get("test_returned_episode_returns", 0.0))
 
-                def callback(metrics, original_seed):
+                steps_per_update = config["NUM_STEPS"] * config["NUM_ENVS"]
+                print_interval = int(config.get("PRINT_INTERVAL", 1_000_000))
+                should_print = (
+                    config["WANDB_MODE"] == "disabled"
+                    or step % print_interval < steps_per_update
+                    or updates == num_updates
+                )
+                if should_print:
+                    print(
+                        f"  step={step:>8d}  update={updates:>5d}/{num_updates}"
+                        f"  critic_loss={c_loss:>8.4f}  actor_loss={a_loss:>8.4f}"
+                        f"  qvals={q:>8.4f}  train_ret={ret:>8.2f}  test_ret={test_ret:>8.2f}"
+                    )
+                if config["WANDB_MODE"] != "disabled":
                     if config.get("WANDB_LOG_ALL_SEEDS", False):
                         metrics.update(
                             {
@@ -557,7 +621,7 @@ def make_train(config, env):
                         )
                     wandb.log(metrics, step=metrics["update_steps"])
 
-                jax.debug.callback(callback, metrics, original_seed)
+            jax.debug.callback(_log_callback, metrics, original_seed)
 
             runner_state = (
                 actor_train_state,
@@ -606,8 +670,8 @@ def single_run(config):
     env, env_name = env_from_config(copy.deepcopy(config))
 
     wandb.init(
-        entity=config["ENTITY"],
-        project=config["PROJECT"],
+        entity=config.get("ENTITY", "zacharytang24-"),
+        project=config.get("PROJECT", "jaxmarl"),
         tags=[
             alg_name.upper(),
             env_name.upper(),
@@ -620,8 +684,15 @@ def single_run(config):
 
     rng = jax.random.PRNGKey(config["SEED"])
     rngs = jax.random.split(rng, config["NUM_SEEDS"])
+    print("Creating training function...")
     train_vjit = jax.jit(jax.vmap(make_train(config, env)))
-    outs = jax.block_until_ready(train_vjit(rngs))
+    print("JIT compiling and running training (this may take several minutes)...")
+    try:
+        outs = jax.block_until_ready(train_vjit(rngs))
+    except Exception as e:
+        print(f"Training failed: {e}")
+        raise
+    print("Training complete!")
 
     # save params
     if config.get("SAVE_PATH", None) is not None:
