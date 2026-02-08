@@ -3,7 +3,7 @@ import matplotlib.path as mpath
 import matplotlib.animation as animation
 import matplotlib.markers as mmarkers
 import numpy as np
-from matplotlib import artist, colormaps
+from matplotlib import colormaps
 
 
 class TrafficVisualizer:
@@ -111,12 +111,11 @@ class TrafficVisualizer:
                     else:
                         # --- MOVING TRIANGLE ---
                         angle = np.degrees(np.arctan2(move_vec[1], move_vec[0])) - 90
-                        t = mmarkers.MarkerStyle('^')
+                        t = mmarkers.MarkerStyle('^') 
                         transform = t.get_transform().rotate_deg(angle)
-                        rotated_path = t.get_path().transformed(transform)
-                        
+                        rotated_path = self.triangle_path.transformed(transform)
                         artist.set_paths([rotated_path])
-                        artist.set_sizes([tri_size]) # Uses scaled size
+                        artist.set_sizes([tri_size])
                 else:
                     artist.set_paths([mmarkers.MarkerStyle('^').get_path()])
                     artist.set_sizes([tri_size])

@@ -26,8 +26,8 @@ class TrafficJunction(MultiAgentEnv):
             raise ValueError("spawn_prob must be in the range [0.0, 1.0].")
         if max_steps <= 0:
             raise ValueError("max_steps must be a positive integer.")
-        if view_size <= 0:
-            raise ValueError("view_size must be a positive integer.")
+        if view_size <= 0 or view_size % 2 == 0:
+            raise ValueError("view_size must be a positive odd integer.")
         if grid_size < 4 or grid_size % 2 != 0:
             raise ValueError("grid_size must be an even integer >= 4 for proper junction layout.")
         
@@ -71,7 +71,7 @@ class TrafficJunction(MultiAgentEnv):
         self.observation_spaces = {agent: Box(low=-1, high=1, shape=(view_size * view_size,)) for agent in self.agents}
 
     @partial(jax.jit, static_argnums=[0])
-    def reset(self, key=None):
+    def reset(self, key: chex.PRNGKey):
         '''Reset environment state. All cars inactive at start.'''
         state = State(
             p_pos=jnp.zeros((self.num_agents, 2), dtype=jnp.int32),
