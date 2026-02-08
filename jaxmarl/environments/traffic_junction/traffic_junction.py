@@ -19,32 +19,42 @@ class State:
 
 class TrafficJunction(MultiAgentEnv):
     def __init__(self, max_agents=10, spawn_prob=0.1, max_steps=100, view_size=3, collision_penalty=-10.0, time_penalty=-0.01, grid_size=14, **kwargs):
+        
+        if max_agents <= 0:
+            raise ValueError("max_agents must be a positive integer.")
+        if spawn_prob < 0.0 or spawn_prob > 1.0:
+            raise ValueError("spawn_prob must be in the range [0.0, 1.0].")
+        if max_steps <= 0:
+            raise ValueError("max_steps must be a positive integer.")
+        if view_size <= 0:
+            raise ValueError("view_size must be a positive integer.")
+        if grid_size < 4 or grid_size % 2 != 0:
+            raise ValueError("grid_size must be an even integer >= 4 for proper junction layout.")
+        
         self.num_agents = max_agents
         self.spawn_prob = spawn_prob
         self.max_steps = max_steps
         self.view_size = view_size
-        self.grid_size = grid_size
+        self.grid_size = grid_size      
 
-        if grid_size < 3 or grid_size % 2 != 0:
-            raise ValueError("grid_size must be an even integer >= 4 for proper junction layout.")
-
-        # --- DYNAMIC LANE TURN INDICES ---
+        # lane turn indices
         self.mid_low = grid_size // 2 - 1
         self.mid_high = grid_size // 2
 
+        # reward settings
         self.collision_penalty = collision_penalty
         self.time_penalty = time_penalty
 
+        # agent identifiers
         self.agents = [f"car_{i}" for i in range(max_agents)]
         self.agent_range = jnp.arange(max_agents)
 
-        # --- DYNAMIC OFF-GRID SPAWN LOCATIONS ---
-        # Cars spawn exactly 1 tile outside the visible grid boundaries
+        # car spawn locations and directions, they spawn 1 tile outside visible grid boundaries for smooth entry
         self.spawn_locations = jnp.array([
-            [-1, self.mid_high],              # Top (entering lane x=mid_high)
-            [self.mid_high, self.grid_size],   # Right (entering lane y=mid_high)
-            [self.grid_size, self.mid_low],    # Bottom (entering lane x=mid_low)
-            [self.mid_low, -1]                 # Left (entering lane y=mid_low)
+            [-1, self.mid_high],                # Top (entering lane x=mid_high)
+            [self.mid_high, self.grid_size],    # Right (entering lane y=mid_high)
+            [self.grid_size, self.mid_low],     # Bottom (entering lane x=mid_low)
+            [self.mid_low, -1]                  # Left (entering lane y=mid_low)
         ])
         
         self.spawn_directions = jnp.array([1, 2, 3, 0]) 
@@ -61,6 +71,7 @@ class TrafficJunction(MultiAgentEnv):
 
     @partial(jax.jit, static_argnums=[0])
     def reset(self, key=None):
+        '''Reset environment state. All cars inactive at start.'''
         state = State(
             p_pos=jnp.zeros((self.num_agents, 2), dtype=jnp.int32),
             p_dir=jnp.zeros((self.num_agents,), dtype=jnp.int32),
@@ -73,13 +84,14 @@ class TrafficJunction(MultiAgentEnv):
 
     @partial(jax.jit, static_argnums=[0])
     def step(self, key: chex.PRNGKey, state: State, actions: Dict):
-        action_arr = jnp.array([actions[agent] for agent in self.agents])
-        gas_intent = (action_arr == 1) & state.active
 
-        # --- DYNAMIC PIVOT LOGIC (RHD) ---
+        action_arr = jnp.array([actions[agent] for agent in self.agents])
+        gas_intent = (action_arr == 1) & state.active   # brake vs gas
+
+        # pivot (turn, straight) logic
         is_pivot = jnp.zeros(self.num_agents, dtype=bool)
         
-        # Lane indices based on grid center
+        # lane indices based on grid center
         ml = self.mid_low
         mh = self.mid_high
 
@@ -103,15 +115,18 @@ class TrafficJunction(MultiAgentEnv):
         is_pivot = jnp.where((state.p_dir==3) & (state.path_type==2) & (state.p_pos[:,0]==ml), True, is_pivot) # Right turn at y = mid_low
         is_pivot = jnp.where((state.p_dir==3) & (state.path_type==0) & (state.p_pos[:,0]==ml), True, is_pivot) # Straight commit at y = mid_low
 
+        # only update direction and path_idx if pivoting this step and active
         should_update = state.active & is_pivot & (state.path_idx == 0)
         
+        # turn mod: -1 for left, +1 for right, 0 for straight
         turn_mod = jnp.where(state.path_type == 1, -1, 0)
         turn_mod = jnp.where(state.path_type == 2, 1, turn_mod)
 
+        # new direction and path index after pivot
         new_dir = jnp.where(should_update, (state.p_dir + turn_mod) % 4, state.p_dir)
         final_path_idx = jnp.where(should_update, 1, state.path_idx)
 
-        # --- MOVEMENT ---
+        # movement targets
         targets = state.p_pos + self.move_vectors[new_dir] * gas_intent[:, None]
 
         def move_body(i, carry):
@@ -161,7 +176,7 @@ class TrafficJunction(MultiAgentEnv):
         final_pos, _, collision_mask = jax.lax.fori_loop(0, self.num_agents, move_body, 
                                                         (state.p_pos, init_occupied, jnp.zeros(self.num_agents, dtype=bool)))
 
-        # --- EXIT LOGIC ---
+        # exit logic: determine if cars have exited the grid after passing junction
         target_oob = (targets[:, 0] < 0) | (targets[:, 0] >= self.grid_size) | \
                      (targets[:, 1] < 0) | (targets[:, 1] >= self.grid_size)
         
@@ -169,8 +184,7 @@ class TrafficJunction(MultiAgentEnv):
         has_exited = target_oob & (final_path_idx == 1) & gas_intent
         is_active = state.active & ~has_exited
 
-        # --- SPAWN ---
-        # Spawn off-grid. Use collision check with exact coords to prevent stacking.
+        # spawn logic: spawn off-grid. Use collision check with exact coords to prevent stacking.
         spawn_locs = jnp.array([[-1, 7], [7, 14], [14, 6], [6, -1]])
         
         key_spawn, key_type = jax.random.split(key)
@@ -181,10 +195,11 @@ class TrafficJunction(MultiAgentEnv):
                                       path_idx=final_path_idx, active=is_active)
 
         def attempt_spawn(i, current_state):
-            pos = self.spawn_locations[i] # Uses the dynamic off-grid locations
+            pos = self.spawn_locations[i]
             clear = ~jnp.any((current_state.active == 1) & jnp.all(current_state.p_pos == pos, axis=-1))
             slot = jnp.argmin(current_state.active)
             can_fill = spawn_rolls[i] & clear & (current_state.active[slot] == 0)
+            
             return current_state.replace(
                 active=current_state.active.at[slot].set(jnp.where(can_fill, 1, current_state.active[slot])),
                 p_pos=current_state.p_pos.at[slot].set(jnp.where(can_fill, pos, current_state.p_pos[slot])),
@@ -195,6 +210,7 @@ class TrafficJunction(MultiAgentEnv):
 
         final_state = jax.lax.fori_loop(0, 4, attempt_spawn, current_state)
         
+        # returns
         reward_per_agent = (collision_mask * self.collision_penalty) + (final_state.active * self.time_penalty)
         info = {agent: collision_mask[i].astype(jnp.int32) for i, agent in enumerate(self.agents)}
         final_state = final_state.replace(step=final_state.step + 1)
@@ -207,7 +223,7 @@ class TrafficJunction(MultiAgentEnv):
     def get_obs(self, state: State):
         grid = jnp.zeros((self.grid_size, self.grid_size), dtype=jnp.int32)
         
-        # Safe Obs: Only render cars that are strictly ON the grid
+        # only render cars that are strictly ON the grid
         on_grid = (state.p_pos[:, 0] >= 0) & (state.p_pos[:, 0] < self.grid_size) & \
                   (state.p_pos[:, 1] >= 0) & (state.p_pos[:, 1] < self.grid_size)
         
