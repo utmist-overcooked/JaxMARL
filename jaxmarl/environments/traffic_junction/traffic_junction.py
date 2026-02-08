@@ -31,6 +31,7 @@ class TrafficJunction(MultiAgentEnv):
         if grid_size < 4 or grid_size % 2 != 0:
             raise ValueError("grid_size must be an even integer >= 4 for proper junction layout.")
         
+        super().__init__(num_agents=max_agents, **kwargs)
         self.num_agents = max_agents
         self.spawn_prob = spawn_prob
         self.max_steps = max_steps
@@ -83,7 +84,7 @@ class TrafficJunction(MultiAgentEnv):
         return self.get_obs(state), state
 
     @partial(jax.jit, static_argnums=[0])
-    def step(self, key: chex.PRNGKey, state: State, actions: Dict):
+    def step_env(self, key: chex.PRNGKey, state: State, actions: Dict, reset_state=None):
 
         action_arr = jnp.array([actions[agent] for agent in self.agents])
         gas_intent = (action_arr == 1) & state.active   # brake vs gas
@@ -135,10 +136,14 @@ class TrafficJunction(MultiAgentEnv):
             
             in_bounds = (ty >= 0) & (ty < self.grid_size) & (tx >= 0) & (tx < self.grid_size)
             
+            # This prevents the XLA crash by ensuring the index is always valid
+            safe_ty = jnp.clip(ty, 0, self.grid_size - 1)
+            safe_tx = jnp.clip(tx, 0, self.grid_size - 1)
+            
             # Check occupancy. 
             # If target is off-grid, occupied_grid value is meaningless (always 0), so is_free=True.
             # If target is on-grid, we check the grid.
-            is_free = (occupied_grid[ty, tx] == 0) | (~in_bounds)
+            is_free = (occupied_grid[safe_ty, safe_tx] == 0) | (~in_bounds)
             
             can_move = gas_intent[i] & is_free
             
@@ -183,9 +188,6 @@ class TrafficJunction(MultiAgentEnv):
         # Car removes itself if it actively drives out of bounds after passing junction
         has_exited = target_oob & (final_path_idx == 1) & gas_intent
         is_active = state.active & ~has_exited
-
-        # spawn logic: spawn off-grid. Use collision check with exact coords to prevent stacking.
-        spawn_locs = jnp.array([[-1, 7], [7, 14], [14, 6], [6, -1]])
         
         key_spawn, key_type = jax.random.split(key)
         spawn_rolls = jax.random.uniform(key_spawn, shape=(4,)) < self.spawn_prob
@@ -215,7 +217,7 @@ class TrafficJunction(MultiAgentEnv):
         info = {agent: collision_mask[i].astype(jnp.int32) for i, agent in enumerate(self.agents)}
         final_state = final_state.replace(step=final_state.step + 1)
         done = final_state.step >= self.max_steps
-        dones = {agent: ~final_state.active[i] | done for i, agent in enumerate(self.agents)}
+        dones = {agent: done for i, agent in enumerate(self.agents)}
         dones['__all__'] = done
 
         return self.get_obs(final_state), final_state, {a: reward_per_agent[i] for i, a in enumerate(self.agents)}, dones, info
@@ -234,11 +236,16 @@ class TrafficJunction(MultiAgentEnv):
         grid = grid.at[safe_y, safe_x].set(vals)
         pad = self.view_size // 2
         padded_grid = jnp.pad(grid, pad_width=pad, mode='constant', constant_values=-1)
+        
+        padded_dim = padded_grid.shape[0]
+        max_start = padded_dim - self.view_size
 
         @jax.vmap
         def _observation(i):
             y, x = state.p_pos[i, 0], state.p_pos[i, 1]
-            crop = jax.lax.dynamic_slice(padded_grid, (y, x), (self.view_size, self.view_size))
+            start_y = jnp.clip(y + pad, 0, max_start)
+            start_x = jnp.clip(x + pad, 0, max_start)
+            crop = jax.lax.dynamic_slice(padded_grid, (start_y, start_x), (self.view_size, self.view_size))
             return jnp.where(state.active[i], crop.flatten(), jnp.zeros(self.view_size * self.view_size, dtype=jnp.int32))
         
         obs_array = _observation(self.agent_range)

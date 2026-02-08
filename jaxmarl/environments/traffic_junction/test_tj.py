@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jaxmarl.environments.traffic_junction.traffic_junction import TrafficJunction  
+import jaxmarl
 from jaxmarl.environments.traffic_junction.tj_visualizer import TrafficVisualizer
 
 
@@ -10,7 +10,8 @@ MAX_AGENTS = 10
 def run_test():
     # 1. Setup the Environment
     
-    env = TrafficJunction(
+    env = jaxmarl.make(
+        "traffic_junction",
         max_agents=MAX_AGENTS, 
         spawn_prob=0.05, 
         max_steps=100,
