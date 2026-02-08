@@ -201,7 +201,7 @@ class TrafficJunction(MultiAgentEnv):
             can_fill = spawn_rolls[i] & clear & (current_state.active[slot] == 0)
             
             return current_state.replace(
-                active=current_state.active.at[slot].set(jnp.where(can_fill, 1, current_state.active[slot])),
+                active=current_state.active.at[slot].set(jnp.where(can_fill, True, current_state.active[slot])),
                 p_pos=current_state.p_pos.at[slot].set(jnp.where(can_fill, pos, current_state.p_pos[slot])),
                 p_dir=current_state.p_dir.at[slot].set(jnp.where(can_fill, self.spawn_directions[i], current_state.p_dir[slot])),
                 path_type=current_state.path_type.at[slot].set(jnp.where(can_fill, path_types[i], current_state.path_type[slot])),
