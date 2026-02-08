@@ -1,10 +1,10 @@
 import jax
 import jax.numpy as jnp
-from .traffic_junction import TrafficJunction  
+from jaxmarl.environments.traffic_junction.traffic_junction import TrafficJunction  
 from jaxmarl.environments.traffic_junction.tj_visualizer import TrafficVisualizer
 
 
-MAX_AGENTS = 3
+MAX_AGENTS = 10
 
 
 def run_test():
@@ -16,7 +16,8 @@ def run_test():
         max_steps=100,
         view_size=3,
         collision_penalty=-10.0,
-        time_penalty=-0.01
+        time_penalty=-0.01,
+        grid_size=14
     )
     
     key = jax.random.PRNGKey(42)

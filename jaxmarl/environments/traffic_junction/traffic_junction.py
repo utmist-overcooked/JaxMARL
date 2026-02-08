@@ -18,12 +18,19 @@ class State:
 
 
 class TrafficJunction(MultiAgentEnv):
-    def __init__(self, max_agents=10, spawn_prob=0.1, max_steps=100, view_size=3, collision_penalty=-10.0, time_penalty=-0.01, **kwargs):
+    def __init__(self, max_agents=10, spawn_prob=0.1, max_steps=100, view_size=3, collision_penalty=-10.0, time_penalty=-0.01, grid_size=14, **kwargs):
         self.num_agents = max_agents
         self.spawn_prob = spawn_prob
         self.max_steps = max_steps
         self.view_size = view_size
-        self.grid_size = 14
+        self.grid_size = grid_size
+
+        if grid_size < 3 or grid_size % 2 != 0:
+            raise ValueError("grid_size must be an even integer >= 4 for proper junction layout.")
+
+        # --- DYNAMIC LANE TURN INDICES ---
+        self.mid_low = grid_size // 2 - 1
+        self.mid_high = grid_size // 2
 
         self.collision_penalty = collision_penalty
         self.time_penalty = time_penalty
@@ -31,19 +38,17 @@ class TrafficJunction(MultiAgentEnv):
         self.agents = [f"car_{i}" for i in range(max_agents)]
         self.agent_range = jnp.arange(max_agents)
 
-        # --- OFF-GRID SPAWN LOCATIONS ---
-        # Cars spawn 1 tile OUTSIDE the grid so they "drive in" rather than popping in.
-        # Top (Down): [-1, 7], Right (Left): [7, 14], Bottom (Up): [14, 6], Left (Right): [6, -1]
+        # --- DYNAMIC OFF-GRID SPAWN LOCATIONS ---
+        # Cars spawn exactly 1 tile outside the visible grid boundaries
         self.spawn_locations = jnp.array([
-            [-1, 7],   # Top
-            [7, 14],   # Right
-            [14, 6],   # Bottom
-            [6, -1]    # Left
+            [-1, self.mid_high],              # Top (entering lane x=mid_high)
+            [self.mid_high, self.grid_size],   # Right (entering lane y=mid_high)
+            [self.grid_size, self.mid_low],    # Bottom (entering lane x=mid_low)
+            [self.mid_low, -1]                 # Left (entering lane y=mid_low)
         ])
         
         self.spawn_directions = jnp.array([1, 2, 3, 0]) 
         
-        # move_vectors[dir] -> [dy, dx]
         self.move_vectors = jnp.array([
             [0, 1],   # 0: Right
             [1, 0],   # 1: Down
@@ -71,28 +76,32 @@ class TrafficJunction(MultiAgentEnv):
         action_arr = jnp.array([actions[agent] for agent in self.agents])
         gas_intent = (action_arr == 1) & state.active
 
-        # --- PIVOT LOGIC (RHD) ---
+        # --- DYNAMIC PIVOT LOGIC (RHD) ---
         is_pivot = jnp.zeros(self.num_agents, dtype=bool)
+        
+        # Lane indices based on grid center
+        ml = self.mid_low
+        mh = self.mid_high
 
-        # Right-movers (dir 0) | Lane y=7
-        is_pivot = jnp.where((state.p_dir==0) & (state.path_type==1) & (state.p_pos[:,1]==6), True, is_pivot) # Left
-        is_pivot = jnp.where((state.p_dir==0) & (state.path_type==2) & (state.p_pos[:,1]==7), True, is_pivot) # Right
-        is_pivot = jnp.where((state.p_dir==0) & (state.path_type==0) & (state.p_pos[:,1]==7), True, is_pivot) # Straight
+        # Right-movers (dir 0) | Travel Lane y = mid_high
+        is_pivot = jnp.where((state.p_dir==0) & (state.path_type==1) & (state.p_pos[:,1]==ml), True, is_pivot) # Left turn at x = mid_low
+        is_pivot = jnp.where((state.p_dir==0) & (state.path_type==2) & (state.p_pos[:,1]==mh), True, is_pivot) # Right turn at x = mid_high
+        is_pivot = jnp.where((state.p_dir==0) & (state.path_type==0) & (state.p_pos[:,1]==mh), True, is_pivot) # Straight commit at x = mid_high
 
-        # Down-movers (dir 1) | Lane x=7
-        is_pivot = jnp.where((state.p_dir==1) & (state.path_type==1) & (state.p_pos[:,0]==6), True, is_pivot) # Left
-        is_pivot = jnp.where((state.p_dir==1) & (state.path_type==2) & (state.p_pos[:,0]==7), True, is_pivot) # Right
-        is_pivot = jnp.where((state.p_dir==1) & (state.path_type==0) & (state.p_pos[:,0]==7), True, is_pivot) # Straight
+        # Down-movers (dir 1) | Travel Lane x = mid_high
+        is_pivot = jnp.where((state.p_dir==1) & (state.path_type==1) & (state.p_pos[:,0]==ml), True, is_pivot) # Left turn at y = mid_low
+        is_pivot = jnp.where((state.p_dir==1) & (state.path_type==2) & (state.p_pos[:,0]==mh), True, is_pivot) # Right turn at y = mid_high
+        is_pivot = jnp.where((state.p_dir==1) & (state.path_type==0) & (state.p_pos[:,0]==mh), True, is_pivot) # Straight commit at y = mid_high
 
-        # Left-movers (dir 2) | Lane y=6
-        is_pivot = jnp.where((state.p_dir==2) & (state.path_type==1) & (state.p_pos[:,1]==7), True, is_pivot) # Left
-        is_pivot = jnp.where((state.p_dir==2) & (state.path_type==2) & (state.p_pos[:,1]==6), True, is_pivot) # Right
-        is_pivot = jnp.where((state.p_dir==2) & (state.path_type==0) & (state.p_pos[:,1]==6), True, is_pivot) # Straight
+        # Left-movers (dir 2) | Travel Lane y = mid_low
+        is_pivot = jnp.where((state.p_dir==2) & (state.path_type==1) & (state.p_pos[:,1]==mh), True, is_pivot) # Left turn at x = mid_high
+        is_pivot = jnp.where((state.p_dir==2) & (state.path_type==2) & (state.p_pos[:,1]==ml), True, is_pivot) # Right turn at x = mid_low
+        is_pivot = jnp.where((state.p_dir==2) & (state.path_type==0) & (state.p_pos[:,1]==ml), True, is_pivot) # Straight commit at x = mid_low
 
-        # Up-movers (dir 3) | Lane x=6
-        is_pivot = jnp.where((state.p_dir==3) & (state.path_type==1) & (state.p_pos[:,0]==7), True, is_pivot) # Left
-        is_pivot = jnp.where((state.p_dir==3) & (state.path_type==2) & (state.p_pos[:,0]==6), True, is_pivot) # Right
-        is_pivot = jnp.where((state.p_dir==3) & (state.path_type==0) & (state.p_pos[:,0]==6), True, is_pivot) # Straight
+        # Up-movers (dir 3) | Travel Lane x = mid_low
+        is_pivot = jnp.where((state.p_dir==3) & (state.path_type==1) & (state.p_pos[:,0]==mh), True, is_pivot) # Left turn at y = mid_high
+        is_pivot = jnp.where((state.p_dir==3) & (state.path_type==2) & (state.p_pos[:,0]==ml), True, is_pivot) # Right turn at y = mid_low
+        is_pivot = jnp.where((state.p_dir==3) & (state.path_type==0) & (state.p_pos[:,0]==ml), True, is_pivot) # Straight commit at y = mid_low
 
         should_update = state.active & is_pivot & (state.path_idx == 0)
         
@@ -172,8 +181,7 @@ class TrafficJunction(MultiAgentEnv):
                                       path_idx=final_path_idx, active=is_active)
 
         def attempt_spawn(i, current_state):
-            pos = spawn_locs[i]
-            # Check for stacking: is there an active car EXACTLY at this off-grid pos?
+            pos = self.spawn_locations[i] # Uses the dynamic off-grid locations
             clear = ~jnp.any((current_state.active == 1) & jnp.all(current_state.p_pos == pos, axis=-1))
             slot = jnp.argmin(current_state.active)
             can_fill = spawn_rolls[i] & clear & (current_state.active[slot] == 0)

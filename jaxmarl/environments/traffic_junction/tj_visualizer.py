@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import matplotlib.markers as mmarkers
 import numpy as np
 from matplotlib import colormaps
 
@@ -10,80 +11,122 @@ class TrafficVisualizer:
         self.grid_size = env.grid_size
         self.interval = interval
         
-        # 1. Create a distinct color for every possible agent slot
-        # 'hsv' or 'tab10' are great for high-contrast colors
+        # Dynamic lane indices to match environment logic
+        self.mid_low = self.grid_size // 2 - 1
+        self.mid_high = self.grid_size // 2
+        
         self.cmap = colormaps.get_cmap('tab20')
         self.agent_colors = [self.cmap(i % 20) for i in range(self.env.num_agents)]
+
+        # Pre-cache the octagon path to save compute
+        self.octagon_path = mmarkers.MarkerStyle('8').get_path()
+        
+        # CALCULATE SCALING FACTOR 
+        # Baseline is grid_size=14. If grid doubles (28), area becomes 1/4th ((14/28)^2).
+        self.scale_factor = (14 / self.grid_size) ** 2
 
         self.fig, self.ax = plt.subplots(figsize=(7, 7), facecolor='black')
         self.init_render()
 
     def init_render(self):
         self.ax.set_facecolor('black')
-        
-        # 1. Axis limits
         self.ax.set_xlim(-0.5, self.grid_size - 0.5)
         self.ax.set_ylim(-0.5, self.grid_size - 0.5)
         self.ax.set_aspect('equal')
         
-        # 2. CREATE DOT GRID
-        # We generate a meshgrid of all (x, y) coordinates
-        x_coords, y_coords = np.meshgrid(np.arange(self.grid_size), np.arange(self.grid_size))
-        self.ax.scatter(x_coords, y_coords, color='#444444', s=2, zorder=0, marker='.')
+        # 1. DRAW INDIVIDUAL GRID LINES FOR EACH SQUARE
+        self.ax.set_xticks(np.arange(-0.5, self.grid_size, 1), minor=True)
+        self.ax.set_yticks(np.arange(-0.5, self.grid_size, 1), minor=True)
+        self.ax.grid(which='minor', color='#333333', lw=0.8, zorder=0)
         
-        # Hide standard spines and ticks for a cleaner look
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         for spine in self.ax.spines.values():
             spine.set_visible(False)
 
-        # 3. DRAW THE ROADS
+        # 2. DYNAMIC ROAD RENDERING
+        # Road width is 2 tiles; it starts at mid_low - 0.5 to center the lanes
+        road_start = self.mid_low - 0.5
+        
         # Vertical Road
-        self.ax.add_patch(plt.Rectangle((5.5, -0.5), 2, self.grid_size, color='#FFFFFF', zorder=1))
+        self.ax.add_patch(plt.Rectangle((road_start, -0.5), 2, self.grid_size, color='#FFFFFF', zorder=1))
         # Horizontal Road
-        self.ax.add_patch(plt.Rectangle((-0.5, 5.5), self.grid_size, 2, color='#FFFFFF', zorder=1))
+        self.ax.add_patch(plt.Rectangle((-0.5, road_start), self.grid_size, 2, color='#FFFFFF', zorder=1))
 
-        # 4. DRAW CENTER LINES (Darker Amber/Gold)
-        # Using a "Goldenrod" or hex #DAA520 for better visibility against white
+        # 3. DYNAMIC CENTER LINES
+        # The center line sits exactly between mid_low and mid_high
+        center_line_pos = self.mid_low + 0.5
         lane_style = {'color': '#B8860B', 'linestyle': '--', 'linewidth': 2, 'zorder': 2}
         
         # Vertical center line
-        self.ax.plot([6.5, 6.5], [-0.5, self.grid_size - 0.5], **lane_style)
+        self.ax.plot([center_line_pos, center_line_pos], [-0.5, self.grid_size - 0.5], **lane_style)
         # Horizontal center line
-        self.ax.plot([-0.5, self.grid_size - 0.5], [6.5, 6.5], **lane_style)
+        self.ax.plot([-0.5, self.grid_size - 0.5], [center_line_pos, center_line_pos], **lane_style)
 
-        # 5. Initialize Agent Artists
-        self.agent_scatter = self.ax.scatter([], [], s=350, marker='s', edgecolors='black', 
-                                             linewidths=2, zorder=10)
+        # 4. Initialize Individual Agent Artists
+        self.agent_artists = []
+        for i in range(self.env.num_agents):
+            # Scaled initial size (350 * scale)
+            artist = self.ax.scatter([], [], s=350 * self.scale_factor, marker='^', 
+                                     facecolor=self.agent_colors[i],
+                                     edgecolors='black', linewidths=1.5, zorder=10)
+            self.agent_artists.append(artist)
         
-        # Text annotations
         self.step_counter = self.ax.text(0, self.grid_size - 0.5, "Step: 0", 
                                          color='white', fontweight='bold', va="bottom")
         self.active_counter = self.ax.text(self.grid_size - 0.5, self.grid_size - 0.5, "Cars: 0", 
                                            color='white', fontweight='bold', va="bottom", ha="right")
+
     def update(self, frame):
         state = self.state_seq[frame]
-        
-        active_mask = np.array(state.active == 1)
         all_pos = np.array(state.p_pos)
-        active_pos = all_pos[active_mask]
+        on_grid = (all_pos[:, 0] >= 0) & (all_pos[:, 0] < self.grid_size) & \
+                  (all_pos[:, 1] >= 0) & (all_pos[:, 1] < self.grid_size)
+        render_mask = np.array(state.active == 1) & on_grid
         
-        if len(active_pos) > 0:
-            # Swap (row, col) to (x, y)
-            self.agent_scatter.set_offsets(active_pos[:, ::-1]) 
-            
-            # 3. Assign colors only to the agents that are active
-            # We pull the pre-defined colors for the active indices
-            active_indices = np.where(active_mask)[0]
-            colors = [self.agent_colors[i] for i in active_indices]
-            self.agent_scatter.set_facecolors(colors)
-        else:
-            self.agent_scatter.set_offsets(np.empty((0, 2)))
+        for i, artist in enumerate(self.agent_artists):
+            if render_mask[i]:
+                curr_pos = all_pos[i][::-1]
+                artist.set_offsets(curr_pos)
+                
+                # --- DYNAMIC SIZING ---
+                # Apply scale factor to your preferred baselines (400 and 150)
+                tri_size = 400 * self.scale_factor
+                stop_size = 150 * self.scale_factor
+                
+                if frame > 0:
+                    prev_pos = np.array(self.state_seq[frame-1].p_pos[i][::-1])
+                    move_vec = curr_pos - prev_pos
+                    
+                    if np.all(move_vec == 0):
+                        # --- MANUAL FLAT-TOP OCTAGON ---
+                        angles = np.linspace(0, 2*np.pi, 9) + (np.pi / 8)
+                        x = np.cos(angles)
+                        y = np.sin(angles)
+                        
+                        from matplotlib.path import Path
+                        stop_path = Path(np.column_stack([x, y]))
+                        
+                        artist.set_paths([stop_path])
+                        artist.set_sizes([stop_size]) # Uses scaled size
+                    else:
+                        # --- MOVING TRIANGLE ---
+                        angle = np.degrees(np.arctan2(move_vec[1], move_vec[0])) - 90
+                        t = mmarkers.MarkerStyle('^')
+                        transform = t.get_transform().rotate_deg(angle)
+                        rotated_path = t.get_path().transformed(transform)
+                        
+                        artist.set_paths([rotated_path])
+                        artist.set_sizes([tri_size]) # Uses scaled size
+                else:
+                    artist.set_paths([mmarkers.MarkerStyle('^').get_path()])
+                    artist.set_sizes([tri_size])
+            else:
+                artist.set_offsets(np.empty((0, 2)))
 
         self.step_counter.set_text(f"Step: {int(state.step)}")
-        self.active_counter.set_text(f"Active: {int(np.sum(active_mask))}")
-        
-        return self.agent_scatter, self.step_counter
+        self.active_counter.set_text(f"Active: {int(np.sum(render_mask))}")
+        return self.agent_artists + [self.step_counter, self.active_counter]
 
     def animate(self, save_fname="traffic_colored.gif"):
         ani = animation.FuncAnimation(
