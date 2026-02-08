@@ -1,8 +1,10 @@
 import matplotlib.pyplot as plt
+import matplotlib.path as mpath
 import matplotlib.animation as animation
 import matplotlib.markers as mmarkers
 import numpy as np
-from matplotlib import colormaps
+from matplotlib import artist, colormaps
+
 
 class TrafficVisualizer:
     def __init__(self, env, state_seq, interval=150):
@@ -18,8 +20,12 @@ class TrafficVisualizer:
         self.cmap = colormaps.get_cmap('tab20')
         self.agent_colors = [self.cmap(i % 20) for i in range(self.env.num_agents)]
 
-        # Pre-cache the octagon path to save compute
-        self.octagon_path = mmarkers.MarkerStyle('8').get_path()
+        # Generate the octagon once during initialization
+        angles = np.linspace(0, 2*np.pi, 9) + (np.pi / 8)
+        self.octagon_path = mpath.Path(np.column_stack([np.cos(angles), np.sin(angles)]))
+
+        # Pre-cache the default triangle path too
+        self.triangle_path = mmarkers.MarkerStyle('^').get_path()
         
         # CALCULATE SCALING FACTOR 
         # Baseline is grid_size=14. If grid doubles (28), area becomes 1/4th ((14/28)^2).
@@ -99,15 +105,8 @@ class TrafficVisualizer:
                     move_vec = curr_pos - prev_pos
                     
                     if np.all(move_vec == 0):
-                        # --- MANUAL FLAT-TOP OCTAGON ---
-                        angles = np.linspace(0, 2*np.pi, 9) + (np.pi / 8)
-                        x = np.cos(angles)
-                        y = np.sin(angles)
-                        
-                        from matplotlib.path import Path
-                        stop_path = Path(np.column_stack([x, y]))
-                        
-                        artist.set_paths([stop_path])
+                        # Just grab the pre-made shape from __init__
+                        artist.set_paths([self.octagon_path])
                         artist.set_sizes([stop_size]) # Uses scaled size
                     else:
                         # --- MOVING TRIANGLE ---
