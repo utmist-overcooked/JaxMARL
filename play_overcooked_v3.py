@@ -2,7 +2,6 @@
 """Interactive Overcooked V3 player with keyboard controls."""
 
 import jax
-import jax.numpy as jnp
 import pygame
 import numpy as np
 from jaxmarl import make

@@ -1,34 +1,29 @@
 """Overcooked V3 Environment with pot burning, order queue, and conveyor belts."""
 
 from enum import Enum
-from functools import partial
 from typing import List, Optional, Union, Tuple, Dict
 import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import lax
 import chex
-from flax import struct
 
 from jaxmarl.environments import MultiAgentEnv
 from jaxmarl.environments import spaces
 from jaxmarl.environments.overcooked_v3.common import (
     ACTION_TO_DIRECTION,
-    MAX_INGREDIENTS,
     Actions,
     StaticObject,
     DynamicObject,
     Direction,
     Position,
     Agent,
-    SoupType,
 )
 from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts, Layout
 from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
     POT_BURN_TIME,
-    BURN_PENALTY,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
     DEFAULT_ORDER_EXPIRATION_TIME,
@@ -682,7 +677,6 @@ class OvercookedV3(MultiAgentEnv):
         auto_cook = pot_is_idle & pot_full_after_drop
 
         # Update pot timer
-        new_pot_timers = pot_timers
         # Find which pot this is
         def _update_pot_timer(pot_idx):
             pot_y, pot_x = pot_positions[pot_idx]
@@ -1035,8 +1029,6 @@ class OvercookedV3(MultiAgentEnv):
 
         static_objects = state.grid[:, :, 0]
         ingredients = state.grid[:, :, 1]
-        extra_info = state.grid[:, :, 2]
-
         static_encoding = jnp.array([
             StaticObject.WALL,
             StaticObject.GOAL,

@@ -272,15 +272,11 @@ class TestOvercookedV3Actions:
         key = jax.random.PRNGKey(0)
         obs, state = env.reset(key)
 
-        initial_pos = (state.agents.pos.x[0].item(), state.agents.pos.y[0].item())
-
         # Try moving right
         actions = {env.agents[0]: 0, env.agents[1]: 4}  # right for agent 0, stay for agent 1
         key, subkey = jax.random.split(key)
         obs, new_state, rewards, dones, info = env.step(subkey, state, actions)
 
-        # Position might have changed (depends on layout)
-        new_pos = (new_state.agents.pos.x[0].item(), new_state.agents.pos.y[0].item())
         # Direction should have changed to RIGHT regardless of movement
         assert new_state.agents.dir[0] == 2  # Direction.RIGHT
 

@@ -13,7 +13,7 @@ except ImportError:
 
 from jaxmarl.viz.window import Window
 import jaxmarl.viz.grid_rendering_v2 as rendering
-from jaxmarl.environments.overcooked_v3.common import StaticObject, DynamicObject, Direction
+from jaxmarl.environments.overcooked_v3.common import StaticObject, DynamicObject
 from jaxmarl.environments.overcooked_v3.settings import POT_COOK_TIME, POT_BURN_TIME
 
 TILE_PIXELS = 32
@@ -200,7 +200,6 @@ class OvercookedV3Visualizer:
 
         # Build result: expand counts into positions
         result = jnp.array([-1, -1, -1])
-        pos = 0
 
         # Simple expansion for up to 3 total ingredients
         def add_ingredient(carry, _):
