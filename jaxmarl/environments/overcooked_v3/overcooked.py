@@ -16,6 +16,7 @@ from jaxmarl.environments.overcooked_v3.common import (
     StaticObject,
     DynamicObject,
     Direction,
+    DIR_TO_VEC,
     Position,
     Agent,
 )
@@ -86,7 +87,47 @@ class State:
 
 
 class OvercookedV3(MultiAgentEnv):
-    """Overcooked V3 environment with pot burning, order queue, and conveyors."""
+    """Overcooked V3 environment with pot burning, order queue, and conveyors.
+
+    Methods:
+        reset(key) -> Tuple[Dict[str, Array], State]:
+            Reset the environment and return initial observations and state.
+
+        step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]:
+            Perform a single timestep: process actions, conveyors, orders, and check termination.
+
+        step_agents(key, state, actions) -> Tuple[State, float, Array]:
+            Process agent movement (with collision resolution) and interact actions.
+
+        process_interact(grid, agent, all_inventories, recipe, pot_timers,
+            pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery,
+            reward, shaped_reward, pot_timers]:
+            Handle a single agent's interact action (pickup, drop, cook, deliver).
+
+        is_terminal(state) -> bool:
+            Check whether the episode is done (max steps reached).
+
+        get_obs(state) -> Dict[str, Array]:
+            Get observations for all agents, dispatching by per-agent observation type.
+
+        get_obs_for_type(state, obs_type) -> Dict[str, Array]:
+            Get observations for a specific observation type (default or featurized).
+
+        get_obs_default(state) -> Array:
+            Build default grid-based observation tensors for all agents.
+
+        name (property) -> str:
+            Return the environment name.
+
+        num_actions (property) -> int:
+            Return the number of possible actions.
+
+        action_space(agent_id) -> spaces.Discrete:
+            Return the discrete action space.
+
+        observation_space(agent_id) -> spaces.Box:
+            Return the box observation space.
+    """
 
     def __init__(
         self,
@@ -824,12 +865,7 @@ class OvercookedV3(MultiAgentEnv):
             has_item = current_item != 0
 
             # Calculate destination
-            dir_vec = jnp.array([
-                (0, -1),  # UP
-                (0, 1),   # DOWN
-                (1, 0),   # RIGHT
-                (-1, 0),  # LEFT
-            ])[direction]
+            dir_vec = DIR_TO_VEC[direction]
 
             dest_x = jnp.clip(x + dir_vec[0], 0, self.width - 1)
             dest_y = jnp.clip(y + dir_vec[1], 0, self.height - 1)
