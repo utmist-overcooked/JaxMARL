@@ -74,6 +74,10 @@ class TarMACCell(nn.Module):
         # Dimensions: B=batch, N=num_agents, D=obs_dim
         B, N, _ = obs.shape
 
+        # Ensure dones is broadcastable [B, N, 1]
+        if dones.ndim == 2:
+            dones = jnp.expand_dims(dones, axis=-1)
+
         # Encode observation
         # Project observations into hidden_dim
         # Dense layers broadcast over [batch, num_agents], no need for flattening yet
@@ -83,51 +87,67 @@ class TarMACCell(nn.Module):
         enc_obs = nn.relu(enc_obs)
 
         # GRU update (pre-communication)
+        # Reset hidden state and messages for done agents to prevent them from influencing others
+        hidden_state = jnp.where(dones, 0.0, hidden_state)
+        prev_msgs = jnp.where(dones, 0.0, prev_msgs)
+
         # GRU updates agent internal state based on its own obs and previous message
-        gru_input = jnp.concatenate([enc_obs, prev_msgs], axis=-1)      # [B, N, hidden_dim + msg_dim]
+        gru_input = jnp.concatenate([enc_obs, prev_msgs], axis=-1)
 
         # Flax GRU expects [Batch, Features]
         flat_h = hidden_state.reshape((B * N, -1))
         flat_input = gru_input.reshape((B * N, -1))
 
-        # Reset logic for done agents
-        flat_dones = dones.reshape((B * N, 1))
-        flat_h = jnp.where(
-            flat_dones, 
-            self.initialize_carry(self.config.hidden_dim, B * N),
-            flat_h
-        )
-
         # Apply GRU
         flat_h, _ = nn.GRUCell(self.config.hidden_dim, name="agent_gru")(flat_h, flat_input)
         h = flat_h.reshape(B, N, self.config.hidden_dim)   # [B, N, hidden_dim]
 
+        # Multiple communication rounds
+        h_round = h
+        final_msgs = prev_msgs
+
         # Communication (Attention Mechanism)
         # Agents query messages from others to update their message/state
+        Q_layer = nn.Dense(self.config.key_dim, name="query")
+        K_layer = nn.Dense(self.config.key_dim, name="key")
+        V_layer = nn.Dense(self.config.msg_dim, name="value")
+        
+        comm_gru = nn.GRUCell(self.config.hidden_dim, name="comm_gru") if self.config.num_rounds > 1 else None
+        for r in range(self.config.num_rounds):
+            Q = Q_layer(h_round)
+            K = K_layer(h_round)
+            V = V_layer(h_round)
 
-        Q = nn.Dense(self.config.key_dim, name="query")(h)
-        K = nn.Dense(self.config.key_dim, name="key")(h)
-        V = nn.Dense(self.config.msg_dim, name="value")(h)
+            # scores: [B, N, N] - attention scores between agents
+            # scores[b, i, j] = how much agent i (receiver) cares about agent j (sender)
+            scores = jnp.einsum('bik,bjk->bij', Q, K)
+            scores = scores / jnp.sqrt(self.config.key_dim)
 
-        # scores: [B, N, N] - attention scores between agents
-        # scores[b, i, j] = how much agent i (receiver) cares about agent j (sender)
-        scores = jnp.einsum('bik,bjk->bij', Q, K)
-        scores = scores / jnp.sqrt(self.config.key_dim)
+            # mask out 'done' agents so they don't send messages
+            # mask shape [B, 1, N] to broadcast over receivers
+            mask = (1.0 - dones).reshape(B, 1, N)
+            scores = jnp.where(mask > 0, scores, -1e9)
 
-        # Softmax over Senders to get attention weights
-        weights = nn.softmax(scores, axis=-1)   # [B, N, N]
-
-        # Aggragate messages as weighted sum of Values
-        # Msg[b, i] = Sum_j weights[b, i, j] * V[b, j]
-        messages = jnp.einsum('bij,bjm->bim', weights, V)   # [B, N, msg_dim]
-
+            # Softmax over Senders to get attention weights
+            weights = nn.softmax(scores, axis=-1)
+            messages = jnp.einsum('bij,bjm->bim', weights, V)
+            final_msgs = messages
+            
+            # inter round state update
+            if r < self.config.num_rounds - 1:
+                flat_h_round = h_round.reshape(B * N, -1)
+                flat_msgs = messages.reshape(B * N, -1)
+                
+                flat_h_round, _ = comm_gru(flat_h_round, flat_msgs)
+                h_round = flat_h_round.reshape(B, N, self.config.hidden_dim)
+        
         # Action Head
         # Predict action based on updated hidden state and aggregated message
-        out_input = jnp.concatenate([h, messages], axis=-1)
+        out_input = jnp.concatenate([h_round, final_msgs], axis=-1)
         logits = nn.Dense(self.action_dim, name="action_head")(out_input)
-        new_carry = (h, messages) # for next timestep
+        new_carry = (h, final_msgs) # for next timestep
 
-        return new_carry, (logits, messages, h)
+        return new_carry, (logits, final_msgs, h)
     
 
     @staticmethod
