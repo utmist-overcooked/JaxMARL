@@ -101,6 +101,24 @@ W  e !   W
 WWWWBWWWW
 """
 
+# Barrier demo - togglable barriers that block all directions
+barrier_demo = """
+WWWPWWW
+0A #  X
+W  #  W
+W    AW
+WWWBWWW
+"""
+
+# Timed barrier demo - button deactivates barrier temporarily
+timed_barrier_demo = """
+WWWPWWW
+0A #  X
+W !   W
+W    AW
+WWWBWWW
+"""
+
 
 @dataclass
 class Layout:
@@ -129,6 +147,9 @@ class Layout:
 
     # Buttons: list of (y, x, linked_wall_idx, action_type) tuples
     button_info: List[Tuple[int, int, int, int]] = field(default_factory=list)
+
+    # Barriers: list of (y, x, active) tuples
+    barrier_info: List[Tuple[int, int, bool]] = field(default_factory=list)
 
     def __post_init__(self):
         if len(self.agent_positions) == 0:
@@ -163,6 +184,7 @@ class Layout:
         swap_agents=False,
         moving_wall_bounce=None,
         button_config=None,
+        barrier_config=None,
     ):
         """Parse a string representation of the layout.
 
@@ -197,6 +219,9 @@ class Layout:
             Buttons (interact to trigger linked wall action):
             !: button (linked to wall by button_config)
 
+            Barriers (togglable blocking tiles):
+            #: barrier (blocks all movement when active)
+
         Args:
             grid: ASCII string layout
             possible_recipes: List of recipes, or None for auto-detect
@@ -207,6 +232,8 @@ class Layout:
                 order). wall_idx is the moving wall index (parse order).
                 action_type is a ButtonAction enum value.
                 Default: all (0, ButtonAction.TOGGLE_DIRECTION).
+            barrier_config: List of bools per barrier (by parse order),
+                whether barrier is initially active. Default: all False.
 
         Legacy:
             O: onion pile - will be interpreted as ingredient 0
@@ -263,6 +290,7 @@ class Layout:
         player_conveyor_info = []
         moving_wall_positions = []  # (y, x, direction) before bounce applied
         button_positions = []       # (y, x)
+        barrier_positions = []      # (y, x)
 
         num_ingredients = 0
         includes_recipe_indicator = False
@@ -295,6 +323,9 @@ class Layout:
                 elif char == "!":
                     static_objects[r, c] = StaticObject.BUTTON
                     button_positions.append((r, c))
+                elif char == "#":
+                    static_objects[r, c] = StaticObject.BARRIER
+                    barrier_positions.append((r, c))
                 else:
                     obj = char_to_static_item.get(char, StaticObject.EMPTY)
                     static_objects[r, c] = obj
@@ -354,6 +385,19 @@ class Layout:
             for (y, x), (wall_idx, action_type) in zip(button_positions, button_config)
         ]
 
+        # Build barrier info with config
+        if barrier_config is None:
+            barrier_config = [False] * len(barrier_positions)
+        if len(barrier_config) != len(barrier_positions):
+            raise ValueError(
+                f"barrier_config length ({len(barrier_config)}) must match "
+                f"number of barriers ({len(barrier_positions)})"
+            )
+        barrier_info = [
+            (y, x, active)
+            for (y, x), active in zip(barrier_positions, barrier_config)
+        ]
+
         layout = Layout(
             agent_positions=agent_positions,
             static_objects=static_objects,
@@ -363,6 +407,7 @@ class Layout:
             player_conveyor_info=player_conveyor_info,
             moving_wall_info=moving_wall_info,
             button_info=button_info,
+            barrier_info=barrier_info,
         )
 
         return layout
@@ -410,5 +455,20 @@ overcooked_v3_layouts = {
         possible_recipes=[[0, 0, 0]],
         moving_wall_bounce=[True, True],
         button_config=[(1, ButtonAction.TOGGLE_PAUSE)],
+    ),
+
+    # Barrier demo
+    "barrier_demo": Layout.from_string(
+        barrier_demo,
+        possible_recipes=[[0, 0, 0]],
+        barrier_config=[False, True],  # First barrier off, second barrier on initially
+    ),
+
+    # Timed barrier demo with button
+    "timed_barrier_demo": Layout.from_string(
+        timed_barrier_demo,
+        possible_recipes=[[0, 0, 0]],
+        barrier_config=[True],  # Barrier starts active
+        button_config=[(0, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
     ),
 }
