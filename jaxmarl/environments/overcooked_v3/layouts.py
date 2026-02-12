@@ -114,8 +114,8 @@ WWWBWWW
 timed_barrier_demo = """
 WWWPWWW
 0A #  X
-W !   W
-W    AW
+W ! ! W
+W  # AW
 WWWBWWW
 """
 
@@ -468,7 +468,7 @@ overcooked_v3_layouts = {
     "timed_barrier_demo": Layout.from_string(
         timed_barrier_demo,
         possible_recipes=[[0, 0, 0]],
-        barrier_config=[True],  # Barrier starts active
-        button_config=[(0, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
+        barrier_config=[True, True],  # Barrier starts active
+        button_config=[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
     ),
 }
