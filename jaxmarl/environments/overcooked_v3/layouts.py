@@ -1,4 +1,8 @@
-"""Layout definitions and parsing for Overcooked V3."""
+"""Layout definitions and parsing for Overcooked V3.
+
+DESIGN NOTES:
+- don't make item conveyor belts / player conveyor belts move things to the same destination - this will cause race conditions and maybe make the items disappear.
+"""
 
 from jaxmarl.environments.overcooked_v3.common import StaticObject, Direction
 import numpy as np
@@ -240,7 +244,8 @@ class Layout:
 
                 c += 1
 
-        # Validation
+        # Validation for recipes 
+        # NOTE: possible_recipes is a list of lists of ingredient indices, max 3 ingredients per recipe - if no recipe indicator, we just auto-gen all possible combinations. Otherwise we just take the possible_recipes specified in layout. 
         if possible_recipes is not None:
             if not isinstance(possible_recipes, list):
                 raise ValueError("possible_recipes must be a list")
