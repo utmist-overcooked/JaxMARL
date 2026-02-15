@@ -4,6 +4,7 @@ This module contains JAX/Flax implementations of:
   - Independent Controllers (IC/IRIC): no communication (feedforward & LSTM)
   - CommNet: continuous communication without gating (feedforward & LSTM)
   - IC3Net: CommNet with hard-attention gating (feedforward & LSTM)
+  - TrainingMonitor: rich terminal UI for live training progress
 
 References:
     Singh, A., Jain, T., & Sukhbaatar, S. (2018). Learning when to
@@ -17,10 +18,16 @@ from baselines.IC3Net.models import (
     CommNetDiscrete,
     CommNetLSTM,
 )
+from baselines.IC3Net.monitor import (
+    TrainingMonitor,
+    TrainingMonitorInterface,
+)
 
 __all__ = [
     "IndependentMLP",
     "IndependentLSTM",
     "CommNetDiscrete",
     "CommNetLSTM",
+    "TrainingMonitor",
+    "TrainingMonitorInterface",
 ]
