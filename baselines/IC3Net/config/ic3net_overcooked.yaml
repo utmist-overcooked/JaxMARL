@@ -1,0 +1,42 @@
+# IC3Net training configuration for Overcooked
+# Overcooked is a cooperative cooking game with 2 agents
+
+# Environment
+ENV_NAME: "overcooked"
+ENV_KWARGS:
+  layout: "cramped_room"  # Options: cramped_room, asymmetric_advantages, etc.
+  max_steps: 400
+
+# Model architecture
+BASELINE: "ic3net"  # IC3Net with communication gating
+HIDDEN_DIM: 128  # Larger hidden dim for complex Overcooked observations
+RECURRENT: true  # Use LSTM (true) or feedforward (false)
+COMM_PASSES: 2  # More communication rounds for coordination
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false
+DETACH_GAP: 10  # Truncated BPTT: detach hidden state every N steps (only for recurrent)
+
+# Training
+TOTAL_TIMESTEPS: 5_000_000  # More timesteps for complex task
+NUM_ENVS: 16  # More parallel envs
+NUM_STEPS: 128  # Longer episodes
+GAMMA: 0.99  # Standard discount
+NORMALIZE_ADVANTAGES: true
+
+# Optimizer
+LR: 0.0003
+RMSPROP_ALPHA: 0.99
+RMSPROP_EPS: 1e-5
+MAX_GRAD_NORM: 0.5
+VALUE_COEFF: 0.5
+ENTROPY_COEFF: 0.01  # Small entropy bonus for exploration
+
+# Logging and saving
+WANDB_MODE: "disabled"
+WANDB_PROJECT: "jaxmarl-ic3net"
+WANDB_NAME: "ic3net_overcooked"
+SAVE_PATH: "checkpoints/ic3net_overcooked"
+
+# Misc
+SEED: 42

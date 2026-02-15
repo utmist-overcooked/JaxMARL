@@ -1,0 +1,21 @@
+# IC3Net inference configuration for MPE
+
+# Environment
+ENV_NAME: "MPE_simple_spread_v3"
+ENV_KWARGS: {}
+
+# Model architecture (must match training config)
+BASELINE: "ic3net"
+HIDDEN_DIM: 64
+COMM_PASSES: 1
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false
+
+# Inference settings
+MODEL_PATH: "checkpoints/ic3net_mpe/model.msgpack"
+NUM_EPISODES: 10
+MAX_STEPS: 50
+
+# Misc
+SEED: 0

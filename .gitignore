@@ -16,4 +16,4 @@ wandb/
 outputs/
 models/
 venv/
-.history/
+**/*.msgpack

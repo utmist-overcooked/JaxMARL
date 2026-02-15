@@ -1,0 +1,40 @@
+# IC3Net training configuration for Overcooked - Medium Difficulty (Quick Test)
+# Reduced timesteps for testing
+
+# Environment
+ENV_NAME: "overcooked"
+ENV_KWARGS:
+  layout: "coord_ring"
+  max_steps: 200
+
+# Model architecture
+BASELINE: "ic3net"
+HIDDEN_DIM: 128
+RECURRENT: true
+DETACH_GAP: 10
+COMM_PASSES: 1
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false
+
+# Training (reduced for quick test)
+TOTAL_TIMESTEPS: 560_000  # 100 updates × 28 envs × 200 steps
+NUM_ENVS: 28
+NUM_STEPS: 200
+GAMMA: 0.99
+NORMALIZE_ADVANTAGES: true
+
+# Optimizer
+LR: 0.001
+RMSPROP_ALPHA: 0.97
+RMSPROP_EPS: 1e-6
+MAX_GRAD_NORM: 0.5
+VALUE_COEFF: 0.5
+ENTROPY_COEFF: 0.01
+
+# Logging and saving
+WANDB_MODE: "disabled"
+SAVE_PATH: "checkpoints/ic3net_overcooked_medium"
+
+# Misc
+SEED: 42

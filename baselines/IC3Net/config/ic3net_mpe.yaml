@@ -1,0 +1,40 @@
+# IC3Net training configuration for MPE Simple Spread
+# Based on the IC3Net paper settings
+
+# Environment
+ENV_NAME: "MPE_simple_spread_v3"
+ENV_KWARGS: {}
+
+# Model architecture
+BASELINE: "ic3net"  # Options: "ic", "iric", "commnet", "ic3net"
+HIDDEN_DIM: 64
+RECURRENT: true  # Use LSTM (true) or feedforward (false)
+COMM_PASSES: 1
+COMM_MODE: "avg"  # Options: "avg", "sum"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false  # If true, all agents always talk
+DETACH_GAP: 10  # Truncated BPTT: detach hidden state every N steps (only for recurrent)
+
+# Training
+TOTAL_TIMESTEPS: 2_000_000
+NUM_ENVS: 8
+NUM_STEPS: 20  # Episode length
+GAMMA: 1.0
+NORMALIZE_ADVANTAGES: false
+
+# Optimizer
+LR: 0.001
+RMSPROP_ALPHA: 0.97
+RMSPROP_EPS: 1e-6
+MAX_GRAD_NORM: 0.5
+VALUE_COEFF: 0.01
+ENTROPY_COEFF: 0.0
+
+# Logging and saving
+WANDB_MODE: "disabled"  # Options: "online", "offline", "disabled"
+WANDB_PROJECT: "jaxmarl-ic3net"
+WANDB_NAME: null
+SAVE_PATH: "checkpoints/ic3net_mpe"
+
+# Misc
+SEED: 42

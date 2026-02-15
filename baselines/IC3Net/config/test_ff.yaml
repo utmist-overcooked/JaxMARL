@@ -1,0 +1,29 @@
+# Quick feedforward training test
+ENV_NAME: "MPE_simple_spread_v3"
+ENV_KWARGS: {}
+
+BASELINE: "ic3net"
+HIDDEN_DIM: 32
+RECURRENT: false  # Test feedforward
+COMM_PASSES: 1
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false
+
+TOTAL_TIMESTEPS: 5000
+NUM_ENVS: 4
+NUM_STEPS: 25
+GAMMA: 1.0
+NORMALIZE_ADVANTAGES: false
+
+LR: 0.001
+RMSPROP_ALPHA: 0.97
+RMSPROP_EPS: 1e-6
+MAX_GRAD_NORM: 0.5
+VALUE_COEFF: 0.01
+ENTROPY_COEFF: 0.0
+
+WANDB_MODE: "disabled"
+SAVE_PATH: null
+
+SEED: 42
