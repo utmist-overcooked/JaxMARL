@@ -86,6 +86,70 @@ W{[0W
 WWXWW
 """
 
+race_against_the_clock = """
+XWWWWWWWWWW 2
+            1
+ WWWWWWWWWW 0
+AW        WWW
+PW          W
+AW        WWW
+ WWWWWWWWWW 0
+            1
+XWWWWWWWWWW 2
+"""
+
+maze_conveyor_hell  = """
+01 W   W   v
+A  W W W  Wv
+vW W W W  Wv
+vW   W    Wv
+vWWWWWWWW Wv
+vW>>>>>>> Wv
+vW WWWWWWPWv
+A       WXW 
+B
+"""
+
+coordinated_temporal_conveyor = """
+>>>>>>vW   X
+      vW  A 
+     WvW    
+     Wv    B
+  A  WvWWWWW
+01   Wv>>>>>
+"""
+
+general_conveyor_level_1 = """
+012    P
+       W
+       W
+]]]]]]]]
+[[[[[[[[
+       W
+       W
+BX     P
+"""
+
+general_conveyor_level_2 = """
+W W   1
+0  WW WW  P
+2A  ]]]   P
+ A  W W    
+   WW WW   
+    [[[   B
+   WW WW  B
+   XW W    
+   XW W
+"""
+
+general_conveyor_level_3 = """
+A 01WWW
+A]]]]}2
+W{WWW}W
+W{[[[[W
+WBWWPWW
+"""
+
 
 @dataclass
 class Layout:
