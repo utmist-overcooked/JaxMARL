@@ -42,6 +42,8 @@ dependencies = [
   "pillow",
   "scipy<=1.12",
   "gymnax",
+  "pytest",
+  "pygame",
 ]
 
 [project.optional-dependencies]
