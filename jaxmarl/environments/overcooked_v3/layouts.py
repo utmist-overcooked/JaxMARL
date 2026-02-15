@@ -150,6 +150,48 @@ W{[[[[W
 WBWWPWW
 """
 
+middle_conveyor = """
+WWWWW^WWWWW
+WW  W^W  WW
+WW AW^WA WW
+W1   ^   PW
+WW  W^W  WW
+WW BW^WB WW
+W0   ^   XW
+WW  W^W  WW
+WW  W^W  WW
+WWWWW^WWWWW
+"""
+
+
+follow_the_leader = """
+WWWWWWWW
+WWB1  WW
+W0AWA PW
+W  W  WW
+WWWW  XW
+W     WW
+WWWWWWWW
+"""
+
+around_the_island = """
+WW0W1WWWWW
+B        W
+W  A     W
+WWWWWWW  X
+W  A     W
+W        W
+WWWPWWWWWW
+"""
+
+single_file = """
+WBWWPWW
+W A A W
+W WWW W
+X     W
+WW1W0WW
+"""
+
 
 @dataclass
 class Layout:
@@ -371,4 +413,21 @@ overcooked_v3_layouts = {
     "player_conveyor_loop": Layout.from_string(
         player_conveyor_loop, possible_recipes=[[0, 0, 0]]
     ),
+
+    "middle_conveyor": Layout.from_string(
+        middle_conveyor, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "follow_the_leader": Layout.from_string(
+        follow_the_leader, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "around_the_island": Layout.from_string(
+        around_the_island, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "single_file": Layout.from_string(
+        single_file, possible_recipes=[[0, 0, 0]],
+    ),
+
 }
