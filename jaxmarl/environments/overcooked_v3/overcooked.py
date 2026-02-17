@@ -58,6 +58,7 @@ class ObservationType(str, Enum):
 @chex.dataclass
 class State:
     """Environment state for Overcooked V3."""
+
     agents: Agent
 
     # Grid: height x width x 3 channels
@@ -68,45 +69,51 @@ class State:
 
     # Pot state (fixed size arrays for JIT compatibility)
     # pot_positions stores (y, x) for each pot, pot_active_mask indicates valid pots
-    pot_positions: chex.Array      # [max_pots, 2] - (y, x) positions
-    pot_cooking_timer: chex.Array  # [max_pots] - countdown to cooked (0 when idle/cooked)
-    pot_active_mask: chex.Array    # [max_pots] - bool, which pot slots are valid
+    pot_positions: chex.Array  # [max_pots, 2] - (y, x) positions
+    pot_cooking_timer: (
+        chex.Array
+    )  # [max_pots] - countdown to cooked (0 when idle/cooked)
+    pot_active_mask: chex.Array  # [max_pots] - bool, which pot slots are valid
 
     # Order queue state (optional feature)
-    order_types: chex.Array        # [max_orders] - SoupType enum values
+    order_types: chex.Array  # [max_orders] - SoupType enum values
     order_expirations: chex.Array  # [max_orders] - steps remaining
     order_active_mask: chex.Array  # [max_orders] - bool, which order slots are valid
 
     # Item conveyor state
-    item_conveyor_positions: chex.Array   # [max_item_conveyors, 2] - (y, x)
+    item_conveyor_positions: chex.Array  # [max_item_conveyors, 2] - (y, x)
     item_conveyor_directions: chex.Array  # [max_item_conveyors] - Direction enum
-    item_conveyor_active_mask: chex.Array # [max_item_conveyors] - bool
+    item_conveyor_active_mask: chex.Array  # [max_item_conveyors] - bool
 
     # Player conveyor state
-    player_conveyor_positions: chex.Array   # [max_player_conveyors, 2] - (y, x)
+    player_conveyor_positions: chex.Array  # [max_player_conveyors, 2] - (y, x)
     player_conveyor_directions: chex.Array  # [max_player_conveyors] - Direction enum
-    player_conveyor_active_mask: chex.Array # [max_player_conveyors] - bool
+    player_conveyor_active_mask: chex.Array  # [max_player_conveyors] - bool
 
     # Moving wall state
-    moving_wall_positions: chex.Array       # [max_moving_walls, 2] - (y, x)
-    moving_wall_directions: chex.Array      # [max_moving_walls] - Direction enum
-    moving_wall_active_mask: chex.Array     # [max_moving_walls] - bool
-    moving_wall_paused: chex.Array          # [max_moving_walls] - bool
-    moving_wall_bounce: chex.Array          # [max_moving_walls] - bool
+    moving_wall_positions: chex.Array  # [max_moving_walls, 2] - (y, x)
+    moving_wall_directions: chex.Array  # [max_moving_walls] - Direction enum
+    moving_wall_active_mask: chex.Array  # [max_moving_walls] - bool
+    moving_wall_paused: chex.Array  # [max_moving_walls] - bool
+    moving_wall_bounce: chex.Array  # [max_moving_walls] - bool
 
     # Button state
-    button_positions: chex.Array            # [max_buttons, 2] - (y, x)
-    button_linked_wall: chex.Array          # [max_buttons] - index into moving wall arrays
-    button_action_type: chex.Array          # [max_buttons] - ButtonAction enum
-    button_active_mask: chex.Array          # [max_buttons] - bool
-    button_toggled: chex.Array              # [max_buttons] - bool (current toggle state)
+    button_positions: chex.Array  # [max_buttons, 2] - (y, x)
+    button_linked_wall: chex.Array  # [max_buttons] - index into moving wall arrays
+    button_action_type: chex.Array  # [max_buttons] - ButtonAction enum
+    button_active_mask: chex.Array  # [max_buttons] - bool
+    button_toggled: chex.Array  # [max_buttons] - bool (current toggle state)
 
     # Barrier state
-    barrier_positions: chex.Array           # [max_barriers, 2] - (y, x)
-    barrier_active: chex.Array              # [max_barriers] - bool (blocks when True)
-    barrier_active_mask: chex.Array         # [max_barriers] - bool (which slots are valid)
-    barrier_timer: chex.Array               # [max_barriers] - steps until reactivation (0 means permanent state)
-    barrier_duration: chex.Array            # [max_barriers] - configured duration for timed deactivation
+    barrier_positions: chex.Array  # [max_barriers, 2] - (y, x)
+    barrier_active: chex.Array  # [max_barriers] - bool (blocks when True)
+    barrier_active_mask: chex.Array  # [max_barriers] - bool (which slots are valid)
+    barrier_timer: (
+        chex.Array
+    )  # [max_barriers] - steps until reactivation (0 means permanent state)
+    barrier_duration: (
+        chex.Array
+    )  # [max_barriers] - configured duration for timed deactivation
 
     # Episode state
     time: chex.Array
@@ -137,11 +144,11 @@ class OvercookedV3(MultiAgentEnv):
         order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
         order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
         # Conveyor belt settings
-        enable_item_conveyors: bool = True,
-        enable_player_conveyors: bool = True,
+        enable_item_conveyors: bool = False,
+        enable_player_conveyors: bool = False,
         # Moving wall and button settings
-        enable_moving_walls: bool = True,
-        enable_buttons: bool = True,
+        enable_moving_walls: bool = False,
+        enable_buttons: bool = False,
         # Barrier settings
         barrier_duration: Union[int, List[int]] = DEFAULT_BARRIER_DURATION,
         # Reward settings
@@ -221,7 +228,7 @@ class OvercookedV3(MultiAgentEnv):
         # Moving wall and button settings
         self.enable_moving_walls = enable_moving_walls
         self.enable_buttons = enable_buttons
-        
+
         # Barrier settings
         self.barrier_duration = barrier_duration
 
@@ -255,18 +262,28 @@ class OvercookedV3(MultiAgentEnv):
             self._pot_active_mask[i] = True
 
         # Extract conveyor info from layout
-        self._item_conveyor_positions = np.zeros((MAX_ITEM_CONVEYORS, 2), dtype=np.int32)
+        self._item_conveyor_positions = np.zeros(
+            (MAX_ITEM_CONVEYORS, 2), dtype=np.int32
+        )
         self._item_conveyor_directions = np.zeros(MAX_ITEM_CONVEYORS, dtype=np.int32)
         self._item_conveyor_active_mask = np.zeros(MAX_ITEM_CONVEYORS, dtype=bool)
-        for i, (y, x, direction) in enumerate(layout.item_conveyor_info[:MAX_ITEM_CONVEYORS]):
+        for i, (y, x, direction) in enumerate(
+            layout.item_conveyor_info[:MAX_ITEM_CONVEYORS]
+        ):
             self._item_conveyor_positions[i] = [y, x]
             self._item_conveyor_directions[i] = direction
             self._item_conveyor_active_mask[i] = True
 
-        self._player_conveyor_positions = np.zeros((MAX_PLAYER_CONVEYORS, 2), dtype=np.int32)
-        self._player_conveyor_directions = np.zeros(MAX_PLAYER_CONVEYORS, dtype=np.int32)
+        self._player_conveyor_positions = np.zeros(
+            (MAX_PLAYER_CONVEYORS, 2), dtype=np.int32
+        )
+        self._player_conveyor_directions = np.zeros(
+            MAX_PLAYER_CONVEYORS, dtype=np.int32
+        )
         self._player_conveyor_active_mask = np.zeros(MAX_PLAYER_CONVEYORS, dtype=bool)
-        for i, (y, x, direction) in enumerate(layout.player_conveyor_info[:MAX_PLAYER_CONVEYORS]):
+        for i, (y, x, direction) in enumerate(
+            layout.player_conveyor_info[:MAX_PLAYER_CONVEYORS]
+        ):
             self._player_conveyor_positions[i] = [y, x]
             self._player_conveyor_directions[i] = direction
             self._player_conveyor_active_mask[i] = True
@@ -276,7 +293,9 @@ class OvercookedV3(MultiAgentEnv):
         self._moving_wall_directions = np.zeros(MAX_MOVING_WALLS, dtype=np.int32)
         self._moving_wall_active_mask = np.zeros(MAX_MOVING_WALLS, dtype=bool)
         self._moving_wall_bounce = np.zeros(MAX_MOVING_WALLS, dtype=bool)
-        for i, (y, x, direction, bounce) in enumerate(layout.moving_wall_info[:MAX_MOVING_WALLS]):
+        for i, (y, x, direction, bounce) in enumerate(
+            layout.moving_wall_info[:MAX_MOVING_WALLS]
+        ):
             self._moving_wall_positions[i] = [y, x]
             self._moving_wall_directions[i] = direction
             self._moving_wall_active_mask[i] = True
@@ -287,7 +306,9 @@ class OvercookedV3(MultiAgentEnv):
         self._button_linked_wall = np.zeros(MAX_BUTTONS, dtype=np.int32)
         self._button_action_type = np.zeros(MAX_BUTTONS, dtype=np.int32)
         self._button_active_mask = np.zeros(MAX_BUTTONS, dtype=bool)
-        for i, (y, x, linked_wall, action_type) in enumerate(layout.button_info[:MAX_BUTTONS]):
+        for i, (y, x, linked_wall, action_type) in enumerate(
+            layout.button_info[:MAX_BUTTONS]
+        ):
             self._button_positions[i] = [y, x]
             self._button_linked_wall[i] = linked_wall
             self._button_action_type[i] = action_type
@@ -298,13 +319,13 @@ class OvercookedV3(MultiAgentEnv):
         self._barrier_initial_active = np.zeros(MAX_BARRIERS, dtype=bool)
         self._barrier_active_mask = np.zeros(MAX_BARRIERS, dtype=bool)
         self._barrier_duration_config = np.zeros(MAX_BARRIERS, dtype=np.int32)
-        
+
         num_barriers = len(layout.barrier_info)
         for i, (y, x, active) in enumerate(layout.barrier_info[:MAX_BARRIERS]):
             self._barrier_positions[i] = [y, x]
             self._barrier_initial_active[i] = active
             self._barrier_active_mask[i] = True
-            
+
             # Set duration for each barrier
             if isinstance(barrier_duration, list):
                 if i < len(barrier_duration):
@@ -345,7 +366,9 @@ class OvercookedV3(MultiAgentEnv):
                 raise ValueError(f"Invalid observation type: {obs_type}")
 
         if isinstance(self.observation_type, list):
-            return [_get_obs_shape_single(obs_type) for obs_type in self.observation_type]
+            return [
+                _get_obs_shape_single(obs_type) for obs_type in self.observation_type
+            ]
 
         return _get_obs_shape_single(self.observation_type)
 
@@ -362,7 +385,9 @@ class OvercookedV3(MultiAgentEnv):
             [
                 static_objects,
                 jnp.zeros_like(static_objects),  # dynamic items
-                jnp.zeros_like(static_objects),  # extra info (pot timers, conveyor dirs)
+                jnp.zeros_like(
+                    static_objects
+                ),  # extra info (pot timers, conveyor dirs)
             ],
             axis=-1,
             dtype=jnp.int32,
@@ -564,24 +589,28 @@ class OvercookedV3(MultiAgentEnv):
 
                 # Check if new position is walkable
                 new_cell_static = grid[new_pos.y, new_pos.x, 0]
-                
+
                 # Check if destination is a barrier and if it's active
-                is_barrier_tile = (new_cell_static == StaticObject.BARRIER)
+                is_barrier_tile = new_cell_static == StaticObject.BARRIER
                 barrier_blocks = False
                 # Check all barriers to see if any active barrier is at new_pos
                 for i in range(MAX_BARRIERS):
                     at_barrier_pos = (
-                        (state.barrier_positions[i, 0] == new_pos.y) &
-                        (state.barrier_positions[i, 1] == new_pos.x) &
-                        state.barrier_active_mask[i]
+                        (state.barrier_positions[i, 0] == new_pos.y)
+                        & (state.barrier_positions[i, 1] == new_pos.x)
+                        & state.barrier_active_mask[i]
                     )
-                    barrier_blocks = barrier_blocks | (at_barrier_pos & state.barrier_active[i])
-                
+                    barrier_blocks = barrier_blocks | (
+                        at_barrier_pos & state.barrier_active[i]
+                    )
+
                 is_walkable = (
-                    (new_cell_static == StaticObject.EMPTY) | 
-                    (new_cell_static == StaticObject.ITEM_CONVEYOR) | 
-                    (new_cell_static == StaticObject.PLAYER_CONVEYOR) |
-                    (is_barrier_tile & ~barrier_blocks)  # Barrier is walkable if inactive
+                    (new_cell_static == StaticObject.EMPTY)
+                    | (new_cell_static == StaticObject.ITEM_CONVEYOR)
+                    | (new_cell_static == StaticObject.PLAYER_CONVEYOR)
+                    | (
+                        is_barrier_tile & ~barrier_blocks
+                    )  # Barrier is walkable if inactive
                 )
 
                 new_pos = tree_select(is_walkable, new_pos, pos)
@@ -657,7 +686,13 @@ class OvercookedV3(MultiAgentEnv):
                     shaped_reward,
                     new_pot_timers,
                 ) = self.process_interact(
-                    grid, agent, new_agents.inventory, state.recipe, pot_timers, state.pot_positions, state.pot_active_mask
+                    grid,
+                    agent,
+                    new_agents.inventory,
+                    state.recipe,
+                    pot_timers,
+                    state.pot_positions,
+                    state.pot_active_mask,
                 )
 
                 carry = (
@@ -674,9 +709,10 @@ class OvercookedV3(MultiAgentEnv):
 
         carry = (grid, False, 0.0, state.pot_cooking_timer)
         xs = (new_agents, actions)
-        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards) = (
-            jax.lax.scan(_interact_wrapper, carry, xs)
-        )
+        (
+            (new_grid, new_correct_delivery, reward, new_pot_timers),
+            (new_agents, shaped_rewards),
+        ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
         # Update pot timers (cooking and burning)
         new_grid, new_pot_timers = self._update_pot_timers(
@@ -692,8 +728,11 @@ class OvercookedV3(MultiAgentEnv):
         new_barrier_timer = state.barrier_timer
 
         if self.enable_buttons:
+
             def _process_agent_button(carry, x):
-                mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = carry
+                mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = (
+                    carry
+                )
                 agent, action = x
                 is_interact = action == Actions.interact
                 fwd_pos = agent.get_fwd_pos()
@@ -701,14 +740,30 @@ class OvercookedV3(MultiAgentEnv):
                 is_button = fwd_static == StaticObject.BUTTON
 
                 def _scan_buttons(carry):
-                    mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = carry
+                    (
+                        mw_dirs,
+                        mw_paused,
+                        mw_bounce,
+                        btn_toggled,
+                        bar_active,
+                        bar_timer,
+                    ) = carry
 
                     def _check_button(carry, button_idx):
-                        mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = carry
+                        (
+                            mw_dirs,
+                            mw_paused,
+                            mw_bounce,
+                            btn_toggled,
+                            bar_active,
+                            bar_timer,
+                        ) = carry
                         btn_y = state.button_positions[button_idx, 0]
                         btn_x = state.button_positions[button_idx, 1]
                         is_active = state.button_active_mask[button_idx]
-                        is_this = (btn_y == fwd_pos.y) & (btn_x == fwd_pos.x) & is_active
+                        is_this = (
+                            (btn_y == fwd_pos.y) & (btn_x == fwd_pos.x) & is_active
+                        )
 
                         linked_wall = state.button_linked_wall[button_idx]
                         action_type = state.button_action_type[button_idx]
@@ -764,18 +819,51 @@ class OvercookedV3(MultiAgentEnv):
                         )
                         bar_timer = jax.lax.select(
                             is_this & (action_type == ButtonAction.TIMED_BARRIER),
-                            bar_timer.at[linked_wall].set(state.barrier_duration[linked_wall]),
+                            bar_timer.at[linked_wall].set(
+                                state.barrier_duration[linked_wall]
+                            ),
                             bar_timer,
                         )
 
-                        return (mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer), None
+                        return (
+                            mw_dirs,
+                            mw_paused,
+                            mw_bounce,
+                            btn_toggled,
+                            bar_active,
+                            bar_timer,
+                        ), None
 
-                    (mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer), _ = jax.lax.scan(
+                    (
+                        (
+                            mw_dirs,
+                            mw_paused,
+                            mw_bounce,
+                            btn_toggled,
+                            bar_active,
+                            bar_timer,
+                        ),
+                        _,
+                    ) = jax.lax.scan(
                         _check_button,
-                        (mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer),
+                        (
+                            mw_dirs,
+                            mw_paused,
+                            mw_bounce,
+                            btn_toggled,
+                            bar_active,
+                            bar_timer,
+                        ),
                         jnp.arange(MAX_BUTTONS),
                     )
-                    return mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer
+                    return (
+                        mw_dirs,
+                        mw_paused,
+                        mw_bounce,
+                        btn_toggled,
+                        bar_active,
+                        bar_timer,
+                    )
 
                 should_process = is_interact & is_button
                 new_carry = jax.lax.cond(
@@ -787,14 +875,27 @@ class OvercookedV3(MultiAgentEnv):
 
                 return new_carry, None
 
-            (new_mw_directions, new_mw_paused, new_mw_bounce, new_btn_toggled, 
-             new_barrier_active, new_barrier_timer), _ = (
-                jax.lax.scan(
-                    _process_agent_button,
-                    (new_mw_directions, new_mw_paused, new_mw_bounce, new_btn_toggled,
-                     new_barrier_active, new_barrier_timer),
-                    (new_agents, actions),
-                )
+            (
+                (
+                    new_mw_directions,
+                    new_mw_paused,
+                    new_mw_bounce,
+                    new_btn_toggled,
+                    new_barrier_active,
+                    new_barrier_timer,
+                ),
+                _,
+            ) = jax.lax.scan(
+                _process_agent_button,
+                (
+                    new_mw_directions,
+                    new_mw_paused,
+                    new_mw_bounce,
+                    new_btn_toggled,
+                    new_barrier_active,
+                    new_barrier_timer,
+                ),
+                (new_agents, actions),
             )
 
         return (
@@ -843,9 +944,12 @@ class OvercookedV3(MultiAgentEnv):
         object_is_pile = object_is_plate_pile | object_is_ingredient_pile
         object_is_pot = interact_item == StaticObject.POT
         object_is_goal = interact_item == StaticObject.GOAL
-        object_is_wall = (interact_item == StaticObject.WALL) | (interact_item == StaticObject.MOVING_WALL)
-        object_is_conveyor = (interact_item == StaticObject.ITEM_CONVEYOR) | \
-                             (interact_item == StaticObject.PLAYER_CONVEYOR)
+        object_is_wall = (interact_item == StaticObject.WALL) | (
+            interact_item == StaticObject.MOVING_WALL
+        )
+        object_is_conveyor = (interact_item == StaticObject.ITEM_CONVEYOR) | (
+            interact_item == StaticObject.PLAYER_CONVEYOR
+        )
         object_has_no_ingredients = interact_ingredients == 0
 
         # What is in inventory?
@@ -861,7 +965,9 @@ class OvercookedV3(MultiAgentEnv):
             (interact_ingredients & DynamicObject.COOKED) != 0
         )
         pot_is_cooking = object_is_pot * (interact_extra > 0) * ~pot_is_cooked
-        pot_is_burned = object_is_pot * ((interact_ingredients & DynamicObject.BURNED) != 0)
+        pot_is_burned = object_is_pot * (
+            (interact_ingredients & DynamicObject.BURNED) != 0
+        )
         pot_is_idle = object_is_pot * ~pot_is_cooking * ~pot_is_cooked * ~pot_is_burned
 
         # Check if pot is ready (in burning window)
@@ -891,9 +997,13 @@ class OvercookedV3(MultiAgentEnv):
         # Check same ingredient type for pot
         pot_ingredient_type = DynamicObject.get_ingredient_type(interact_ingredients)
         inventory_ingredient_type = DynamicObject.get_ingredient_type(inventory)
-        same_ingredient_type = (pot_ingredient_type == inventory_ingredient_type) | (interact_ingredients == 0)
+        same_ingredient_type = (pot_ingredient_type == inventory_ingredient_type) | (
+            interact_ingredients == 0
+        )
 
-        successful_pot_placement = pot_is_idle * inventory_is_ingredient * ~pot_full * same_ingredient_type
+        successful_pot_placement = (
+            pot_is_idle * inventory_is_ingredient * ~pot_full * same_ingredient_type
+        )
         ingredient_selector = inventory | (inventory << 1)
         is_pot_placement_useful = (interact_ingredients & ingredient_selector) < (
             recipe & ingredient_selector
@@ -907,9 +1017,8 @@ class OvercookedV3(MultiAgentEnv):
 
         # Drop on counter/conveyor
         successful_drop = (
-            (object_is_wall | object_is_conveyor) * object_has_no_ingredients * ~inventory_is_empty
-            + successful_pot_placement
-        )
+            object_is_wall | object_is_conveyor
+        ) * object_has_no_ingredients * ~inventory_is_empty + successful_pot_placement
 
         # Delivery
         successful_delivery = object_is_goal * inventory_is_dish
@@ -931,20 +1040,19 @@ class OvercookedV3(MultiAgentEnv):
 
         # Update pot timer
         new_pot_timers = pot_timers
+
         # Find which pot this is
         def _update_pot_timer(pot_idx):
             pot_y, pot_x = pot_positions[pot_idx]
-            is_this_pot = (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
+            is_this_pot = (
+                (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
+            )
             new_timer = jax.lax.select(
-                is_this_pot & auto_cook,
-                self.pot_cook_time,
-                pot_timers[pot_idx]
+                is_this_pot & auto_cook, self.pot_cook_time, pot_timers[pot_idx]
             )
             # Reset timer on successful dish pickup
             new_timer = jax.lax.select(
-                is_this_pot & successful_dish_pickup,
-                0,
-                new_timer
+                is_this_pot & successful_dish_pickup, 0, new_timer
             )
             return new_timer
 
@@ -988,7 +1096,14 @@ class OvercookedV3(MultiAgentEnv):
 
         correct_delivery = successful_delivery & is_correct_recipe
 
-        return new_grid, new_agent, correct_delivery, reward, shaped_reward, new_pot_timers
+        return (
+            new_grid,
+            new_agent,
+            correct_delivery,
+            reward,
+            shaped_reward,
+            new_pot_timers,
+        )
 
     def _update_pot_timers(
         self,
@@ -1016,9 +1131,7 @@ class OvercookedV3(MultiAgentEnv):
 
             # Decrement timer if cooking
             new_timer = jax.lax.select(
-                is_active & pot_is_cooking,
-                current_timer - 1,
-                current_timer
+                is_active & pot_is_cooking, current_timer - 1, current_timer
             )
 
             # Check if just finished cooking (entered burning window)
@@ -1027,7 +1140,7 @@ class OvercookedV3(MultiAgentEnv):
             new_ingredients = jax.lax.select(
                 is_active & just_finished_cooking,
                 pot_ingredients | DynamicObject.COOKED,
-                pot_ingredients
+                pot_ingredients,
             )
 
             # Check if pot burned (timer hit 0 while cooking)
@@ -1036,13 +1149,9 @@ class OvercookedV3(MultiAgentEnv):
             new_ingredients = jax.lax.select(
                 is_active & just_burned,
                 jnp.int32(0),  # Clear pot
-                new_ingredients
+                new_ingredients,
             )
-            new_timer = jax.lax.select(
-                is_active & just_burned,
-                jnp.int32(0),
-                new_timer
-            )
+            new_timer = jax.lax.select(is_active & just_burned, jnp.int32(0), new_timer)
 
             # Update grid
             new_cell = jnp.array([pot_cell[0], new_ingredients, pot_cell[2]])
@@ -1054,9 +1163,7 @@ class OvercookedV3(MultiAgentEnv):
             return (new_grid, new_timers), None
 
         (new_grid, new_timers), _ = jax.lax.scan(
-            _update_single_pot,
-            (grid, pot_timers),
-            jnp.arange(MAX_POTS)
+            _update_single_pot, (grid, pot_timers), jnp.arange(MAX_POTS)
         )
 
         return new_grid, new_timers
@@ -1078,12 +1185,14 @@ class OvercookedV3(MultiAgentEnv):
             has_item = current_item != 0
 
             # Calculate destination
-            dir_vec = jnp.array([
-                (0, -1),  # UP
-                (0, 1),   # DOWN
-                (1, 0),   # RIGHT
-                (-1, 0),  # LEFT
-            ])[direction]
+            dir_vec = jnp.array(
+                [
+                    (0, -1),  # UP
+                    (0, 1),  # DOWN
+                    (1, 0),  # RIGHT
+                    (-1, 0),  # LEFT
+                ]
+            )[direction]
 
             dest_x = jnp.clip(x + dir_vec[0], 0, self.width - 1)
             dest_y = jnp.clip(y + dir_vec[1], 0, self.height - 1)
@@ -1092,13 +1201,12 @@ class OvercookedV3(MultiAgentEnv):
             dest_static = grid[dest_y, dest_x, 0]
             dest_item = grid[dest_y, dest_x, 1]
             dest_can_receive = (
-                ((dest_static == StaticObject.WALL) |
-                 (dest_static == StaticObject.MOVING_WALL) |
-                 (dest_static == StaticObject.ITEM_CONVEYOR) |
-                 (dest_static == StaticObject.PLAYER_CONVEYOR) |
-                 (dest_static == StaticObject.GOAL))
-                & (dest_item == 0)
-            )
+                (dest_static == StaticObject.WALL)
+                | (dest_static == StaticObject.MOVING_WALL)
+                | (dest_static == StaticObject.ITEM_CONVEYOR)
+                | (dest_static == StaticObject.PLAYER_CONVEYOR)
+                | (dest_static == StaticObject.GOAL)
+            ) & (dest_item == 0)
 
             should_move = is_active & has_item & dest_can_receive
 
@@ -1106,15 +1214,13 @@ class OvercookedV3(MultiAgentEnv):
             new_grid = jax.lax.select(
                 should_move,
                 grid.at[y, x, 1].set(0).at[dest_y, dest_x, 1].set(current_item),
-                grid
+                grid,
             )
 
             return new_grid, None
 
         new_grid, _ = jax.lax.scan(
-            _move_item_on_conveyor,
-            grid,
-            jnp.arange(MAX_ITEM_CONVEYORS)
+            _move_item_on_conveyor, grid, jnp.arange(MAX_ITEM_CONVEYORS)
         )
 
         return state.replace(grid=new_grid)
@@ -1150,23 +1256,25 @@ class OvercookedV3(MultiAgentEnv):
 
             # Check if destination is walkable
             dest_static = grid[new_pos.y, new_pos.x, 0]
-            
+
             # Check if destination has an active barrier
-            is_barrier_tile = (dest_static == StaticObject.BARRIER)
+            is_barrier_tile = dest_static == StaticObject.BARRIER
             barrier_blocks = False
             for i in range(MAX_BARRIERS):
                 at_barrier_pos = (
-                    (state.barrier_positions[i, 0] == new_pos.y) &
-                    (state.barrier_positions[i, 1] == new_pos.x) &
-                    state.barrier_active_mask[i]
+                    (state.barrier_positions[i, 0] == new_pos.y)
+                    & (state.barrier_positions[i, 1] == new_pos.x)
+                    & state.barrier_active_mask[i]
                 )
-                barrier_blocks = barrier_blocks | (at_barrier_pos & state.barrier_active[i])
-            
+                barrier_blocks = barrier_blocks | (
+                    at_barrier_pos & state.barrier_active[i]
+                )
+
             dest_walkable = (
-                (dest_static == StaticObject.EMPTY) |
-                (dest_static == StaticObject.ITEM_CONVEYOR) |
-                (dest_static == StaticObject.PLAYER_CONVEYOR) |
-                (is_barrier_tile & ~barrier_blocks)
+                (dest_static == StaticObject.EMPTY)
+                | (dest_static == StaticObject.ITEM_CONVEYOR)
+                | (dest_static == StaticObject.PLAYER_CONVEYOR)
+                | (is_barrier_tile & ~barrier_blocks)
             )
 
             should_push = is_on & dest_walkable
@@ -1180,27 +1288,29 @@ class OvercookedV3(MultiAgentEnv):
 
     def _process_barrier_timers(self, state: State) -> State:
         """Decrement barrier timers and reactivate barriers when timers reach zero."""
-        
+
         def _update_single_barrier(i):
             is_active_slot = state.barrier_active_mask[i]
             timer = state.barrier_timer[i]
             barrier_active = state.barrier_active[i]
-            
+
             # Timer only decrements when > 0
             has_timer = timer > 0
             new_timer = jax.lax.select(has_timer, timer - 1, timer)
-            
+
             # When timer reaches 0, reactivate the barrier
-            should_reactivate = is_active_slot & (timer == 1)  # Will become 0 after decrement
+            should_reactivate = is_active_slot & (
+                timer == 1
+            )  # Will become 0 after decrement
             new_active = jax.lax.select(should_reactivate, True, barrier_active)
-            
+
             return new_timer, new_active
-        
+
         # Process all barriers
         new_timers, new_active_states = jax.vmap(_update_single_barrier)(
             jnp.arange(MAX_BARRIERS)
         )
-        
+
         return state.replace(
             barrier_timer=new_timers,
             barrier_active=new_active_states,
@@ -1234,8 +1344,10 @@ class OvercookedV3(MultiAgentEnv):
 
             # Bounds check
             in_bounds = (
-                (dest_x >= 0) & (dest_x < self.width)
-                & (dest_y >= 0) & (dest_y < self.height)
+                (dest_x >= 0)
+                & (dest_x < self.width)
+                & (dest_y >= 0)
+                & (dest_y < self.height)
             )
 
             # Safe indices for array access
@@ -1255,25 +1367,29 @@ class OvercookedV3(MultiAgentEnv):
             beyond_x = safe_dest_x + dir_vec[0]
             beyond_y = safe_dest_y + dir_vec[1]
             beyond_in_bounds = (
-                (beyond_x >= 0) & (beyond_x < self.width)
-                & (beyond_y >= 0) & (beyond_y < self.height)
+                (beyond_x >= 0)
+                & (beyond_x < self.width)
+                & (beyond_y >= 0)
+                & (beyond_y < self.height)
             )
             safe_beyond_x = jnp.clip(beyond_x, 0, self.width - 1)
             safe_beyond_y = jnp.clip(beyond_y, 0, self.height - 1)
 
             beyond_static = grid[safe_beyond_y, safe_beyond_x, 0]
-            
+
             # Check if beyond position has an active barrier
-            is_barrier_tile = (beyond_static == StaticObject.BARRIER)
+            is_barrier_tile = beyond_static == StaticObject.BARRIER
             barrier_blocks = False
             for i in range(MAX_BARRIERS):
                 at_barrier_pos = (
-                    (state.barrier_positions[i, 0] == safe_beyond_y) &
-                    (state.barrier_positions[i, 1] == safe_beyond_x) &
-                    state.barrier_active_mask[i]
+                    (state.barrier_positions[i, 0] == safe_beyond_y)
+                    & (state.barrier_positions[i, 1] == safe_beyond_x)
+                    & state.barrier_active_mask[i]
                 )
-                barrier_blocks = barrier_blocks | (at_barrier_pos & state.barrier_active[i])
-            
+                barrier_blocks = barrier_blocks | (
+                    at_barrier_pos & state.barrier_active[i]
+                )
+
             beyond_walkable = (
                 (beyond_static == StaticObject.EMPTY)
                 | (beyond_static == StaticObject.ITEM_CONVEYOR)
@@ -1285,13 +1401,21 @@ class OvercookedV3(MultiAgentEnv):
             no_agent_at_beyond = ~jnp.any(agent_at_beyond)
 
             can_push_agent = (
-                any_agent_at_dest & beyond_in_bounds
-                & beyond_walkable & no_agent_at_beyond
+                any_agent_at_dest
+                & beyond_in_bounds
+                & beyond_walkable
+                & no_agent_at_beyond
             )
 
             # Wall can move if dest is empty (no agent) or if we can push the agent
-            can_move = should_process & in_bounds & (
-                (dest_is_empty & ~any_agent_at_dest) | can_push_agent
+            # Only allow pushing agents on empty tiles to avoid overwriting static objects
+            can_move = (
+                should_process
+                & in_bounds
+                & (
+                    (dest_is_empty & ~any_agent_at_dest)
+                    | (can_push_agent & (dest_static == StaticObject.EMPTY))
+                )
             )
 
             # Handle bounce: if blocked and bounce enabled, reverse direction
@@ -1331,9 +1455,7 @@ class OvercookedV3(MultiAgentEnv):
             # Update position array
             new_y = jax.lax.select(can_move, safe_dest_y, y)
             new_x = jax.lax.select(can_move, safe_dest_x, x)
-            new_positions = positions.at[wall_idx].set(
-                jnp.array([new_y, new_x])
-            )
+            new_positions = positions.at[wall_idx].set(jnp.array([new_y, new_x]))
 
             # Update direction array
             new_directions = directions.at[wall_idx].set(new_direction)
@@ -1353,27 +1475,44 @@ class OvercookedV3(MultiAgentEnv):
             )
 
             return (
-                final_grid, new_positions, new_directions, paused, bounce,
-                new_ag_xs, new_ag_ys,
+                final_grid,
+                new_positions,
+                new_directions,
+                paused,
+                bounce,
+                new_ag_xs,
+                new_ag_ys,
             ), None
 
         init_carry = (
-            grid, state.moving_wall_positions, state.moving_wall_directions,
-            state.moving_wall_paused, state.moving_wall_bounce,
-            agent_xs, agent_ys,
+            grid,
+            state.moving_wall_positions,
+            state.moving_wall_directions,
+            state.moving_wall_paused,
+            state.moving_wall_bounce,
+            agent_xs,
+            agent_ys,
         )
 
         (
-            new_grid, new_positions, new_directions, new_paused, _bounce,
-            new_ag_xs, new_ag_ys,
-        ), _ = jax.lax.scan(
-            _move_single_wall, init_carry, jnp.arange(MAX_MOVING_WALLS)
-        )
+            (
+                new_grid,
+                new_positions,
+                new_directions,
+                new_paused,
+                _bounce,
+                new_ag_xs,
+                new_ag_ys,
+            ),
+            _,
+        ) = jax.lax.scan(_move_single_wall, init_carry, jnp.arange(MAX_MOVING_WALLS))
 
         # Re-pause walls linked to TRIGGER_MOVE buttons
         def _reapply_trigger_pause(paused, button_idx):
             is_active = state.button_active_mask[button_idx]
-            is_trigger = state.button_action_type[button_idx] == ButtonAction.TRIGGER_MOVE
+            is_trigger = (
+                state.button_action_type[button_idx] == ButtonAction.TRIGGER_MOVE
+            )
             linked_wall = state.button_linked_wall[button_idx]
 
             new_paused = jax.lax.select(
@@ -1388,9 +1527,7 @@ class OvercookedV3(MultiAgentEnv):
         )
 
         # Rebuild agents with updated positions
-        new_agents = state.agents.replace(
-            pos=Position(x=new_ag_xs, y=new_ag_ys)
-        )
+        new_agents = state.agents.replace(pos=Position(x=new_ag_xs, y=new_ag_ys))
 
         return state.replace(
             grid=new_grid,
@@ -1412,7 +1549,9 @@ class OvercookedV3(MultiAgentEnv):
         order_active_mask = state.order_active_mask
 
         # Decrement expirations
-        new_expirations = jnp.where(order_active_mask, order_expirations - 1, order_expirations)
+        new_expirations = jnp.where(
+            order_active_mask, order_expirations - 1, order_expirations
+        )
 
         # Check for expired orders
         expired_mask = order_active_mask & (new_expirations <= 0)
@@ -1439,19 +1578,15 @@ class OvercookedV3(MultiAgentEnv):
 
         should_add = should_generate & has_empty_slot
         new_order_types = jax.lax.select(
-            should_add,
-            order_types.at[first_empty_idx].set(new_order_type),
-            order_types
+            should_add, order_types.at[first_empty_idx].set(new_order_type), order_types
         )
         new_expirations = jax.lax.select(
             should_add,
             new_expirations.at[first_empty_idx].set(self.order_expiration_time),
-            new_expirations
+            new_expirations,
         )
         new_active_mask = jax.lax.select(
-            should_add,
-            new_active_mask.at[first_empty_idx].set(True),
-            new_active_mask
+            should_add, new_active_mask.at[first_empty_idx].set(True), new_active_mask
         )
 
         return state.replace(
@@ -1523,18 +1658,20 @@ class OvercookedV3(MultiAgentEnv):
         ingredients = state.grid[:, :, 1]
         extra_info = state.grid[:, :, 2]
 
-        static_encoding = jnp.array([
-            StaticObject.WALL,
-            StaticObject.GOAL,
-            StaticObject.POT,
-            StaticObject.RECIPE_INDICATOR,
-            StaticObject.PLATE_PILE,
-            StaticObject.ITEM_CONVEYOR,
-            StaticObject.PLAYER_CONVEYOR,
-            StaticObject.MOVING_WALL,
-            StaticObject.BUTTON,
-            StaticObject.BARRIER,
-        ])
+        static_encoding = jnp.array(
+            [
+                StaticObject.WALL,
+                StaticObject.GOAL,
+                StaticObject.POT,
+                StaticObject.RECIPE_INDICATOR,
+                StaticObject.PLATE_PILE,
+                StaticObject.ITEM_CONVEYOR,
+                StaticObject.PLAYER_CONVEYOR,
+                StaticObject.MOVING_WALL,
+                StaticObject.BUTTON,
+                StaticObject.BARRIER,
+            ]
+        )
         static_layers = static_objects[..., None] == static_encoding
 
         def _ingredient_layers(ingredients):
@@ -1554,9 +1691,7 @@ class OvercookedV3(MultiAgentEnv):
             timer = state.pot_cooking_timer[i]
             is_active = state.pot_active_mask[i]
             pot_timer_layer = jax.lax.select(
-                is_active,
-                pot_timer_layer.at[y, x].set(timer),
-                pot_timer_layer
+                is_active, pot_timer_layer.at[y, x].set(timer), pot_timer_layer
             )
 
         extra_layers = jnp.stack([pot_timer_layer], axis=-1)
@@ -1593,7 +1728,9 @@ class OvercookedV3(MultiAgentEnv):
             ingredient_pile_encoding = jnp.array(
                 [StaticObject.INGREDIENT_PILE_BASE + i for i in range(num_ingredients)]
             )
-            ingredient_pile_layers = static_objects[..., None] == ingredient_pile_encoding
+            ingredient_pile_layers = (
+                static_objects[..., None] == ingredient_pile_encoding
+            )
 
             return jnp.concatenate(
                 [
