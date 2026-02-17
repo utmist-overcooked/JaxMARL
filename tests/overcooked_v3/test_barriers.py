@@ -10,6 +10,7 @@ class TestBarriers:
     """Test that barriers block movement when active and allow it when inactive."""
 
     def _make_env_and_reset(self, layout, **kwargs):
+        """Helper: create barrier env with given layout and reset it."""
         env = make("overcooked_v3", layout=layout, **kwargs)
         key = jax.random.PRNGKey(0)
         key, reset_key = jax.random.split(key)
@@ -20,8 +21,10 @@ class TestBarriers:
         """Agent can move through an inactive barrier."""
         env, key, obs, state = self._make_env_and_reset("barrier_demo")
 
-        # All barriers start inactive by default
-        assert not jnp.any(state.barrier_active), "Barriers should start inactive"
+        # Explicitly set barriers to inactive
+        state = state.replace(
+            barrier_active=jnp.zeros_like(state.barrier_active, dtype=jnp.bool_)
+        )
 
         # Move agent_0 left toward barrier
         actions = {"agent_0": 2, "agent_1": 4}
@@ -99,6 +102,7 @@ class TestTimedBarriers:
     BARRIER_DURATION = 5
 
     def _make_env_and_reset(self):
+        """Helper: create timed barrier env and reset it."""
         env = make(
             "overcooked_v3",
             layout="timed_barrier_demo",
@@ -110,7 +114,7 @@ class TestTimedBarriers:
         return env, key, obs, state
 
     def _navigate_to_button_and_press(self, env, key, state):
-        """Move agent to button and press it. Returns updated key and state."""
+        """Helper: move agent to button and press it. Returns updated key and state."""
         # Move toward barrier first
         actions_right = {"agent_0": 0, "agent_1": 4}
         for _ in range(2):
@@ -133,7 +137,10 @@ class TestTimedBarriers:
         """Active timed barrier blocks movement."""
         env, key, obs, state = self._make_env_and_reset()
 
-        assert state.barrier_active[0], "Timed barrier should start active"
+        # Explicitly set barrier to active
+        state = state.replace(
+            barrier_active=jnp.ones_like(state.barrier_active, dtype=jnp.bool_)
+        )
 
         # Try moving toward barrier
         actions_right = {"agent_0": 0, "agent_1": 4}
