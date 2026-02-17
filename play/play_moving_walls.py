@@ -19,19 +19,19 @@ from jaxmarl.environments.overcooked_v3 import OvercookedV3
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 
 AGENT0_KEYS = {
-    pygame.K_w: 3,      # up
-    pygame.K_s: 1,      # down
-    pygame.K_a: 2,      # left
-    pygame.K_d: 0,      # right
+    pygame.K_w: 3,  # up
+    pygame.K_s: 1,  # down
+    pygame.K_a: 2,  # left
+    pygame.K_d: 0,  # right
     pygame.K_SPACE: 5,  # interact
 }
 
 AGENT1_KEYS = {
-    pygame.K_UP: 3,     # up
-    pygame.K_DOWN: 1,   # down
-    pygame.K_LEFT: 2,   # left
+    pygame.K_UP: 3,  # up
+    pygame.K_DOWN: 1,  # down
+    pygame.K_LEFT: 2,  # left
     pygame.K_RIGHT: 0,  # right
-    pygame.K_RETURN: 5, # interact
+    pygame.K_RETURN: 5,  # interact
 }
 
 
@@ -79,7 +79,7 @@ def main():
 
     key = jax.random.PRNGKey(42)
     key, subkey = jax.random.split(key)
-    obs, state = env.reset(subkey)
+    obs, state = jax.jit(env.reset)(subkey)
 
     total_reward = 0
     step_count = 0
@@ -97,7 +97,7 @@ def main():
                     running = False
                 elif event.key == pygame.K_r:
                     key, subkey = jax.random.split(key)
-                    obs, state = env.reset(subkey)
+                    obs, state = jax.jit(env.reset)(subkey)
                     total_reward = 0
                     step_count = 0
                     print("\n--- Reset ---\n")
@@ -110,7 +110,7 @@ def main():
                     screen = pygame.display.set_mode((width, height))
                     pygame.display.set_caption(f"Moving Walls Demo - {layout_name}")
                     key, subkey = jax.random.split(key)
-                    obs, state = env.reset(subkey)
+                    obs, state = jax.jit(env.reset)(subkey)
                     total_reward = 0
                     step_count = 0
                     print(f"\n--- Switched to {layout_name} ---\n")
@@ -123,7 +123,7 @@ def main():
                     screen = pygame.display.set_mode((width, height))
                     pygame.display.set_caption(f"Moving Walls Demo - {layout_name}")
                     key, subkey = jax.random.split(key)
-                    obs, state = env.reset(subkey)
+                    obs, state = jax.jit(env.reset)(subkey)
                     total_reward = 0
                     step_count = 0
                     print(f"\n--- Switched to {layout_name} ---\n")
@@ -138,9 +138,12 @@ def main():
                 agent1_action = action
                 break
 
-        actions = {"agent_0": agent0_action, "agent_1": agent1_action}
+        actions = {
+            "agent_0": jnp.array(agent0_action),
+            "agent_1": jnp.array(agent1_action),
+        }
         key, subkey = jax.random.split(key)
-        obs, state, rewards, dones, info = env.step(subkey, state, actions)
+        obs, state, rewards, dones, info = jax.jit(env.step)(subkey, state, actions)
 
         step_count += 1
         reward = rewards["agent_0"]
@@ -156,7 +159,9 @@ def main():
                 d = int(state.moving_wall_directions[i])
                 dir_names = ["UP", "DOWN", "RIGHT", "LEFT"]
                 paused = bool(state.moving_wall_paused[i])
-                print(f"  Wall {i}: pos=({pos[0]},{pos[1]}) dir={dir_names[d]} paused={paused}")
+                print(
+                    f"  Wall {i}: pos=({pos[0]},{pos[1]}) dir={dir_names[d]} paused={paused}"
+                )
 
         img = viz.render_state(state)
         img_np = np.array(img)
