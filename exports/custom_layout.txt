@@ -1,0 +1,16 @@
+# Add to jaxmarl/environments/overcooked_v3/layouts.py
+
+custom_layout = """
+A 01WWW
+A]]]]}2
+W{WWW}W
+W{[[[[W
+WBWWPWW
+"""
+
+# Add to overcooked_v3_layouts dictionary:
+overcooked_v3_layouts["custom_layout"] = Layout.from_string(
+    custom_layout,
+    possible_recipes=[[0, 0, 0]],
+    swap_agents=False
+)
