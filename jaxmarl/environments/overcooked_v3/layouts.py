@@ -1,4 +1,8 @@
-"""Layout definitions and parsing for Overcooked V3."""
+"""Layout definitions and parsing for Overcooked V3.
+
+DESIGN NOTES:
+- don't make item conveyor belts / player conveyor belts move things to the same destination - this will cause race conditions and maybe make the items disappear.
+"""
 
 from jaxmarl.environments.overcooked_v3.common import StaticObject, Direction, ButtonAction
 import numpy as np
@@ -80,6 +84,112 @@ WWWWW
 W]}AW
 W{[0W
 WWXWW
+"""
+
+race_against_the_clock = """
+XWWWWWWWWWW 2
+            1
+ WWWWWWWWWW 0
+AW        WWW
+PW          W
+AW        WWW
+ WWWWWWWWWW 0
+            1
+XWWWWWWWWWW 2
+"""
+
+maze_conveyor_hell  = """
+01 W   W   v
+A  W W W  Wv
+vW W W W  Wv
+vW   W    Wv
+vWWWWWWWW Wv
+vW>>>>>>> Wv
+vW WWWWWWPWv
+A       WXW 
+B
+"""
+
+coordinated_temporal_conveyor = """
+>>>>>>vW   X
+      vW  A 
+     WvW    
+     Wv    B
+  A  WvWWWWW
+01   Wv>>>>>
+"""
+
+general_conveyor_level_1 = """
+012    P
+       W
+       W
+]]]]]]]]
+[[[[[[[[
+       W
+       W
+BX     P
+"""
+
+general_conveyor_level_2 = """
+W W   1
+0  WW WW  P
+2A  ]]]   P
+ A  W W    
+   WW WW   
+    [[[   B
+   WW WW  B
+   XW W    
+   XW W
+"""
+
+general_conveyor_level_3 = """
+A 01WWW
+A]]]]}2
+W{WWW}W
+W{[[[[W
+WBWWPWW
+"""
+
+middle_conveyor = """
+WWWWW^WWWWW
+WW  W^W  WW
+WW AW^WA WW
+W1   ^   PW
+WW  W^W  WW
+WW BW^WB WW
+W0   ^   XW
+WW  W^W  WW
+WW  W^W  WW
+WWWWW^WWWWW
+"""
+
+
+follow_the_leader = """
+WWWWWWWW
+WWB1  WW
+W0AWA PW
+W  W  WW
+WWWW  XW
+W     WW
+WWWWWWWW
+"""
+
+around_the_island = """
+WW0W1WWWWW
+B        W
+W  A     W
+WWWWWWW  X
+W  A     W
+W        W
+WWWPWWWWWW
+"""
+
+single_file = """
+WBWWPWW
+W A A W
+W WWW W
+X     W
+WW1W0WW
 """
 
 
@@ -339,7 +449,8 @@ class Layout:
 
                 c += 1
 
-        # Validation
+        # Validation for recipes 
+        # NOTE: possible_recipes is a list of lists of ingredient indices, max 3 ingredients per recipe - if no recipe indicator, we just auto-gen all possible combinations. Otherwise we just take the possible_recipes specified in layout. 
         if possible_recipes is not None:
             if not isinstance(possible_recipes, list):
                 raise ValueError("possible_recipes must be a list")
@@ -471,4 +582,20 @@ overcooked_v3_layouts = {
         barrier_config=[True, True],  # Barrier starts active
         button_config=[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
     ),
+    "middle_conveyor": Layout.from_string(
+        middle_conveyor, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "follow_the_leader": Layout.from_string(
+        follow_the_leader, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "around_the_island": Layout.from_string(
+        around_the_island, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "single_file": Layout.from_string(
+        single_file, possible_recipes=[[0, 0, 0]],
+    ),
+
 }

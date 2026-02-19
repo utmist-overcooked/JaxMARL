@@ -1,10 +1,9 @@
 """Utility functions for Overcooked V3."""
 
-from functools import partial
 import jax
 import jax.numpy as jnp
 from typing import Tuple
-from .common import ALL_DIRECTIONS, Position, Direction
+from .common import Position, Direction
 
 
 def tree_select(predicate, a, b):

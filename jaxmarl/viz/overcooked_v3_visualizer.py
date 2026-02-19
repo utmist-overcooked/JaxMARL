@@ -237,7 +237,6 @@ class OvercookedV3Visualizer:
 
         # Build result: expand counts into positions
         result = jnp.array([-1, -1, -1])
-        pos = 0
 
         # Simple expansion for up to 3 total ingredients
         def add_ingredient(carry, _):

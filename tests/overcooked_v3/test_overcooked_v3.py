@@ -158,30 +158,145 @@ class TestOvercookedV3PotMechanics:
         # All pot timers should be 0
         assert jnp.all(state.pot_cooking_timer == 0)
 
+    def _setup_full_pot(self, env, state, timer_value):
+        """Helper: set pot 0 to 3 onions with a given timer."""
+        from jaxmarl.environments.overcooked_v3.common import DynamicObject
+        pot_y, pot_x = state.pot_positions[0]
+        full_pot = DynamicObject.ingredient(0) * 3  # 3 onions
+        new_grid = state.grid.at[pot_y, pot_x, 1].set(full_pot)
+        new_timers = state.pot_cooking_timer.at[0].set(timer_value)
+        return state.replace(grid=new_grid, pot_cooking_timer=new_timers)
+
+    def _step_noop(self, env, state, key):
+        """Helper: take a no-op step for all agents."""
+        actions = {agent: 4 for agent in env.agents}
+        key, subkey = jax.random.split(key)
+        obs, new_state, rewards, dones, info = env.step(subkey, state, actions)
+        return new_state, key
+
     def test_pot_cooking_timer_decrements(self):
         """Verify pot cooking timer decrements when pot is full."""
         env = OvercookedV3(pot_cook_time=10, pot_burn_time=5)
         key = jax.random.PRNGKey(0)
         obs, state = env.reset(key)
 
-        # Manually set up a pot with 3 ingredients and timer started
-        # Find pot position
-        pot_y, pot_x = state.pot_positions[0]
+        state = self._setup_full_pot(env, state, timer_value=10)
 
-        # Add full ingredients to pot
-        from jaxmarl.environments.overcooked_v3.common import DynamicObject
-        full_pot = DynamicObject.ingredient(0) * 3  # 3 onions
-        new_grid = state.grid.at[pot_y, pot_x, 1].set(full_pot)
-        new_timers = state.pot_cooking_timer.at[0].set(10)
-        state = state.replace(grid=new_grid, pot_cooking_timer=new_timers)
-
-        # Take a step (no-op actions)
-        actions = {agent: 4 for agent in env.agents}  # stay action
-        key, subkey = jax.random.split(key)
-        obs, new_state, rewards, dones, info = env.step(subkey, state, actions)
+        new_state, key = self._step_noop(env, state, key)
 
         # Timer should have decremented
         assert new_state.pot_cooking_timer[0] == 9
+
+    def test_pot_becomes_cooked_at_burn_time(self):
+        """Verify pot gets COOKED flag when timer reaches burn_time."""
+        from jaxmarl.environments.overcooked_v3.common import DynamicObject
+        env = OvercookedV3(pot_cook_time=10, pot_burn_time=5)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        # Set timer to burn_time + 1, so one step brings it to burn_time
+        state = self._setup_full_pot(env, state, timer_value=6)
+
+        new_state, key = self._step_noop(env, state, key)
+
+        # Timer should now be at burn_time (5)
+        assert new_state.pot_cooking_timer[0] == 5
+
+        # Pot should have COOKED flag set
+        pot_y, pot_x = new_state.pot_positions[0]
+        pot_ingredients = new_state.grid[pot_y, pot_x, 1]
+        assert (pot_ingredients & DynamicObject.COOKED) != 0
+
+    def test_pot_timer_continues_after_cooked(self):
+        """Verify timer keeps decrementing in the burn window after COOKED is set."""
+        from jaxmarl.environments.overcooked_v3.common import DynamicObject
+        env = OvercookedV3(pot_cook_time=10, pot_burn_time=5)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        # Set up a pot that's already cooked (COOKED flag + timer in burn window)
+        pot_y, pot_x = state.pot_positions[0]
+        cooked_pot = DynamicObject.ingredient(0) * 3 | DynamicObject.COOKED
+        new_grid = state.grid.at[pot_y, pot_x, 1].set(cooked_pot)
+        new_timers = state.pot_cooking_timer.at[0].set(4)
+        state = state.replace(grid=new_grid, pot_cooking_timer=new_timers)
+
+        new_state, key = self._step_noop(env, state, key)
+
+        # Timer should have decremented (burn window still counting down)
+        assert new_state.pot_cooking_timer[0] == 3
+
+    def test_pot_burns_when_timer_reaches_zero(self):
+        """Verify pot contents are cleared when timer hits 0."""
+        from jaxmarl.environments.overcooked_v3.common import DynamicObject
+        env = OvercookedV3(pot_cook_time=10, pot_burn_time=5)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        # Set timer to 1, so one step brings it to 0 (burned)
+        state = self._setup_full_pot(env, state, timer_value=1)
+
+        new_state, key = self._step_noop(env, state, key)
+
+        # Timer should be 0
+        assert new_state.pot_cooking_timer[0] == 0
+
+        # Pot should be cleared (ingredients reset to 0)
+        pot_y, pot_x = new_state.pot_positions[0]
+        pot_ingredients = new_state.grid[pot_y, pot_x, 1]
+        assert pot_ingredients == 0
+
+    def test_pot_full_cooking_cycle(self):
+        """Test complete cycle: full pot -> cooking -> cooked -> burn window -> burned."""
+        from jaxmarl.environments.overcooked_v3.common import DynamicObject
+        env = OvercookedV3(pot_cook_time=10, pot_burn_time=5)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        state = self._setup_full_pot(env, state, timer_value=10)
+        pot_y, pot_x = state.pot_positions[0]
+
+        # Step through cooking phase (timer 10 -> 6, not yet cooked)
+        for expected_timer in range(9, 6, -1):
+            state, key = self._step_noop(env, state, key)
+            assert state.pot_cooking_timer[0] == expected_timer
+            pot_ingredients = state.grid[pot_y, pot_x, 1]
+            assert (pot_ingredients & DynamicObject.COOKED) == 0, \
+                f"Should not be cooked yet at timer={expected_timer}"
+
+        # Step to burn_time (timer 6 -> 5, becomes cooked)
+        state, key = self._step_noop(env, state, key)
+        assert state.pot_cooking_timer[0] == 5
+        pot_ingredients = state.grid[pot_y, pot_x, 1]
+        assert (pot_ingredients & DynamicObject.COOKED) != 0, "Should be cooked at burn_time"
+
+        # Step through burn window (timer 5 -> 1, still cooked)
+        for expected_timer in range(4, 0, -1):
+            state, key = self._step_noop(env, state, key)
+            assert state.pot_cooking_timer[0] == expected_timer
+            pot_ingredients = state.grid[pot_y, pot_x, 1]
+            assert (pot_ingredients & DynamicObject.COOKED) != 0, \
+                f"Should still be cooked at timer={expected_timer}"
+
+        # Final step: timer hits 0, pot burns and clears
+        state, key = self._step_noop(env, state, key)
+        assert state.pot_cooking_timer[0] == 0
+        pot_ingredients = state.grid[pot_y, pot_x, 1]
+        assert pot_ingredients == 0, "Pot should be cleared after burning"
+
+    def test_empty_pot_timer_stays_zero(self):
+        """Verify timer doesn't change for empty pots."""
+        env = OvercookedV3(pot_cook_time=10, pot_burn_time=5)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        # Pot starts empty with timer 0
+        assert state.pot_cooking_timer[0] == 0
+
+        new_state, key = self._step_noop(env, state, key)
+
+        # Should stay 0
+        assert new_state.pot_cooking_timer[0] == 0
 
 
 class TestOvercookedV3OrderQueue:
@@ -272,15 +387,11 @@ class TestOvercookedV3Actions:
         key = jax.random.PRNGKey(0)
         obs, state = env.reset(key)
 
-        initial_pos = (state.agents.pos.x[0].item(), state.agents.pos.y[0].item())
-
         # Try moving right
         actions = {env.agents[0]: 0, env.agents[1]: 4}  # right for agent 0, stay for agent 1
         key, subkey = jax.random.split(key)
         obs, new_state, rewards, dones, info = env.step(subkey, state, actions)
 
-        # Position might have changed (depends on layout)
-        new_pos = (new_state.agents.pos.x[0].item(), new_state.agents.pos.y[0].item())
         # Direction should have changed to RIGHT regardless of movement
         assert new_state.agents.dir[0] == 2  # Direction.RIGHT
 

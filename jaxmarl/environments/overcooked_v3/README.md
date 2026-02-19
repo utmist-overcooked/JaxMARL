@@ -2,6 +2,30 @@
 
 A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, order queues, and conveyor belts.
 
+## 🎨 Visual Level Editor
+
+**NEW!** A visual, interactive level editor is now available for creating Overcooked V3 layouts:
+
+```bash
+# Launch from overcooked_v3 directory
+cd jaxmarl/environments/overcooked_v3
+python3 run_level_editor.py
+
+# Or from JaxMARL root directory
+python3 jaxmarl/environments/overcooked_v3/run_level_editor.py
+```
+
+Features:
+- ✅ Visual click-to-place grid editor
+- ✅ Live preview with proper tile rendering
+- ✅ Test play your layouts immediately
+- ✅ Automatic validation
+- ✅ Export ready-to-use code
+- ✅ Load and edit existing layouts
+- ✅ Undo/redo support
+
+**[📖 See full Level Editor documentation](../../tools/README_LEVEL_EDITOR.md)**
+
 ## File Structure
 
 ```
@@ -10,6 +34,7 @@ overcooked_v3/
 ├── common.py            # Core data structures and enums
 ├── settings.py          # Configuration constants
 ├── layouts.py           # Layout definitions and parsing
+├── layout_utils.py      # Layout conversion utilities (NEW!)
 ├── overcooked.py        # Main environment implementation
 ├── utils.py             # Helper functions
 └── README.md            # This file
@@ -103,11 +128,18 @@ The `OvercookedV3` class implementing `MultiAgentEnv`:
 **Key methods:**
 | Method | Description |
 |--------|-------------|
-| `reset(key)` | Initialize environment, returns `(obs_dict, state)` |
-| `step(key, state, actions)` | Execute one timestep, returns `(obs, state, rewards, dones, info)` |
-| `step_agents(key, state, actions)` | Process agent movement and interactions |
-| `process_interact(...)` | Handle interact action (pickup/drop/cook) |
-| `get_obs(state)` | Generate observations for all agents |
+| `reset(key) -> Tuple[Dict[str, Array], State]` | Reset the environment and return initial observations and state |
+| `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, orders, and check termination |
+| `step_agents(key, state, actions) -> Tuple[State, float, Array]` | Process agent movement (with collision resolution) and interact actions |
+| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
+| `is_terminal(state) -> bool` | Check whether the episode is done (max steps reached) |
+| `get_obs(state) -> Dict[str, Array]` | Get observations for all agents, dispatching by per-agent observation type |
+| `get_obs_for_type(state, obs_type) -> Dict[str, Array]` | Get observations for a specific observation type (default or featurized) |
+| `get_obs_default(state) -> Array` | Build default grid-based observation tensors for all agents |
+| `name` (property) `-> str` | Return the environment name |
+| `num_actions` (property) `-> int` | Return the number of possible actions |
+| `action_space(agent_id) -> spaces.Discrete` | Return the discrete action space |
+| `observation_space(agent_id) -> spaces.Box` | Return the box observation space |
 
 **State dataclass fields:**
 ```python

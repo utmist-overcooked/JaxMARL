@@ -1,14 +1,12 @@
 """Overcooked V3 Environment with pot burning, order queue, and conveyor belts."""
 
 from enum import Enum
-from functools import partial
 from typing import List, Optional, Union, Tuple, Dict
 import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import lax
 import chex
-from flax import struct
 
 from jaxmarl.environments import MultiAgentEnv
 from jaxmarl.environments import spaces
@@ -23,14 +21,12 @@ from jaxmarl.environments.overcooked_v3.common import (
     ButtonAction,
     Position,
     Agent,
-    SoupType,
 )
 from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts, Layout
 from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
     POT_BURN_TIME,
-    BURN_PENALTY,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
     DEFAULT_ORDER_EXPIRATION_TIME,
@@ -125,7 +121,47 @@ class State:
 
 
 class OvercookedV3(MultiAgentEnv):
-    """Overcooked V3 environment with pot burning, order queue, and conveyors."""
+    """Overcooked V3 environment with pot burning, order queue, and conveyors.
+
+    Methods:
+        reset(key) -> Tuple[Dict[str, Array], State]:
+            Reset the environment and return initial observations and state.
+
+        step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]:
+            Perform a single timestep: process actions, conveyors, orders, and check termination.
+
+        step_agents(key, state, actions) -> Tuple[State, float, Array]:
+            Process agent movement (with collision resolution) and interact actions.
+
+        process_interact(grid, agent, all_inventories, recipe, pot_timers,
+            pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery,
+            reward, shaped_reward, pot_timers]:
+            Handle a single agent's interact action (pickup, drop, cook, deliver).
+
+        is_terminal(state) -> bool:
+            Check whether the episode is done (max steps reached).
+
+        get_obs(state) -> Dict[str, Array]:
+            Get observations for all agents, dispatching by per-agent observation type.
+
+        get_obs_for_type(state, obs_type) -> Dict[str, Array]:
+            Get observations for a specific observation type (default or featurized).
+
+        get_obs_default(state) -> Array:
+            Build default grid-based observation tensors for all agents.
+
+        name (property) -> str:
+            Return the environment name.
+
+        num_actions (property) -> int:
+            Return the number of possible actions.
+
+        action_space(agent_id) -> spaces.Discrete:
+            Return the discrete action space.
+
+        observation_space(agent_id) -> spaces.Box:
+            Return the box observation space.
+    """
 
     def __init__(
         self,
@@ -1039,8 +1075,6 @@ class OvercookedV3(MultiAgentEnv):
         auto_cook = pot_is_idle & pot_full_after_drop
 
         # Update pot timer
-        new_pot_timers = pot_timers
-
         # Find which pot this is
         def _update_pot_timer(pot_idx):
             pot_y, pot_x = pot_positions[pot_idx]
@@ -1185,14 +1219,7 @@ class OvercookedV3(MultiAgentEnv):
             has_item = current_item != 0
 
             # Calculate destination
-            dir_vec = jnp.array(
-                [
-                    (0, -1),  # UP
-                    (0, 1),  # DOWN
-                    (1, 0),  # RIGHT
-                    (-1, 0),  # LEFT
-                ]
-            )[direction]
+            dir_vec = DIR_TO_VEC[direction]
 
             dest_x = jnp.clip(x + dir_vec[0], 0, self.width - 1)
             dest_y = jnp.clip(y + dir_vec[1], 0, self.height - 1)
@@ -1656,22 +1683,15 @@ class OvercookedV3(MultiAgentEnv):
 
         static_objects = state.grid[:, :, 0]
         ingredients = state.grid[:, :, 1]
-        extra_info = state.grid[:, :, 2]
-
-        static_encoding = jnp.array(
-            [
-                StaticObject.WALL,
-                StaticObject.GOAL,
-                StaticObject.POT,
-                StaticObject.RECIPE_INDICATOR,
-                StaticObject.PLATE_PILE,
-                StaticObject.ITEM_CONVEYOR,
-                StaticObject.PLAYER_CONVEYOR,
-                StaticObject.MOVING_WALL,
-                StaticObject.BUTTON,
-                StaticObject.BARRIER,
-            ]
-        )
+        static_encoding = jnp.array([
+            StaticObject.WALL,
+            StaticObject.GOAL,
+            StaticObject.POT,
+            StaticObject.RECIPE_INDICATOR,
+            StaticObject.PLATE_PILE,
+            StaticObject.ITEM_CONVEYOR,
+            StaticObject.PLAYER_CONVEYOR,
+        ])
         static_layers = static_objects[..., None] == static_encoding
 
         def _ingredient_layers(ingredients):
