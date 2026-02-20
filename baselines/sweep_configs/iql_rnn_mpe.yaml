@@ -1,0 +1,48 @@
+# CARBS sweep config for IQL RNN on MPE environments
+# Used with: python baselines/sweep_carbs.py --script baselines/QLearning/iql_rnn.py ...
+
+better_direction_sign: 1  # 1 = maximize returns
+num_random_samples: 4
+
+params:
+  LR:
+    space: log
+    center: 5.0e-3
+    min: 1.0e-5
+    max: 1.0e-2
+
+  GAMMA:
+    space: logit
+    center: 0.99
+    min: 0.9
+    max: 0.999
+
+  NUM_ENVS:
+    space: log
+    center: 8
+    min: 4
+    max: 128
+    is_integer: true
+    rounding_factor: 4
+
+  HIDDEN_SIZE:
+    space: log
+    center: 64
+    min: 32
+    max: 256
+    is_integer: true
+    rounding_factor: 16
+
+  EPS_DECAY:
+    space: log
+    center: 0.1
+    min: 0.05
+    max: 0.5
+
+  BUFFER_BATCH_SIZE:
+    space: log
+    center: 32
+    min: 16
+    max: 128
+    is_integer: true
+    rounding_factor: 8

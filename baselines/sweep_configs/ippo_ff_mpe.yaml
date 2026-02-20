@@ -1,0 +1,52 @@
+# CARBS sweep config for IPPO feedforward on MPE environments
+# Used with: python baselines/sweep_carbs.py --script baselines/IPPO/ippo_ff_mpe.py ...
+
+better_direction_sign: 1  # 1 = maximize returns
+num_random_samples: 4
+
+params:
+  LR:
+    space: log
+    center: 2.5e-4
+    min: 1.0e-5
+    max: 1.0e-2
+
+  GAMMA:
+    space: logit
+    center: 0.99
+    min: 0.9
+    max: 0.999
+
+  CLIP_EPS:
+    space: logit
+    center: 0.2
+    min: 0.05
+    max: 0.5
+
+  ENT_COEF:
+    space: log
+    center: 0.01
+    min: 1.0e-4
+    max: 0.1
+
+  VF_COEF:
+    space: log
+    center: 0.5
+    min: 0.1
+    max: 2.0
+
+  UPDATE_EPOCHS:
+    space: linear
+    center: 4
+    min: 1
+    max: 16
+    is_integer: true
+    scale: 4
+
+  NUM_MINIBATCHES:
+    space: linear
+    center: 4
+    min: 1
+    max: 16
+    is_integer: true
+    scale: 4
