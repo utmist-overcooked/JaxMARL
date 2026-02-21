@@ -33,6 +33,7 @@ class StaticObject(IntEnum):
     MOVING_WALL = 22
     BUTTON = 23
     BARRIER = 24
+    PRESSURE_PLATE = 25
 
     @staticmethod
     def is_ingredient_pile(obj):
@@ -49,7 +50,7 @@ class StaticObject(IntEnum):
 
 
 class ButtonAction(IntEnum):
-    """Actions a button can trigger on its linked moving wall or barrier."""
+    """Actions a button/pressure plate can trigger on its linked moving wall or barrier."""
     TOGGLE_PAUSE = 0       # Pause/unpause the wall's movement
     TOGGLE_DIRECTION = 1   # Reverse the wall's direction
     TOGGLE_BOUNCE = 2      # Toggle bounce mode on/off

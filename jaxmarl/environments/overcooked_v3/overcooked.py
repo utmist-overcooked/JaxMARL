@@ -263,7 +263,9 @@ class OvercookedV3(MultiAgentEnv):
 
         # Moving wall and button settings
         self.enable_moving_walls = enable_moving_walls
-        self.enable_buttons = enable_buttons
+        # If a layout includes buttons/pressure plates, enable control processing by default.
+        # This keeps interactive/demo layouts working without requiring explicit flags.
+        self.enable_buttons = enable_buttons or (len(layout.button_info) > 0)
 
         # Barrier settings
         self.barrier_duration = barrier_duration
@@ -644,6 +646,7 @@ class OvercookedV3(MultiAgentEnv):
                     (new_cell_static == StaticObject.EMPTY)
                     | (new_cell_static == StaticObject.ITEM_CONVEYOR)
                     | (new_cell_static == StaticObject.PLAYER_CONVEYOR)
+                    | (new_cell_static == StaticObject.PRESSURE_PLATE)
                     | (
                         is_barrier_tile & ~barrier_blocks
                     )  # Barrier is walkable if inactive
@@ -765,6 +768,75 @@ class OvercookedV3(MultiAgentEnv):
 
         if self.enable_buttons:
 
+            def _apply_control_action(
+                mw_dirs,
+                mw_paused,
+                mw_bounce,
+                btn_toggled,
+                bar_active,
+                bar_timer,
+                is_this,
+                button_idx,
+            ):
+                linked_wall = state.button_linked_wall[button_idx]
+                action_type = state.button_action_type[button_idx]
+
+                new_toggled = jax.lax.select(
+                    is_this, ~btn_toggled[button_idx], btn_toggled[button_idx]
+                )
+                btn_toggled = btn_toggled.at[button_idx].set(new_toggled)
+
+                mw_paused = jax.lax.select(
+                    is_this & (action_type == ButtonAction.TOGGLE_PAUSE),
+                    mw_paused.at[linked_wall].set(~mw_paused[linked_wall]),
+                    mw_paused,
+                )
+
+                new_dir = Direction.opposite(mw_dirs[linked_wall])
+                mw_dirs = jax.lax.select(
+                    is_this & (action_type == ButtonAction.TOGGLE_DIRECTION),
+                    mw_dirs.at[linked_wall].set(new_dir),
+                    mw_dirs,
+                )
+
+                mw_bounce = jax.lax.select(
+                    is_this & (action_type == ButtonAction.TOGGLE_BOUNCE),
+                    mw_bounce.at[linked_wall].set(~mw_bounce[linked_wall]),
+                    mw_bounce,
+                )
+
+                mw_paused = jax.lax.select(
+                    is_this & (action_type == ButtonAction.TRIGGER_MOVE),
+                    mw_paused.at[linked_wall].set(False),
+                    mw_paused,
+                )
+
+                bar_active = jax.lax.select(
+                    is_this & (action_type == ButtonAction.TOGGLE_BARRIER),
+                    bar_active.at[linked_wall].set(~bar_active[linked_wall]),
+                    bar_active,
+                )
+
+                bar_active = jax.lax.select(
+                    is_this & (action_type == ButtonAction.TIMED_BARRIER),
+                    bar_active.at[linked_wall].set(False),
+                    bar_active,
+                )
+                bar_timer = jax.lax.select(
+                    is_this & (action_type == ButtonAction.TIMED_BARRIER),
+                    bar_timer.at[linked_wall].set(state.barrier_duration[linked_wall]),
+                    bar_timer,
+                )
+
+                return (
+                    mw_dirs,
+                    mw_paused,
+                    mw_bounce,
+                    btn_toggled,
+                    bar_active,
+                    bar_timer,
+                )
+
             def _process_agent_button(carry, x):
                 mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = (
                     carry
@@ -800,74 +872,15 @@ class OvercookedV3(MultiAgentEnv):
                         is_this = (
                             (btn_y == fwd_pos.y) & (btn_x == fwd_pos.x) & is_active
                         )
-
-                        linked_wall = state.button_linked_wall[button_idx]
-                        action_type = state.button_action_type[button_idx]
-
-                        # Toggle button state
-                        new_toggled = jax.lax.select(
-                            is_this, ~btn_toggled[button_idx], btn_toggled[button_idx]
-                        )
-                        btn_toggled = btn_toggled.at[button_idx].set(new_toggled)
-
-                        # TOGGLE_PAUSE (for moving walls)
-                        mw_paused = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_PAUSE),
-                            mw_paused.at[linked_wall].set(~mw_paused[linked_wall]),
-                            mw_paused,
-                        )
-
-                        # TOGGLE_DIRECTION (for moving walls)
-                        new_dir = Direction.opposite(mw_dirs[linked_wall])
-                        mw_dirs = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_DIRECTION),
-                            mw_dirs.at[linked_wall].set(new_dir),
-                            mw_dirs,
-                        )
-
-                        # TOGGLE_BOUNCE (for moving walls)
-                        mw_bounce = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_BOUNCE),
-                            mw_bounce.at[linked_wall].set(~mw_bounce[linked_wall]),
-                            mw_bounce,
-                        )
-
-                        # TRIGGER_MOVE (for moving walls): unpause for one step
-                        mw_paused = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TRIGGER_MOVE),
-                            mw_paused.at[linked_wall].set(False),
-                            mw_paused,
-                        )
-
-                        # TOGGLE_BARRIER: toggle barrier on/off (linked_wall refers to barrier idx)
-                        bar_active = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_BARRIER),
-                            bar_active.at[linked_wall].set(~bar_active[linked_wall]),
-                            bar_active,
-                        )
-
-                        # TIMED_BARRIER: deactivate barrier temporarily (linked_wall refers to barrier idx)
-                        # Set barrier inactive and start timer
-                        bar_active = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TIMED_BARRIER),
-                            bar_active.at[linked_wall].set(False),
-                            bar_active,
-                        )
-                        bar_timer = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TIMED_BARRIER),
-                            bar_timer.at[linked_wall].set(
-                                state.barrier_duration[linked_wall]
-                            ),
-                            bar_timer,
-                        )
-
-                        return (
+                        return _apply_control_action(
                             mw_dirs,
                             mw_paused,
                             mw_bounce,
                             btn_toggled,
                             bar_active,
                             bar_timer,
+                            is_this,
+                            button_idx,
                         ), None
 
                     (
@@ -932,6 +945,57 @@ class OvercookedV3(MultiAgentEnv):
                     new_barrier_timer,
                 ),
                 (new_agents, actions),
+            )
+
+            def _process_pressure_plate(carry, button_idx):
+                mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = carry
+
+                plate_y = state.button_positions[button_idx, 0]
+                plate_x = state.button_positions[button_idx, 1]
+                is_active_slot = state.button_active_mask[button_idx]
+                is_pressure_plate = (
+                    new_grid[plate_y, plate_x, 0] == StaticObject.PRESSURE_PLATE
+                )
+
+                occupied = jnp.any(
+                    (new_agents.pos.y == plate_y) & (new_agents.pos.x == plate_x)
+                )
+                was_occupied = btn_toggled[button_idx]
+                occupancy_changed = occupied != was_occupied
+                should_trigger = is_active_slot & is_pressure_plate & occupancy_changed
+
+                return _apply_control_action(
+                    mw_dirs,
+                    mw_paused,
+                    mw_bounce,
+                    btn_toggled,
+                    bar_active,
+                    bar_timer,
+                    should_trigger,
+                    button_idx,
+                ), None
+
+            (
+                (
+                    new_mw_directions,
+                    new_mw_paused,
+                    new_mw_bounce,
+                    new_btn_toggled,
+                    new_barrier_active,
+                    new_barrier_timer,
+                ),
+                _,
+            ) = jax.lax.scan(
+                _process_pressure_plate,
+                (
+                    new_mw_directions,
+                    new_mw_paused,
+                    new_mw_bounce,
+                    new_btn_toggled,
+                    new_barrier_active,
+                    new_barrier_timer,
+                ),
+                jnp.arange(MAX_BUTTONS),
             )
 
         return (
@@ -1301,6 +1365,7 @@ class OvercookedV3(MultiAgentEnv):
                 (dest_static == StaticObject.EMPTY)
                 | (dest_static == StaticObject.ITEM_CONVEYOR)
                 | (dest_static == StaticObject.PLAYER_CONVEYOR)
+                | (dest_static == StaticObject.PRESSURE_PLATE)
                 | (is_barrier_tile & ~barrier_blocks)
             )
 

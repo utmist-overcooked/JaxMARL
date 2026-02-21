@@ -494,6 +494,19 @@ class OvercookedV3Visualizer:
             )
             return img
 
+        def _render_pressure_plate(cell, img):
+            """Render pressure plate - floor tile with center plate marker."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["light_grey"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.18, 0.82, 0.18, 0.82), COLORS["dark_green"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.28, 0.72, 0.28, 0.72), COLORS["green"]
+            )
+            return img
+
         def _render_barrier(cell, img):
             """Render barrier with active/inactive indicators and progress bar.
             
@@ -592,7 +605,7 @@ class OvercookedV3Visualizer:
 
         # Build render function lookup
         # Map static object types to render functions
-        render_fns = [_render_empty] * 26  # Enough for all object types (up to 25)
+        render_fns = [_render_empty] * 27  # Enough for all object types (up to 26)
         render_fns[StaticObject.EMPTY] = _render_empty
         render_fns[StaticObject.WALL] = _render_wall
         render_fns[StaticObject.AGENT] = _render_agent
@@ -606,6 +619,7 @@ class OvercookedV3Visualizer:
         render_fns[StaticObject.MOVING_WALL] = _render_moving_wall
         render_fns[StaticObject.BUTTON] = _render_button
         render_fns[StaticObject.BARRIER] = _render_barrier
+        render_fns[StaticObject.PRESSURE_PLATE] = _render_pressure_plate
 
         # Handle ingredient piles (10-19)
         is_ingredient_pile = (static_object >= StaticObject.INGREDIENT_PILE_BASE) & \

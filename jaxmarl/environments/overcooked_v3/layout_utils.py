@@ -27,6 +27,7 @@ def layout_to_string(layout: Layout) -> str:
         StaticObject.PLATE_PILE: 'B',
         StaticObject.POT: 'P',
         StaticObject.RECIPE_INDICATOR: 'R',
+        StaticObject.PRESSURE_PLATE: '_',
     }
     
     # Item conveyor symbols by direction
@@ -222,6 +223,9 @@ Symbol Legend:
     [ = pushes left
     { = pushes up
     } = pushes down
+
+    Pressure Plates:
+        _ = pressure plate (triggers linked action when occupied/unoccupied)
   
   [space] = Empty walkable floor
 

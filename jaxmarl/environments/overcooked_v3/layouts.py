@@ -229,6 +229,15 @@ W  # AW
 WWWBWWW
 """
 
+# Pressure plate demo - stepping on plate toggles linked barrier, stepping off toggles back
+pressure_plate_demo = """
+WWWPWWW
+0A #  X
+W  _  W
+W  # AW
+WWWBWWW
+"""
+
 
 @dataclass
 class Layout:
@@ -328,6 +337,9 @@ class Layout:
 
             Buttons (interact to trigger linked wall action):
             !: button (linked to wall by button_config)
+
+            Pressure plates (trigger on occupied/unoccupied transitions):
+            _: pressure plate (linked by button_config)
 
             Barriers (togglable blocking tiles):
             #: barrier (blocks all movement when active)
@@ -433,6 +445,9 @@ class Layout:
                 elif char == "!":
                     static_objects[r, c] = StaticObject.BUTTON
                     button_positions.append((r, c))
+                elif char == "_":
+                    static_objects[r, c] = StaticObject.PRESSURE_PLATE
+                    button_positions.append((r, c))
                 elif char == "#":
                     static_objects[r, c] = StaticObject.BARRIER
                     barrier_positions.append((r, c))
@@ -483,13 +498,13 @@ class Layout:
             for (y, x, direction), bounce in zip(moving_wall_positions, moving_wall_bounce)
         ]
 
-        # Build button info with config
+        # Build button/pressure plate info with config
         if button_config is None:
             button_config = [(0, ButtonAction.TOGGLE_DIRECTION)] * len(button_positions)
         if len(button_config) != len(button_positions):
             raise ValueError(
                 f"button_config length ({len(button_config)}) must match "
-                f"number of buttons ({len(button_positions)})"
+                f"number of buttons + pressure plates ({len(button_positions)})"
             )
         button_info = [
             (y, x, wall_idx, action_type)
@@ -581,6 +596,14 @@ overcooked_v3_layouts = {
         possible_recipes=[[0, 0, 0]],
         barrier_config=[True, True],  # Barrier starts active
         button_config=[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
+    ),
+
+    # Pressure plate demo with barrier toggle
+    "pressure_plate_demo": Layout.from_string(
+        pressure_plate_demo,
+        possible_recipes=[[0, 0, 0]],
+        barrier_config=[True, True],
+        button_config=[(0, ButtonAction.TOGGLE_BARRIER)],
     ),
     "middle_conveyor": Layout.from_string(
         middle_conveyor, possible_recipes=[[0, 0, 0]],

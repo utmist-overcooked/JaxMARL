@@ -47,6 +47,7 @@ FALLBACK_PLATE_PILE = 9
 FALLBACK_INGREDIENT_BASE = 10
 FALLBACK_ITEM_CONVEYOR = 20
 FALLBACK_PLAYER_CONVEYOR = 21
+FALLBACK_PRESSURE_PLATE = 25
 
 def _load_jaxmarl_deps():
     """Load JaxMARL dependencies on first use."""
@@ -170,6 +171,7 @@ TOOLS = [
     EditorTool("Player Conv [", "[", "Moves agents to the left.", COLOR_PURPLE, conveyor_direction=2 if DEPENDENCIES_AVAILABLE else 2),
     EditorTool("Player Conv {", "{", "Moves agents upward.", COLOR_PURPLE, conveyor_direction=3 if DEPENDENCIES_AVAILABLE else 3),
     EditorTool("Player Conv }", "}", "Moves agents downward.", COLOR_PURPLE, conveyor_direction=1 if DEPENDENCIES_AVAILABLE else 1),
+    EditorTool("Pressure Plate", "_", "Triggers linked controls when occupied/unoccupied.", COLOR_DARK_GREEN, StaticObject.PRESSURE_PLATE if DEPENDENCIES_AVAILABLE else FALLBACK_PRESSURE_PLATE),
     EditorTool("Erase", "⌫", "Removes objects from a tile.", COLOR_RED, is_erase=True, keyboard_shortcut='e'),
 ]
 
