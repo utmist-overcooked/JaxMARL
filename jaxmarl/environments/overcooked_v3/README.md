@@ -5,6 +5,10 @@ A GPU-accelerated implementation of the Overcooked cooperative cooking game with
 ## 🎨 Visual Level Editor
 
 ```bash
+# If installed via pip
+overcooked-editor
+
+# Or run directly
 python -m jaxmarl.tools.layout_editor_v3
 ```
 
