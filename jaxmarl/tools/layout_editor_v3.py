@@ -255,15 +255,31 @@ TOOLS = [
         "Moves items to the right.",
         COLOR_CYAN,
         conveyor_direction=2,
+        keyboard_shortcut=">",
     ),  # Direction.RIGHT
     EditorTool(
-        "Item Conv <", "<", "Moves items to the left.", COLOR_CYAN, conveyor_direction=3
+        "Item Conv <",
+        "<",
+        "Moves items to the left.",
+        COLOR_CYAN,
+        conveyor_direction=3,
+        keyboard_shortcut="<",
     ),  # Direction.LEFT
     EditorTool(
-        "Item Conv ^", "^", "Moves items upward.", COLOR_CYAN, conveyor_direction=0
+        "Item Conv ^",
+        "^",
+        "Moves items upward.",
+        COLOR_CYAN,
+        conveyor_direction=0,
+        keyboard_shortcut="^",
     ),  # Direction.UP
     EditorTool(
-        "Item Conv v", "v", "Moves items downward.", COLOR_CYAN, conveyor_direction=1
+        "Item Conv v",
+        "v",
+        "Moves items downward.",
+        COLOR_CYAN,
+        conveyor_direction=1,
+        keyboard_shortcut="v",
     ),  # Direction.DOWN
     EditorTool(
         "Player Conv ]",
@@ -271,6 +287,7 @@ TOOLS = [
         "Moves agents to the right.",
         COLOR_PURPLE,
         conveyor_direction=2,
+        keyboard_shortcut="]",
     ),  # Direction.RIGHT
     EditorTool(
         "Player Conv [",
@@ -278,9 +295,15 @@ TOOLS = [
         "Moves agents to the left.",
         COLOR_PURPLE,
         conveyor_direction=3,
+        keyboard_shortcut="[",
     ),  # Direction.LEFT
     EditorTool(
-        "Player Conv {", "{", "Moves agents upward.", COLOR_PURPLE, conveyor_direction=0
+        "Player Conv {",
+        "{",
+        "Moves agents upward.",
+        COLOR_PURPLE,
+        conveyor_direction=0,
+        keyboard_shortcut="{",
     ),  # Direction.UP
     EditorTool(
         "Player Conv }",
@@ -288,6 +311,7 @@ TOOLS = [
         "Moves agents downward.",
         COLOR_PURPLE,
         conveyor_direction=1,
+        keyboard_shortcut="}",
     ),  # Direction.DOWN
     EditorTool(
         "Erase",
@@ -478,6 +502,11 @@ class LevelEditor:
         self.resize_input_mode = "width"  # 'width' or 'height'
         self.resize_error = ""
 
+        # Paint-drag state
+        self.painting = False
+        self.paint_button = None  # 1 = left (place), 3 = right (erase)
+        self.last_paint_cell = None  # (x, y) to avoid re-painting same cell
+
     def run(self):
         """Main editor loop."""
         while self.running:
@@ -496,8 +525,15 @@ class LevelEditor:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 self.handle_mouse_click(event.button, event.pos)
 
+            elif event.type == pygame.MOUSEBUTTONUP:
+                self.painting = False
+                self.paint_button = None
+                self.last_paint_cell = None
+
             elif event.type == pygame.MOUSEMOTION:
                 self.hover_pos = event.pos
+                if self.painting:
+                    self._handle_paint_drag(event.pos)
 
             elif event.type == pygame.KEYDOWN:
                 self.handle_keypress(event)
@@ -549,8 +585,49 @@ class LevelEditor:
 
             if button == 1:  # Left click - place
                 self.place_object(cell_x, cell_y)
+                # Start drag-painting
+                self.painting = True
+                self.paint_button = 1
+                self.last_paint_cell = (cell_x, cell_y)
             elif button == 3:  # Right click - erase
                 self.erase_object(cell_x, cell_y)
+                # Start drag-erasing
+                self.painting = True
+                self.paint_button = 3
+                self.last_paint_cell = (cell_x, cell_y)
+
+    def _handle_paint_drag(self, pos: Tuple[int, int]):
+        """Handle painting while dragging the mouse."""
+        mx, my = pos
+        grid_x = mx - TOOLBAR_WIDTH
+        grid_y = my - TOP_MENU_HEIGHT
+
+        if (
+            0 <= grid_x < self.state.width * self.tile_size
+            and 0 <= grid_y < self.state.height * self.tile_size
+        ):
+            cell_x = grid_x // self.tile_size
+            cell_y = grid_y // self.tile_size
+
+            # Skip if same cell as last paint
+            if (cell_x, cell_y) == self.last_paint_cell:
+                return
+
+            self.last_paint_cell = (cell_x, cell_y)
+
+            if self.paint_button == 1:  # Left drag - place
+                # Skip agents during drag (don't spawn many agents by accident)
+                tool = TOOLS[self.state.selected_tool]
+                if tool.is_agent:
+                    return
+                self.place_object(cell_x, cell_y, save_undo=False)
+            elif self.paint_button == 3:  # Right drag - erase
+                self.erase_object(cell_x, cell_y, save_undo=False)
+        else:
+            # Cursor left the grid, stop painting
+            self.painting = False
+            self.paint_button = None
+            self.last_paint_cell = None
 
     def handle_toolbar_click(self, mx: int, my: int):
         """Handle clicks in the toolbar."""
@@ -621,13 +698,8 @@ class LevelEditor:
                         self.state.resize(new_width, new_height)
                         self.show_resize_dialog = False
 
-                        # Update window size (50/50 split)
-                        self.grid_width = new_width * self.tile_size
-                        self.grid_height = new_height * self.tile_size
-                        self._set_window_size(
-                            TOOLBAR_WIDTH + self.grid_width * 2,
-                            TOP_MENU_HEIGHT + self.grid_height,
-                        )
+                        # Recalc tile size for current window
+                        self._recalc_tile_size()
                 except ValueError:
                     pass
             elif key in "0123456789":
@@ -642,7 +714,11 @@ class LevelEditor:
                 self.show_resize_dialog = False
             return
 
-        # Check for tool shortcuts
+        # Check for tool shortcuts (use event.unicode for shifted chars like >, <, {, }, ^)
+        char = event.unicode
+        if char in SHORTCUT_TO_TOOL:
+            self.state.selected_tool = SHORTCUT_TO_TOOL[char]
+            return
         if key in SHORTCUT_TO_TOOL:
             self.state.selected_tool = SHORTCUT_TO_TOOL[key]
             return
@@ -660,9 +736,10 @@ class LevelEditor:
             elif key == "t":
                 self.test_play()
 
-    def place_object(self, x: int, y: int):
+    def place_object(self, x: int, y: int, save_undo: bool = True):
         """Place the selected object at the given grid position."""
-        self.state.save_undo()
+        if save_undo:
+            self.state.save_undo()
 
         tool = TOOLS[self.state.selected_tool]
 
@@ -748,7 +825,7 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
             export_path = export_dir / f"{self.state.layout_name}.txt"
             export_path.write_text(code, encoding="utf-8")
 
-            self.export_text = code
+            self.export_text = str(export_path)
             self.show_export_dialog = True
             print("\n" + "=" * 60)
             print("EXPORTED LAYOUT CODE:")
@@ -1214,23 +1291,22 @@ print("\\nReturning to editor...")
         if obj != 0:
             # Draw based on object type
             if DEPENDENCIES_AVAILABLE:
-                # Use actual object type IDs
-                if obj == StaticObject.WALL or obj == 1:
+                if obj == StaticObject.WALL:
                     self._draw_wall(rect)
-                elif obj == StaticObject.POT or obj == 2:
+                elif obj == StaticObject.POT:
                     self._draw_pot(rect)
-                elif obj == StaticObject.GOAL or obj == 4:
+                elif obj == StaticObject.GOAL:
                     self._draw_goal(rect)
-                elif obj == StaticObject.PLATE_PILE or obj == 3:
+                elif obj == StaticObject.PLATE_PILE:
                     self._draw_plate_pile(rect)
-                elif obj == StaticObject.RECIPE_INDICATOR or obj == 5:
+                elif obj == StaticObject.RECIPE_INDICATOR:
                     self._draw_recipe_indicator(rect)
                 elif StaticObject.is_ingredient_pile(obj):
                     ingredient_idx = obj - StaticObject.INGREDIENT_PILE_BASE
                     self._draw_ingredient_pile(rect, ingredient_idx)
-                elif obj == StaticObject.ITEM_CONVEYOR or obj == 6:
+                elif obj == StaticObject.ITEM_CONVEYOR:
                     self._draw_item_conveyor(rect, 0)
-                elif obj == StaticObject.PLAYER_CONVEYOR or obj == 7:
+                elif obj == StaticObject.PLAYER_CONVEYOR:
                     self._draw_player_conveyor(rect, 0)
                 else:
                     self._draw_generic(rect, obj)
@@ -1587,6 +1663,8 @@ print("\\nReturning to editor...")
             y += 25
 
             for msg in self.validation_messages[:10]:  # Limit to 10 messages
+                # Green for success, red for errors
+                msg_color = COLOR_GREEN if msg.startswith("✓") else COLOR_RED
                 # Word wrap long messages
                 if len(msg) > 30:
                     words = msg.split()
@@ -1595,16 +1673,16 @@ print("\\nReturning to editor...")
                         if len(line + word) < 30:
                             line += word + " "
                         else:
-                            text = self.small_font.render(line, True, COLOR_WHITE)
+                            text = self.small_font.render(line, True, msg_color)
                             self.screen.blit(text, (panel_x + 10, y))
                             y += 20
                             line = word + " "
                     if line:
-                        text = self.small_font.render(line, True, COLOR_WHITE)
+                        text = self.small_font.render(line, True, msg_color)
                         self.screen.blit(text, (panel_x + 10, y))
                         y += 20
                 else:
-                    text = self.small_font.render(msg, True, COLOR_WHITE)
+                    text = self.small_font.render(msg, True, msg_color)
                     self.screen.blit(text, (panel_x + 10, y))
                     y += 20
 
@@ -1633,16 +1711,16 @@ print("\\nReturning to editor...")
         )
 
         # Draw title
-        title = self.title_font.render("Exported Layout", True, COLOR_BLACK)
+        title = self.title_font.render("Layout Exported!", True, COLOR_BLACK)
         self.screen.blit(title, (dialog_x + 20, dialog_y + 20))
 
-        # Draw export text (truncated)
-        y = dialog_y + 70
-        lines = self.export_text.split("\n")
-        for line in lines[:15]:  # Show first 15 lines
-            text = self.small_font.render(line, True, COLOR_BLACK)
-            self.screen.blit(text, (dialog_x + 20, y))
-            y += 20
+        # Draw save path info
+        y = dialog_y + 80
+        saved_label = self.font.render("Saved to:", True, COLOR_BLACK)
+        self.screen.blit(saved_label, (dialog_x + 20, y))
+        y += 30
+        path_text = self.small_font.render(self.export_text, True, COLOR_BLUE)
+        self.screen.blit(path_text, (dialog_x + 20, y))
 
         # Draw close button
         close_button = pygame.Rect(
@@ -1842,13 +1920,8 @@ print("\\nReturning to editor...")
                     self.state.resize(new_width, new_height)
                     self.show_resize_dialog = False
 
-                    # Update window size (50/50 split)
-                    self.grid_width = new_width * self.tile_size
-                    self.grid_height = new_height * self.tile_size
-                    self._set_window_size(
-                        TOOLBAR_WIDTH + self.grid_width * 2,
-                        TOP_MENU_HEIGHT + self.grid_height,
-                    )
+                    # Recalc tile size for current window
+                    self._recalc_tile_size()
 
                 except ValueError:
                     self.resize_error = "Please enter valid integers"
@@ -1888,13 +1961,8 @@ print("\\nReturning to editor...")
             self.state = new_state
             self.validation_messages = []
 
-            # Update window size to fit new layout (50/50 split)
-            self.grid_width = new_state.width * self.tile_size
-            self.grid_height = new_state.height * self.tile_size
-            self._set_window_size(
-                TOOLBAR_WIDTH + self.grid_width * 2,
-                TOP_MENU_HEIGHT + self.grid_height,
-            )
+            # Recalc tile size for current window
+            self._recalc_tile_size()
 
             print(f"✓ Loaded layout: {layout_name}")
 
