@@ -47,7 +47,7 @@ def create_env(layout_name):
 
 
 def main():
-    layout_name = "moving_wall_demo"
+    layout_name = "moving_wall_bounce_demo"
 
     print("=" * 55)
     print("  OVERCOOKED V3 - Moving Walls & Buttons Demo")
@@ -70,6 +70,10 @@ def main():
     tile_size = 48
     viz = OvercookedV3Visualizer(env, tile_size=tile_size)
 
+    # Compile Jax JIT functions here
+    jit_reset = jax.jit(env.reset)
+    jit_step = jax.jit(env.step)
+
     pygame.init()
     width = env.width * tile_size
     height = env.height * tile_size
@@ -79,7 +83,7 @@ def main():
 
     key = jax.random.PRNGKey(42)
     key, subkey = jax.random.split(key)
-    obs, state = jax.jit(env.reset)(subkey)
+    obs, state = jit_reset(subkey)
 
     total_reward = 0
     step_count = 0
@@ -97,36 +101,10 @@ def main():
                     running = False
                 elif event.key == pygame.K_r:
                     key, subkey = jax.random.split(key)
-                    obs, state = jax.jit(env.reset)(subkey)
+                    obs, state = jit_reset(subkey)
                     total_reward = 0
                     step_count = 0
                     print("\n--- Reset ---\n")
-                elif event.key == pygame.K_1:
-                    layout_name = "moving_wall_demo"
-                    env = create_env(layout_name)
-                    viz = OvercookedV3Visualizer(env, tile_size=tile_size)
-                    width = env.width * tile_size
-                    height = env.height * tile_size
-                    screen = pygame.display.set_mode((width, height))
-                    pygame.display.set_caption(f"Moving Walls Demo - {layout_name}")
-                    key, subkey = jax.random.split(key)
-                    obs, state = jax.jit(env.reset)(subkey)
-                    total_reward = 0
-                    step_count = 0
-                    print(f"\n--- Switched to {layout_name} ---\n")
-                elif event.key == pygame.K_2:
-                    layout_name = "moving_wall_bounce_demo"
-                    env = create_env(layout_name)
-                    viz = OvercookedV3Visualizer(env, tile_size=tile_size)
-                    width = env.width * tile_size
-                    height = env.height * tile_size
-                    screen = pygame.display.set_mode((width, height))
-                    pygame.display.set_caption(f"Moving Walls Demo - {layout_name}")
-                    key, subkey = jax.random.split(key)
-                    obs, state = jax.jit(env.reset)(subkey)
-                    total_reward = 0
-                    step_count = 0
-                    print(f"\n--- Switched to {layout_name} ---\n")
 
         keys = pygame.key.get_pressed()
         for k, action in AGENT0_KEYS.items():
@@ -143,7 +121,7 @@ def main():
             "agent_1": jnp.array(agent1_action),
         }
         key, subkey = jax.random.split(key)
-        obs, state, rewards, dones, info = jax.jit(env.step)(subkey, state, actions)
+        obs, state, rewards, dones, info = jit_step(subkey, state, actions)
 
         step_count += 1
         reward = rewards["agent_0"]
@@ -151,17 +129,6 @@ def main():
 
         if reward > 0:
             print(f"DELIVERY! +{reward:.0f} (Total: {total_reward:.0f})")
-
-        # Print wall info every 10 steps
-        if step_count % 10 == 0:
-            for i in range(int(jnp.sum(state.moving_wall_active_mask))):
-                pos = state.moving_wall_positions[i]
-                d = int(state.moving_wall_directions[i])
-                dir_names = ["UP", "DOWN", "RIGHT", "LEFT"]
-                paused = bool(state.moving_wall_paused[i])
-                print(
-                    f"  Wall {i}: pos=({pos[0]},{pos[1]}) dir={dir_names[d]} paused={paused}"
-                )
 
         img = viz.render_state(state)
         img_np = np.array(img)

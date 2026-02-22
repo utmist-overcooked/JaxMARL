@@ -196,7 +196,7 @@ WW1W0WW
 # Moving wall demo - wall moves right, button reverses its direction
 moving_wall_demo = """
 WWWPWWW
-0Ae   X
+0As   X
 W  !  W
 W    AW
 WWWBWWW
