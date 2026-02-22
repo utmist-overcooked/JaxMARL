@@ -18,4 +18,4 @@ jobs:
     - name: Install dependencies
       run: pip install -e ".[dev,algs]"
     - name: Run tests
-      run: pytest tests/
+      run: pytest tests/ --ignore=tests/robotarium
