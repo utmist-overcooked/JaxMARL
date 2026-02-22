@@ -3,6 +3,13 @@
 REINFORCE with value baseline trainer for IC3Net, CommNet, IC, and IRIC.
 Uses a Python-level training loop with live TrainingMonitor (rich UI) and
 periodic checkpoint saving, following the reference CoGrid runner pattern.
+
+Key design:
+  - Network is re-evaluated inside the loss function so that gradients
+    flow through the parameters (JAX requires explicit dependency).
+  - LSTM hidden states are reset at episode boundaries.
+  - For IC3Net, talk actions from the rollout are stored and replayed
+    during re-evaluation.
 """
 import sys
 import os
@@ -33,14 +40,11 @@ from baselines.IC3Net.monitor import TrainingMonitorInterface
 
 class Transition(NamedTuple):
     """Transition for REINFORCE rollouts."""
-    obs: jnp.ndarray       # (T, B, N, obs_dim)
-    action: jnp.ndarray    # (T, B, N)
-    value: jnp.ndarray     # (T, B, N)
-    reward: jnp.ndarray    # (T, B, N)
-    done: jnp.ndarray      # (T, B, N)
-    log_prob: jnp.ndarray  # (T, B, N)
-    h: jnp.ndarray         # (T, B, N, hidden_dim) or None
-    c: jnp.ndarray         # (T, B, N, hidden_dim) or None
+    obs: jnp.ndarray         # (T, B, N, obs_dim)
+    action: jnp.ndarray      # (T, B, N)
+    talk_action: jnp.ndarray # (T, B, N)  talk actions for IC3Net
+    reward: jnp.ndarray      # (T, B, N)
+    done: jnp.ndarray        # (T, B, N)
 
 
 def _build_network(config, num_agents, action_dim):
@@ -65,6 +69,7 @@ def _build_network(config, num_agents, action_dim):
             comm_mode=config.get("COMM_MODE", "avg"),
             hard_attn=hard_attn,
             share_weights=config.get("SHARE_WEIGHTS", False),
+            encoder_layers=config.get("ENCODER_LAYERS", 1),
         )
         network = CommNetLSTM(**kw) if recurrent else CommNetDiscrete(**kw)
         has_talk = hard_attn
@@ -85,12 +90,12 @@ def _init_params(rng, network, config, num_agents, obs_dim, has_talk):
         )
         if has_talk:
             return network.init(rng, init_obs, carry=init_carry,
-                                comm_action=jnp.zeros(num_agents, dtype=jnp.int32))
+                                comm_action=jnp.zeros((1, num_agents), dtype=jnp.int32))
         return network.init(rng, init_obs, carry=init_carry)
     else:
         if has_talk:
             return network.init(rng, init_obs,
-                                comm_action=jnp.zeros(num_agents, dtype=jnp.int32))
+                                comm_action=jnp.zeros((1, num_agents), dtype=jnp.int32))
         return network.init(rng, init_obs)
 
 
@@ -101,156 +106,230 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
     """
     recurrent = config.get("RECURRENT", True)
     hidden_dim = config.get("HIDDEN_DIM", 64)
+    gamma = config.get("GAMMA", 1.0)
+    detach_gap = config.get("DETACH_GAP", 10)
+    value_coeff = config.get("VALUE_COEFF", 0.01)
+    entropy_coeff = config.get("ENTROPY_COEFF", 0.0)
+    comm_action_one = config.get("COMM_ACTION_ONE", False)
+    num_envs = config["NUM_ENVS"]
+    num_steps = config["NUM_STEPS"]
+    is_independent = config.get("BASELINE", "ic3net") in ("ic", "iric")
+    use_shaped_reward = config.get("USE_SHAPED_REWARD", False)
+    shaped_reward_coeff = config.get("SHAPED_REWARD_COEFF", 1.0)
 
-    def _update_step(runner_state):
-        train_state, env_state, last_obs, comm_action, hstate, cstate, rng = runner_state
-
-        # -- Rollout collection ------------------------------------------
-        def _env_step(carry, step_idx):
-            train_state, env_state, obs, comm_action, hstate, cstate, rng = carry
-
-            # Stack & flatten obs: dict -> (B, N, obs_dim)
-            obs_list = []
-            for a in env.agents:
-                agent_obs = obs[a]
-                if len(agent_obs.shape) > 2:
-                    flat_obs = agent_obs.reshape(agent_obs.shape[0], -1)
-                else:
-                    flat_obs = agent_obs
-                obs_list.append(flat_obs)
-            obs_batch = jnp.stack(obs_list, axis=1)
-
-            rng, _rng = jax.random.split(rng)
-
-            if recurrent:
-                carry_in = (hstate, cstate)
-                detach_gap = config.get("DETACH_GAP", 10)
-                if detach_gap > 0:
-                    should_detach = (step_idx > 0) & (step_idx % detach_gap == 0)
-                    hstate_in = jax.lax.cond(
-                        should_detach, jax.lax.stop_gradient, lambda x: x, hstate)
-                    cstate_in = jax.lax.cond(
-                        should_detach, jax.lax.stop_gradient, lambda x: x, cstate)
-                    carry_in = (hstate_in, cstate_in)
-                if has_talk:
-                    logits, value, talk_logits, (hstate_new, cstate_new) = network.apply(
-                        train_state.params, obs_batch,
-                        carry=carry_in, comm_action=comm_action[0])
-                else:
-                    logits, value, talk_logits, (hstate_new, cstate_new) = network.apply(
-                        train_state.params, obs_batch, carry=carry_in)
-                hstate, cstate = hstate_new, cstate_new
-            else:
-                if has_talk:
-                    logits, value, talk_logits = network.apply(
-                        train_state.params, obs_batch, comm_action=comm_action[0])
-                else:
-                    logits, value = network.apply(train_state.params, obs_batch)
-                    talk_logits = None
-
-            # Sample actions
-            rng, _rng = jax.random.split(rng)
-            action_dist = distrax.Categorical(logits=logits)
-            action_env = action_dist.sample(seed=_rng)
-            log_prob = action_dist.log_prob(action_env)
-
-            # Talk actions for IC3Net
-            if has_talk and talk_logits is not None:
-                rng, _rng = jax.random.split(rng)
-                talk_dist = distrax.Categorical(logits=talk_logits)
-                action_talk = talk_dist.sample(seed=_rng)
-                log_prob = log_prob + talk_dist.log_prob(action_talk)
-                if config.get("COMM_ACTION_ONE", False):
-                    comm_action = jnp.ones((config["NUM_ENVS"], num_agents), dtype=jnp.int32)
-                else:
-                    comm_action = action_talk
-
-            action_dict = {a: action_env[:, i] for i, a in enumerate(env.agents)}
-            rng, _rng = jax.random.split(rng)
-            rng_step = jax.random.split(_rng, config["NUM_ENVS"])
-            obsv, env_state, reward, done, info = jax.vmap(env.step)(
-                rng_step, env_state, action_dict)
-
-            reward_batch = jnp.stack([reward[a] for a in env.agents], axis=1)
-            done_batch = jnp.stack([done[a] for a in env.agents], axis=1)
-
-            transition = Transition(
-                obs=obs_batch, action=action_env, value=value,
-                reward=reward_batch, done=done_batch, log_prob=log_prob,
-                h=hstate if recurrent else jnp.zeros(()),
-                c=cstate if recurrent else jnp.zeros(()),
-            )
-            return (train_state, env_state, obsv, comm_action, hstate, cstate, rng), transition
-
-        if has_talk:
-            rollout_comm = jnp.ones((config["NUM_ENVS"], num_agents), dtype=jnp.int32)
-        else:
-            rollout_comm = comm_action
-
-        init_carry = (train_state, env_state, last_obs, rollout_comm, hstate, cstate, rng)
-        final_carry, transitions = jax.lax.scan(
-            _env_step, init_carry,
-            jnp.arange(config["NUM_STEPS"]),
-            length=config["NUM_STEPS"],
-        )
-        train_state, env_state, last_obs, comm_action, hstate, cstate, rng = final_carry
-
-        # -- Bootstrap last value ----------------------------------------
+    def _stack_obs(obs):
+        """Stack obs dict -> (B, N, obs_dim)."""
         obs_list = []
         for a in env.agents:
-            agent_obs = last_obs[a]
+            agent_obs = obs[a]
             if len(agent_obs.shape) > 2:
                 flat_obs = agent_obs.reshape(agent_obs.shape[0], -1)
             else:
                 flat_obs = agent_obs
             obs_list.append(flat_obs)
-        last_obs_batch = jnp.stack(obs_list, axis=1)
+        return jnp.stack(obs_list, axis=1)
 
-        if recurrent:
-            carry_last = (hstate, cstate)
-            if has_talk:
-                _, last_value, _, _ = network.apply(
-                    train_state.params, last_obs_batch,
-                    carry=carry_last, comm_action=comm_action[0])
+    def _update_step(runner_state):
+        train_state, env_state, last_obs, comm_action, hstate, cstate, rng = runner_state
+
+        # Save initial hidden state for loss re-evaluation
+        init_h_eval = hstate
+        init_c_eval = cstate
+        init_comm_eval = comm_action
+
+        # ── ROLLOUT COLLECTION (stop_gradient on params) ────────────────
+        def _env_step(carry, step_idx):
+            train_state, env_state, obs, comm_action, hstate, cstate, rng = carry
+
+            obs_batch = _stack_obs(obs)
+            rng, _rng = jax.random.split(rng)
+
+            # Forward pass for action sampling only (no gradient needed)
+            stopped_params = jax.lax.stop_gradient(train_state.params)
+
+            if recurrent:
+                carry_in = (hstate, cstate)
+                if is_independent:
+                    logits, _, (h_new, c_new) = network.apply(
+                        stopped_params, obs_batch, carry=carry_in)
+                    talk_logits = None
+                elif has_talk:
+                    logits, _, talk_logits, (h_new, c_new) = network.apply(
+                        stopped_params, obs_batch, carry=carry_in, comm_action=comm_action)
+                else:
+                    logits, _, talk_logits, (h_new, c_new) = network.apply(
+                        stopped_params, obs_batch, carry=carry_in)
+                hstate, cstate = h_new, c_new
             else:
-                _, last_value, _, _ = network.apply(
-                    train_state.params, last_obs_batch, carry=carry_last)
-        else:
-            if has_talk:
-                _, last_value, _ = network.apply(
-                    train_state.params, last_obs_batch, comm_action=comm_action[0])
-            else:
-                _, last_value = network.apply(train_state.params, last_obs_batch)
+                if has_talk:
+                    logits, _, talk_logits = network.apply(
+                        stopped_params, obs_batch, comm_action=comm_action)
+                else:
+                    logits, _ = network.apply(stopped_params, obs_batch)
+                    talk_logits = None
 
-        # -- Compute discounted returns ----------------------------------
-        gamma = config.get("GAMMA", 1.0)
+            # Sample environment actions
+            rng, _rng = jax.random.split(rng)
+            action_env = distrax.Categorical(logits=logits).sample(seed=_rng)
 
-        def _compute_returns(next_value, transition):
-            returns = transition.reward + gamma * next_value * (1 - transition.done)
-            return returns, returns
+            # Sample talk actions
+            talk_action = jnp.zeros((num_envs, num_agents), dtype=jnp.int32)
+            if has_talk and talk_logits is not None:
+                rng, _rng = jax.random.split(rng)
+                talk_action = distrax.Categorical(logits=talk_logits).sample(seed=_rng)
+                if comm_action_one:
+                    comm_action = jnp.ones((num_envs, num_agents), dtype=jnp.int32)
+                else:
+                    comm_action = talk_action
 
-        _, returns = jax.lax.scan(
-            _compute_returns, last_value, transitions, reverse=True)
+            # Step environment
+            action_dict = {a: action_env[:, i] for i, a in enumerate(env.agents)}
+            rng, _rng = jax.random.split(rng)
+            rng_step = jax.random.split(_rng, num_envs)
+            obsv, env_state, reward, done, info = jax.vmap(env.step)(
+                rng_step, env_state, action_dict)
 
-        # -- Advantages --------------------------------------------------
-        advantages = returns - transitions.value
-        if config.get("NORMALIZE_ADVANTAGES", False):
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            reward_batch = jnp.stack([reward[a] for a in env.agents], axis=1)
+            if use_shaped_reward and "shaped_reward" in info:
+                shaped = jnp.stack([info["shaped_reward"][a] for a in env.agents], axis=1)
+                reward_batch = reward_batch + shaped_reward_coeff * shaped
+            done_batch = jnp.stack([done[a] for a in env.agents], axis=1)
 
-        # -- REINFORCE loss ----------------------------------------------
+            transition = Transition(
+                obs=obs_batch, action=action_env,
+                talk_action=talk_action,
+                reward=reward_batch, done=done_batch,
+            )
+
+            # Reset hidden state at episode boundaries
+            if recurrent:
+                done_all = done_batch[:, 0]  # (B,)
+                reset_h = done_all[:, None, None]
+                hstate = jnp.where(reset_h, jnp.zeros_like(hstate), hstate)
+                cstate = jnp.where(reset_h, jnp.zeros_like(cstate), cstate)
+                if has_talk:
+                    comm_action = jnp.where(
+                        done_all[:, None], jnp.zeros_like(comm_action), comm_action)
+
+            return (train_state, env_state, obsv, comm_action, hstate, cstate, rng), transition
+
+        init_carry = (train_state, env_state, last_obs, comm_action, hstate, cstate, rng)
+        final_carry, transitions = jax.lax.scan(
+            _env_step, init_carry, jnp.arange(num_steps), length=num_steps)
+        train_state, env_state, last_obs, comm_action, hstate, cstate, rng = final_carry
+
+        # ── LOSS with re-evaluation (gradients flow through params) ─────
         def _loss_fn(params):
-            policy_loss = -jnp.mean(transitions.log_prob * advantages)
-            value_loss = jnp.mean((transitions.value - returns) ** 2)
-            value_coeff = config.get("VALUE_COEFF", 0.01)
-            entropy_coeff = config.get("ENTROPY_COEFF", 0.0)
+            if recurrent:
+                # Re-run LSTM forward pass to get proper gradients
+                def _fwd_step(carry, transition_t):
+                    h, c, ca, step_count = carry
 
-            loss = policy_loss + value_coeff * value_loss
-            # Entropy bonus (if configured): recompute from stored logits is
-            # expensive; instead approximate from log_prob for IC3Net.
+                    # Truncated BPTT: detach gap
+                    if detach_gap > 0:
+                        should_det = (step_count > 0) & (step_count % detach_gap == 0)
+                        h = jax.lax.cond(should_det, jax.lax.stop_gradient, lambda x: x, h)
+                        c = jax.lax.cond(should_det, jax.lax.stop_gradient, lambda x: x, c)
+
+                    if is_independent:
+                        logits, value, (h_new, c_new) = network.apply(
+                            params, transition_t.obs, carry=(h, c))
+                        talk_logits = None
+                    elif has_talk:
+                        logits, value, talk_logits, (h_new, c_new) = network.apply(
+                            params, transition_t.obs, carry=(h, c), comm_action=ca)
+                    else:
+                        logits, value, _, (h_new, c_new) = network.apply(
+                            params, transition_t.obs, carry=(h, c))
+                        talk_logits = None
+
+                    action_dist = distrax.Categorical(logits=logits)
+                    log_prob = action_dist.log_prob(transition_t.action)
+                    entropy = action_dist.entropy()
+
+                    if has_talk and talk_logits is not None:
+                        talk_lp = distrax.Categorical(logits=talk_logits).log_prob(
+                            transition_t.talk_action)
+                        log_prob = log_prob + talk_lp
+                        if comm_action_one:
+                            ca = jnp.ones_like(ca)
+                        else:
+                            ca = transition_t.talk_action
+
+                    # Reset hidden state at episode boundaries
+                    done_all = transition_t.done[:, 0]
+                    h_new = jnp.where(done_all[:, None, None], jnp.zeros_like(h_new), h_new)
+                    c_new = jnp.where(done_all[:, None, None], jnp.zeros_like(c_new), c_new)
+                    if has_talk:
+                        ca = jnp.where(done_all[:, None], jnp.zeros_like(ca), ca)
+
+                    return (h_new, c_new, ca, step_count + 1), (log_prob, value, entropy)
+
+                init_fwd = (init_h_eval, init_c_eval, init_comm_eval, jnp.int32(0))
+                _, (log_probs, values, entropies) = jax.lax.scan(_fwd_step, init_fwd, transitions)
+
+                # Bootstrap last value
+                last_obs_batch = _stack_obs(last_obs)
+                if is_independent:
+                    _, last_val, _ = network.apply(
+                        params, last_obs_batch, carry=(hstate, cstate))
+                elif has_talk:
+                    _, last_val, _, _ = network.apply(
+                        params, last_obs_batch, carry=(hstate, cstate), comm_action=comm_action)
+                else:
+                    _, last_val, _, _ = network.apply(
+                        params, last_obs_batch, carry=(hstate, cstate))
+
+            else:
+                # Feedforward: vmap re-evaluation
+                def _eval_step(transition_t):
+                    if has_talk:
+                        logits, value, talk_logits = network.apply(
+                            params, transition_t.obs, comm_action=transition_t.talk_action)
+                    else:
+                        logits, value = network.apply(params, transition_t.obs)
+                        talk_logits = None
+                    action_dist = distrax.Categorical(logits=logits)
+                    log_prob = action_dist.log_prob(transition_t.action)
+                    entropy = action_dist.entropy()
+                    if has_talk and talk_logits is not None:
+                        talk_lp = distrax.Categorical(logits=talk_logits).log_prob(
+                            transition_t.talk_action)
+                        log_prob = log_prob + talk_lp
+                    return log_prob, value, entropy
+
+                log_probs, values, entropies = jax.vmap(_eval_step)(transitions)
+
+                last_obs_batch = _stack_obs(last_obs)
+                if has_talk:
+                    _, last_val, _ = network.apply(
+                        params, last_obs_batch, comm_action=comm_action)
+                else:
+                    _, last_val = network.apply(params, last_obs_batch)
+
+            # Discounted returns
+            def _compute_returns(next_value, transition_t):
+                ret = transition_t.reward + gamma * next_value * (1 - transition_t.done)
+                return ret, ret
+
+            _, returns = jax.lax.scan(_compute_returns, last_val, transitions, reverse=True)
+
+            # Advantages
+            advantages = returns - values
+            if config.get("NORMALIZE_ADVANTAGES", False):
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+            # REINFORCE loss
+            policy_loss = -jnp.mean(log_probs * jax.lax.stop_gradient(advantages))
+            value_loss = jnp.mean((values - jax.lax.stop_gradient(returns)) ** 2)
+            entropy_bonus = jnp.mean(entropies)
+            loss = policy_loss + value_coeff * value_loss - entropy_coeff * entropy_bonus
+
             return loss, {
                 "loss": loss,
                 "policy_loss": policy_loss,
                 "value_loss": value_loss,
+                "entropy": entropy_bonus,
             }
 
         (loss, metrics), grads = jax.value_and_grad(_loss_fn, has_aux=True)(
@@ -258,6 +337,8 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
         train_state = train_state.apply_gradients(grads=grads)
 
         metrics["returned_episode_returns"] = env_state.returned_episode_returns[0].mean()
+        # Also track mean reward per step from the rollout (useful when episodes span multiple rollouts)
+        metrics["mean_reward_per_step"] = transitions.reward.mean()
 
         runner_state = (train_state, env_state, last_obs, comm_action, hstate, cstate, rng)
         return runner_state, metrics
@@ -326,7 +407,7 @@ def make_train(config):
         init_cstate = None
 
     if has_talk:
-        init_comm_action = jnp.ones((config["NUM_ENVS"], num_agents), dtype=jnp.int32)
+        init_comm_action = jnp.zeros((config["NUM_ENVS"], num_agents), dtype=jnp.int32)
     else:
         init_comm_action = jnp.zeros((config["NUM_ENVS"], num_agents), dtype=jnp.int32)
 
@@ -403,10 +484,16 @@ def make_train(config):
             # Log to monitor
             if step == 1 or step % log_every == 0 or step == num_updates:
                 display = {"Update": step}
-                display["EpRet"] = step_metrics.get("returned_episode_returns", 0.0)
+                ep_ret = step_metrics.get("returned_episode_returns", 0.0)
+                if ep_ret != 0.0:
+                    display["EpRet"] = ep_ret
+                else:
+                    # Episodes don't finish in one rollout; show mean reward/step instead
+                    display["MeanRew"] = step_metrics.get("mean_reward_per_step", 0.0)
                 display["Loss"] = step_metrics.get("loss", 0.0)
                 display["Pi Loss"] = step_metrics.get("policy_loss", 0.0)
                 display["V Loss"] = step_metrics.get("value_loss", 0.0)
+                display["Entropy"] = step_metrics.get("entropy", 0.0)
                 monitor.update(step, display)
 
             # Log to wandb
@@ -429,7 +516,11 @@ def make_train(config):
 
     # -- Final summary ---------------------------------------------------
     final_return = all_metrics.get("returned_episode_returns", [0.0])[-1]
-    print(f"\nTraining complete! Final episode return: {final_return:.2f}")
+    if final_return == 0.0:
+        final_rew = all_metrics.get("mean_reward_per_step", [0.0])[-1]
+        print(f"\nTraining complete! Final mean reward/step: {final_rew:.4f}")
+    else:
+        print(f"\nTraining complete! Final episode return: {final_return:.2f}")
 
     return {
         "runner_state": runner_state,

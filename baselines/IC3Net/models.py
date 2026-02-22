@@ -167,28 +167,32 @@ class CommNetDiscrete(nn.Module):
         
         Returns:
             agent_mask: (B, sender, receiver, 1) mask for communication
-            num_alive: scalar number of alive agents (as jnp.ndarray, not int)
+            num_alive: (B,) number of alive agents per environment
         """
         n = self.num_agents
         
         if alive_mask is None:
-            alive = jnp.ones(n)
+            alive = jnp.ones((batch_size, n))
         else:
-            alive = alive_mask.astype(jnp.float32).reshape(-1)
+            alive = alive_mask.astype(jnp.float32)
+            if alive.ndim == 1:
+                alive = jnp.broadcast_to(alive, (batch_size, n))
         
-        num_alive = jnp.sum(alive)  # Keep as JAX array, don't convert to int
+        num_alive = jnp.sum(alive, axis=-1)  # (B,)
         
-        # Receiver mask: (1, 1, N) -> (B, N, N, 1)
-        agent_mask = alive.reshape(1, 1, n)
+        # Receiver mask: (B, 1, N) -> (B, N, N, 1)
+        agent_mask = alive.reshape(batch_size, 1, n)
         agent_mask = jnp.broadcast_to(agent_mask, (batch_size, n, n))
         agent_mask = jnp.expand_dims(agent_mask, -1)
         
         if self.hard_attn:
             if comm_action is None:
-                ca = jnp.zeros(n)
+                ca = jnp.zeros((batch_size, n))
             else:
-                ca = comm_action.astype(jnp.float32).reshape(-1)
-            ca_mask = ca.reshape(1, 1, n)
+                ca = comm_action.astype(jnp.float32)
+                if ca.ndim == 1:
+                    ca = jnp.broadcast_to(ca, (batch_size, n))
+            ca_mask = ca.reshape(batch_size, 1, n)
             ca_mask = jnp.broadcast_to(ca_mask, (batch_size, n, n))
             ca_mask = jnp.expand_dims(ca_mask, -1)
             agent_mask = agent_mask * ca_mask
@@ -245,6 +249,7 @@ class CommNetDiscrete(nn.Module):
             # Use jnp.where to avoid division by zero
             if self.comm_mode == "avg":
                 denom = jnp.maximum(num_alive - 1.0, 1.0)
+                denom = denom.reshape(b, 1, 1, 1)
                 comm = comm / denom
             
             # Mask dead/silent agents
@@ -330,19 +335,6 @@ class IndependentLSTM(nn.Module):
             kernel_init=orthogonal(jnp.sqrt(2)),
             bias_init=constant(0.0)
         )(obs)
-        x = nn.tanh(x)
-        
-        x = nn.Dense(
-            self.hidden_dim,
-            kernel_init=orthogonal(jnp.sqrt(2)),
-            bias_init=constant(0.0)
-        )(x)
-        x = nn.tanh(x + nn.Dense(
-            self.hidden_dim,
-            kernel_init=orthogonal(jnp.sqrt(2)),
-            bias_init=constant(0.0),
-            name='skip'
-        )(obs))  # skip connection
         
         # LSTM cell - process each agent
         # Reshape to (B*N, H) for LSTM processing
@@ -350,28 +342,26 @@ class IndependentLSTM(nn.Module):
         h_flat = h.reshape(b * n, self.hidden_dim)
         c_flat = c.reshape(b * n, self.hidden_dim)
         
+        # OptimizedLSTMCell carry order is (c, h)
         lstm_cell = nn.OptimizedLSTMCell(features=self.hidden_dim)
-        (h1_flat, c1_flat), _ = lstm_cell((h_flat, c_flat), x_flat)
+        (c1_flat, h1_flat), _ = lstm_cell((c_flat, h_flat), x_flat)
         
         # Reshape back to (B, N, H)
         h1 = h1_flat.reshape(b, n, self.hidden_dim)
         c1 = c1_flat.reshape(b, n, self.hidden_dim)
-        
-        # Skip connection around recurrence
-        h_out = nn.tanh(h1 + x)
         
         # Output heads
         logits = nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(0.01),
             bias_init=constant(0.0)
-        )(h_out)
+        )(h1)
         
         values = nn.Dense(
             1,
             kernel_init=orthogonal(1.0),
             bias_init=constant(0.0)
-        )(h_out)
+        )(h1)
         
         return logits, jnp.squeeze(values, axis=-1), (h1, c1)
 
@@ -412,6 +402,7 @@ class CommNetLSTM(nn.Module):
     hard_attn: bool = False
     comm_mask_zero: bool = False
     share_weights: bool = False
+    encoder_layers: int = 1
     
     def setup(self):
         # Create communication mask (no self-communication)
@@ -420,12 +411,16 @@ class CommNetLSTM(nn.Module):
         else:
             self.comm_mask = jnp.ones((self.num_agents, self.num_agents)) - jnp.eye(self.num_agents)
         
-        # Encoder
-        self.encoder = nn.Dense(
-            self.hidden_dim,
-            kernel_init=orthogonal(jnp.sqrt(2)),
-            bias_init=constant(0.0)
-        )
+        # Encoder: multi-layer MLP for high-dim observations
+        enc_layers = []
+        for i in range(self.encoder_layers):
+            enc_layers.append(nn.Dense(
+                self.hidden_dim,
+                kernel_init=orthogonal(jnp.sqrt(2)),
+                bias_init=constant(0.0),
+                name=f'enc_{i}'
+            ))
+        self.enc_layers = enc_layers
         
         # Output heads
         self.action_head = nn.Dense(
@@ -456,22 +451,26 @@ class CommNetLSTM(nn.Module):
         n = self.num_agents
         
         if alive_mask is None:
-            alive = jnp.ones(n)
+            alive = jnp.ones((batch_size, n))
         else:
-            alive = alive_mask.astype(jnp.float32).reshape(-1)
+            alive = alive_mask.astype(jnp.float32)
+            if alive.ndim == 1:
+                alive = jnp.broadcast_to(alive, (batch_size, n))
         
-        num_alive = jnp.sum(alive)
+        num_alive = jnp.sum(alive, axis=-1)
         
-        agent_mask = alive.reshape(1, 1, n)
+        agent_mask = alive.reshape(batch_size, 1, n)
         agent_mask = jnp.broadcast_to(agent_mask, (batch_size, n, n))
         agent_mask = jnp.expand_dims(agent_mask, -1)
         
         if self.hard_attn:
             if comm_action is None:
-                ca = jnp.zeros(n)
+                ca = jnp.zeros((batch_size, n))
             else:
-                ca = comm_action.astype(jnp.float32).reshape(-1)
-            ca_mask = ca.reshape(1, 1, n)
+                ca = comm_action.astype(jnp.float32)
+                if ca.ndim == 1:
+                    ca = jnp.broadcast_to(ca, (batch_size, n))
+            ca_mask = ca.reshape(batch_size, 1, n)
             ca_mask = jnp.broadcast_to(ca_mask, (batch_size, n, n))
             ca_mask = jnp.expand_dims(ca_mask, -1)
             agent_mask = agent_mask * ca_mask
@@ -497,9 +496,12 @@ class CommNetLSTM(nn.Module):
         else:
             h_t, c_t = carry
         
-        # Encode observations
-        x = self.encoder(obs)
-        x = nn.tanh(x)
+        # Encode observations through multi-layer encoder
+        x = obs
+        for i, layer in enumerate(self.enc_layers):
+            x = layer(x)
+            if i < len(self.enc_layers) - 1:
+                x = nn.relu(x)
         
         # Build agent masks
         agent_mask, num_alive = self._agent_masks(b, alive_mask, comm_action)
@@ -510,6 +512,19 @@ class CommNetLSTM(nn.Module):
         h_round = h_t
         c_round = c_t
         
+        # Pre-create modules to share weights across communication passes
+        lstm_cell = nn.OptimizedLSTMCell(
+            features=hdim,
+            name='lstm'
+        )
+        if self.share_weights:
+            comm_dense = nn.Dense(
+                hdim,
+                kernel_init=orthogonal(jnp.sqrt(2)),
+                bias_init=constant(0.0),
+                name='c_shared'
+            )
+        
         # Communication passes with LSTM updates
         for hop in range(self.comm_passes):
             # Message passing
@@ -519,6 +534,7 @@ class CommNetLSTM(nn.Module):
             
             if self.comm_mode == "avg":
                 denom = jnp.maximum(num_alive - 1.0, 1.0)
+                denom = denom.reshape(b, 1, 1, 1)
                 comm = comm / denom
             
             comm = comm * agent_mask * agent_mask_t
@@ -526,12 +542,7 @@ class CommNetLSTM(nn.Module):
             
             # Apply communication transform
             if self.share_weights:
-                msg = nn.Dense(
-                    hdim,
-                    kernel_init=orthogonal(jnp.sqrt(2)),
-                    bias_init=constant(0.0),
-                    name='c_shared'
-                )(comm_sum)
+                msg = comm_dense(comm_sum)
             else:
                 msg = nn.Dense(
                     hdim,
@@ -548,17 +559,13 @@ class CommNetLSTM(nn.Module):
             h_flat = h_round.reshape(b * n, hdim)
             c_flat = c_round.reshape(b * n, hdim)
             
-            lstm_cell = nn.OptimizedLSTMCell(
-                features=hdim,
-                name=f'lstm_{hop}' if not self.share_weights else 'lstm_shared'
-            )
-            (h_new_flat, c_new_flat), _ = lstm_cell((h_flat, c_flat), z_flat)
+            # OptimizedLSTMCell carry order is (c, h)
+            (c_new_flat, h_new_flat), _ = lstm_cell((c_flat, h_flat), z_flat)
             
             h_new = h_new_flat.reshape(b, n, hdim)
             c_new = c_new_flat.reshape(b, n, hdim)
             
-            # Skip connection
-            h_round = nn.tanh(h_new + z)
+            h_round = h_new
             c_round = c_new
         
         # Output heads

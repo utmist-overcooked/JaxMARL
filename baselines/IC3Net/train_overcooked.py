@@ -77,7 +77,7 @@ def train_overcooked():
     rng, _rng = jax.random.split(rng)
     
     init_obs = jnp.zeros((1, num_agents, obs_dim))
-    init_comm = jnp.zeros(num_agents, dtype=jnp.int32)
+    init_comm = jnp.zeros((1, num_agents), dtype=jnp.int32)
     network_params = network.init(_rng, init_obs, comm_action=init_comm)
     
     # Setup optimizer
@@ -124,7 +124,7 @@ def train_overcooked():
             
             # Forward pass with communication
             logits, value, talk_logits = network.apply(
-                train_state.params, obs_batch, comm_action=comm_action[0]
+                train_state.params, obs_batch, comm_action=comm_action
             )
             
             # Sample actions
@@ -180,7 +180,7 @@ def train_overcooked():
         last_obs_batch = jnp.stack(obs_list, axis=1)
         
         _, last_value, _ = network.apply(
-            train_state.params, last_obs_batch, comm_action=comm_action[0]
+            train_state.params, last_obs_batch, comm_action=comm_action
         )
         
         # Compute returns with GAE

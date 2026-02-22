@@ -89,7 +89,7 @@ def visualize_overcooked():
     obs, env_state = env.reset(_rng)
     
     state_seq = [env_state]
-    comm_action = jnp.ones(num_agents, dtype=jnp.int32)
+    comm_action = jnp.zeros((1, num_agents), dtype=jnp.int32)
     max_steps = config["MAX_STEPS"]
     episode_return = 0.0
     
@@ -136,7 +136,7 @@ def visualize_overcooked():
         action_talk = talk_dist.sample(seed=_rng)
         
         # Update comm
-        comm_action = action_talk
+        comm_action = jnp.expand_dims(action_talk, 0)
         
         # Print communication periodically
         if step % 50 == 0:

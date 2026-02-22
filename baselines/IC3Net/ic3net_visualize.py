@@ -36,7 +36,7 @@ def run_episode_and_visualize(
     # Initialize comm_action for IC3Net
     num_agents = len(env.agents)
     if has_talk:
-        comm_action = jnp.zeros(num_agents, dtype=jnp.int32)
+        comm_action = jnp.zeros((1, num_agents), dtype=jnp.int32)
     else:
         comm_action = None
     
@@ -65,9 +65,9 @@ def run_episode_and_visualize(
             
             # Update comm_action for next step
             if comm_action_one:
-                comm_action = jnp.ones(num_agents, dtype=jnp.int32)
+                comm_action = jnp.ones((1, num_agents), dtype=jnp.int32)
             else:
-                comm_action = action_talk
+                comm_action = jnp.expand_dims(action_talk, 0)
             
             # Print communication status
             talk_status = ["TALK" if int(action_talk[i]) == 1 else "SILENT" 
