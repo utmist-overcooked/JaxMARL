@@ -4,15 +4,12 @@ A GPU-accelerated implementation of the Overcooked cooperative cooking game with
 
 ## 🎨 Visual Level Editor
 
-**NEW!** A visual, interactive level editor is now available for creating Overcooked V3 layouts:
-
 ```bash
-# Launch from overcooked_v3 directory
-cd jaxmarl/environments/overcooked_v3
-python3 run_level_editor.py
+# If installed via pip
+overcooked-editor
 
-# Or from JaxMARL root directory
-python3 jaxmarl/environments/overcooked_v3/run_level_editor.py
+# Or run directly
+python -m jaxmarl.tools.layout_editor_v3
 ```
 
 Features:

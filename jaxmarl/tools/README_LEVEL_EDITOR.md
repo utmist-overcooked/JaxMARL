@@ -34,20 +34,7 @@ Required dependencies:
 From the JaxMARL root directory:
 
 ```bash
-python3 jaxmarl/environments/overcooked_v3/run_level_editor.py
-```
-
-Or from the overcooked_v3 directory:
-
-```bash
-cd jaxmarl/environments/overcooked_v3
-python3 run_level_editor.py
-```
-
-Or run directly as a module:
-
-```bash
-python3 -m jaxmarl.tools.layout_editor_v3
+python -m jaxmarl.tools.layout_editor_v3
 ```
 
 ### Creating Your First Layout
@@ -270,7 +257,6 @@ JaxMARL/
 │   │   └── layout_editor_v3.py               # Main editor
 │   └── environments/
 │       └── overcooked_v3/
-│           ├── run_level_editor.py           # Launcher script ← HERE
 │           ├── layouts.py                     # Add layouts here
 │           ├── layout_utils.py               # Conversion utilities
 │           └── ...
