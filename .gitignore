@@ -17,3 +17,12 @@ outputs/
 models/
 venv/
 **/*.msgpack
+*.bak
+*.bak2
+/checkpoints/*
+/baselines/*/checkpoints/*
+/baselines/*/results/*
+/logs/*
+/logs/*/*
+/outputs/*
+/outputs/*/*
