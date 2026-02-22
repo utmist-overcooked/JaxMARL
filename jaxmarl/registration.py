@@ -30,6 +30,8 @@ from .environments import (
     OvercookedV3,
     CoinGame,
     JaxNav,
+    PredatorPreyGrid,
+    TrafficJunctionGrid,
     SUBMODULE_ENVIRONMENTS
 )
 
@@ -133,6 +135,14 @@ def make(env_id: str, **env_kwargs):
     elif env_id == "jaxnav":
         env = JaxNav(**env_kwargs)
 
+    # 10. Predator-Prey Grid (IC3Net reference)
+    elif env_id == "predator_prey_grid":
+        env = PredatorPreyGrid(**env_kwargs)
+
+    # 11. Traffic Junction Grid (IC3Net reference)
+    elif env_id == "traffic_junction_grid":
+        env = TrafficJunctionGrid(**env_kwargs)
+
     if SUBMODULE_ENVIRONMENTS:
         # 10. JaxRobotarium Environments
         if env_id == "JaxRobotarium_navigation":
@@ -186,6 +196,8 @@ registered_envs = [
     "overcooked_v3",
     "coin_game",
     "jaxnav",
+    "predator_prey_grid",
+    "traffic_junction_grid",
     "JaxRobotarium_navigation",
     "JaxRobotarium_discovery",
     "JaxRobotarium_material_transport",
