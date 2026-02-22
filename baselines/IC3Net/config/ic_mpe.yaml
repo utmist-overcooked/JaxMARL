@@ -1,23 +1,18 @@
 # IC (Independent Controller) training configuration for MPE
-
-# Environment
 ENV_NAME: "MPE_simple_spread_v3"
 ENV_KWARGS: {}
 
-# Model architecture
-BASELINE: "ic"  # IC: no communication, shared reward
+BASELINE: "ic"
 HIDDEN_DIM: 64
-RECURRENT: true  # Use LSTM (true) or feedforward (false)
-DETACH_GAP: 10  # Truncated BPTT: detach hidden state every N steps (only for recurrent)
+RECURRENT: true
+DETACH_GAP: 10
 
-# Training
 TOTAL_TIMESTEPS: 2_000_000
 NUM_ENVS: 8
 NUM_STEPS: 20
 GAMMA: 1.0
 NORMALIZE_ADVANTAGES: false
 
-# Optimizer
 LR: 0.001
 RMSPROP_ALPHA: 0.97
 RMSPROP_EPS: 1e-6
@@ -25,11 +20,11 @@ MAX_GRAD_NORM: 0.5
 VALUE_COEFF: 0.01
 ENTROPY_COEFF: 0.0
 
-# Logging and saving
 WANDB_MODE: "disabled"
 WANDB_PROJECT: "jaxmarl-ic3net"
-WANDB_NAME: "ic_mpe_spread"
+WANDB_NAME: "ic_mpe"
 SAVE_PATH: "checkpoints/ic_mpe"
+LOG_EVERY: 100
 
-# Misc
 SEED: 42
+

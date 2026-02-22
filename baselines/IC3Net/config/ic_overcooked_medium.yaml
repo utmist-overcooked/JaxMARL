@@ -1,19 +1,15 @@
-# IC3Net training configuration for Overcooked - Medium Difficulty (Quick Test)
+# IC (Independent Controller) training configuration for Overcooked (Medium - Coordination Ring)
 ENV_NAME: "overcooked"
 ENV_KWARGS:
   layout: "coord_ring"
   max_steps: 200
 
-BASELINE: "ic3net"
+BASELINE: "ic"
 HIDDEN_DIM: 128
 RECURRENT: true
 DETACH_GAP: 10
-COMM_PASSES: 1
-COMM_MODE: "avg"
-SHARE_WEIGHTS: false
-COMM_ACTION_ONE: false
 
-TOTAL_TIMESTEPS: 560_000
+TOTAL_TIMESTEPS: 20_000_000
 NUM_ENVS: 28
 NUM_STEPS: 200
 GAMMA: 0.99
@@ -26,8 +22,13 @@ MAX_GRAD_NORM: 0.5
 VALUE_COEFF: 0.5
 ENTROPY_COEFF: 0.01
 
+USE_SHAPED_REWARD: true
+SHAPED_REWARD_COEFF: 1.0
+
 WANDB_MODE: "disabled"
-SAVE_PATH: "checkpoints/ic3net_overcooked_medium"
+WANDB_PROJECT: "jaxmarl-ic3net"
+WANDB_NAME: "ic_overcooked_medium"
+SAVE_PATH: "checkpoints/ic_overcooked_medium"
+LOG_EVERY: 100
 
 SEED: 42
-

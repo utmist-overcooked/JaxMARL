@@ -1,9 +1,14 @@
-# IC3Net training configuration for MPE Simple Spread
-ENV_NAME: "MPE_simple_spread_v3"
-ENV_KWARGS: {}
+# CommNet training configuration for PredatorPrey (Hard)
+ENV_NAME: "predator_prey_grid"
+ENV_KWARGS:
+  num_agents: 10
+  dim: 20
+  vision: 1
+  max_steps: 80
+  mode: "mixed"
 
-BASELINE: "ic3net"
-HIDDEN_DIM: 64
+BASELINE: "commnet"
+HIDDEN_DIM: 128
 RECURRENT: true
 COMM_PASSES: 1
 COMM_MODE: "avg"
@@ -11,9 +16,9 @@ SHARE_WEIGHTS: false
 COMM_ACTION_ONE: false
 DETACH_GAP: 10
 
-TOTAL_TIMESTEPS: 2_000_000
-NUM_ENVS: 8
-NUM_STEPS: 20
+TOTAL_TIMESTEPS: 25_600_000
+NUM_ENVS: 16
+NUM_STEPS: 80
 GAMMA: 1.0
 NORMALIZE_ADVANTAGES: false
 
@@ -26,9 +31,8 @@ ENTROPY_COEFF: 0.0
 
 WANDB_MODE: "disabled"
 WANDB_PROJECT: "jaxmarl-ic3net"
-WANDB_NAME: "ic3net_mpe"
-SAVE_PATH: "checkpoints/ic3net_mpe"
+WANDB_NAME: "commnet_pp_hard"
+SAVE_PATH: "checkpoints/commnet_pp_hard"
 LOG_EVERY: 100
-
 SEED: 42
 

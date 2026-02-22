@@ -4,7 +4,7 @@ ENV_KWARGS: {}
 
 BASELINE: "ic3net"
 HIDDEN_DIM: 32
-RECURRENT: false  # Test feedforward
+RECURRENT: false
 COMM_PASSES: 1
 COMM_MODE: "avg"
 SHARE_WEIGHTS: false
@@ -27,3 +27,4 @@ WANDB_MODE: "disabled"
 SAVE_PATH: null
 
 SEED: 42
+

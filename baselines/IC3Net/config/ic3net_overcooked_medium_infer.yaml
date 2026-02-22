@@ -1,24 +1,22 @@
 # IC3Net LSTM inference configuration for Overcooked Medium (CoordinationRing)
-
-# Environment
 ENV_NAME: "overcooked"
 ENV_KWARGS:
   layout: "coord_ring"
   max_steps: 200
 
-# Model architecture (must match training config)
 BASELINE: "ic3net"
-HIDDEN_DIM: 128
-COMM_PASSES: 1
+HIDDEN_DIM: 256
+ENCODER_LAYERS: 2
+COMM_PASSES: 2
 COMM_MODE: "avg"
 SHARE_WEIGHTS: false
 COMM_ACTION_ONE: false
-RECURRENT: true  # Use LSTM
+RECURRENT: true
 
-# Inference settings
 MODEL_PATH: "checkpoints/ic3net_overcooked_medium/model.msgpack"
 NUM_EPISODES: 10
 MAX_STEPS: 200
+DETERMINISTIC: false
 
-# Misc
 SEED: 0
+
