@@ -29,10 +29,11 @@ class StaticObject(IntEnum):
     ITEM_CONVEYOR = 20
     PLAYER_CONVEYOR = 21
 
-    # Moving walls and buttons
+    # Moving walls, buttons, barriers, pressure plates
     MOVING_WALL = 22
     BUTTON = 23
     BARRIER = 24
+    PRESSURE_PLATE = 25
 
     @staticmethod
     def is_ingredient_pile(obj):

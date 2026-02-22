@@ -229,6 +229,18 @@ W  # AW
 WWWBWWW
 """
 
+# Pressure Plate Sample Level - step on plate to toggle multiple walls
+pressure_plate_demo = """
+WWWWWWW
+0 #_AWW
+WWWW WW
+P #_  X
+WWWW WW
+1 #_AWW
+WWWWWWW
+"""
+
+
 
 @dataclass
 class Layout:
@@ -257,6 +269,9 @@ class Layout:
 
     # Buttons: list of (y, x, linked_wall_idx, action_type) tuples
     button_info: List[Tuple[int, int, int, int]] = field(default_factory=list)
+
+    # Pressure Plates: list of (y, x, target_barrier_idx, action_type) tuples
+    pressure_plate_info: List[Tuple[int, int, int, int]] = field(default_factory=list)
 
     # Barriers: list of (y, x, active) tuples
     barrier_info: List[Tuple[int, int, bool]] = field(default_factory=list)
@@ -295,6 +310,7 @@ class Layout:
         moving_wall_bounce=None,
         button_config=None,
         barrier_config=None,
+        pressure_plate_config=None,
     ):
         """Parse a string representation of the layout.
 
@@ -328,6 +344,9 @@ class Layout:
 
             Buttons (interact to trigger linked wall action):
             !: button (linked to wall by button_config)
+
+            Pressure Plate (interact to trigger linked wall action):
+            _: pressure plate (linked to wall by button_config, triggers when agent overlaps)
 
             Barriers (togglable blocking tiles):
             #: barrier (blocks all movement when active)
@@ -365,6 +384,8 @@ class Layout:
             "B": StaticObject.PLATE_PILE,
             "P": StaticObject.POT,
             "R": StaticObject.RECIPE_INDICATOR,
+            "#": StaticObject.BARRIER,
+            "_": StaticObject.PRESSURE_PLATE,
         }
 
         # Add ingredient piles 0-9
@@ -398,9 +419,10 @@ class Layout:
         agent_positions = []
         item_conveyor_info = []
         player_conveyor_info = []
-        moving_wall_positions = []  # (y, x, direction) before bounce applied
-        button_positions = []       # (y, x)
-        barrier_positions = []      # (y, x)
+        moving_wall_positions = []      # (y, x, direction)
+        button_positions = []           # (y, x)
+        barrier_positions = []          # (y, x)
+        pressure_plate_positions = []   # (y, x)
 
         num_ingredients = 0
         includes_recipe_indicator = False
@@ -433,6 +455,9 @@ class Layout:
                 elif char == "!":
                     static_objects[r, c] = StaticObject.BUTTON
                     button_positions.append((r, c))
+                elif char == "_":
+                    static_objects[r, c] = StaticObject.PRESSURE_PLATE
+                    pressure_plate_positions.append((r, c))
                 elif char == "#":
                     static_objects[r, c] = StaticObject.BARRIER
                     barrier_positions.append((r, c))
@@ -509,6 +534,19 @@ class Layout:
             for (y, x), active in zip(barrier_positions, barrier_config)
         ]
 
+        # Build pressure plate info with config
+        if pressure_plate_config is None:
+            pressure_plate_config = [(0, ButtonAction.TOGGLE_BARRIER)] * len(pressure_plate_positions)
+        if len(pressure_plate_config) != len(pressure_plate_positions):
+            raise ValueError(
+                f"pressure_plate_config length ({len(pressure_plate_config)}) must match "
+                f"number of pressure plates ({len(pressure_plate_positions)})"
+            )
+        pressure_plate_info = [
+            (y, x, barrier_idx, action_type)
+            for (y, x), (barrier_idx, action_type) in zip(pressure_plate_positions, pressure_plate_config)
+        ]
+
         layout = Layout(
             agent_positions=agent_positions,
             static_objects=static_objects,
@@ -518,6 +556,7 @@ class Layout:
             player_conveyor_info=player_conveyor_info,
             moving_wall_info=moving_wall_info,
             button_info=button_info,
+            pressure_plate_info=pressure_plate_info,
             barrier_info=barrier_info,
         )
 
@@ -526,6 +565,7 @@ class Layout:
 
 # Pre-defined layouts
 overcooked_v3_layouts = {
+
     # Original Overcooked-AI layouts
     "cramped_room": Layout.from_string(
         cramped_room, possible_recipes=[[0, 0, 0]], swap_agents=True
@@ -582,6 +622,23 @@ overcooked_v3_layouts = {
         barrier_config=[True, True],  # Barrier starts active
         button_config=[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
     ),
+
+    # Pressure Plate Demo:
+    "pressure_plate_demo": Layout.from_string(
+        pressure_plate_demo,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,  # Barrier 0 (Top lane) - initially active
+            True,  # Barrier 1 (Middle lane) - initially active
+            True,  # Barrier 2 (Bottom lane) - initially active
+        ],
+    ),
+
     "middle_conveyor": Layout.from_string(
         middle_conveyor, possible_recipes=[[0, 0, 0]],
     ),
