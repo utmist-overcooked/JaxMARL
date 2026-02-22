@@ -16,6 +16,6 @@ jobs:
       with:
         python-version: '3.12'
     - name: Install dependencies
-      run: pip install -e .[dev]
+      run: pip install -e ".[dev,algs]"
     - name: Run tests
       run: pytest tests/
