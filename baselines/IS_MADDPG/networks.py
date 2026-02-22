@@ -1,3 +1,487 @@
+import jax
+import jax.numpy as jnp
+import flax.linen as nn
+import chex
+from typing import Tuple
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def split_other_agent_logits(flat: jnp.ndarray, num_other: int, act_dim: int) -> jnp.ndarray:
+    """Reshape flat other-agent logits into per-agent logits.
+
+    Args:
+        flat:      (B, (N-1) * act_dim)  — concatenated logits for all other agents
+        num_other: number of other agents (N-1)
+        act_dim:   number of discrete actions
+
+    Returns:
+        (B, N-1, act_dim)
+    """
+    B = flat.shape[0]
+    return flat.reshape(B, num_other, act_dim)
+
+
+def gumbel_softmax(
+    logits: jnp.ndarray,
+    key: chex.PRNGKey,
+    tau: float = 1.0,
+    hard: bool = True,
+) -> jnp.ndarray:
+    """Gumbel-softmax reparameterisation trick for discrete actions.
+
+    In soft mode (hard=False): returns a differentiable probability vector.
+    In hard mode (hard=True):  returns a one-hot vector in the forward pass,
+    but the gradient flows through the soft probabilities (straight-through
+    estimator), keeping the operation end-to-end differentiable.
+
+    Args:
+        logits: (B, act_dim)  unnormalised action scores
+        key:    JAX PRNG key consumed for Gumbel noise sampling
+        tau:    temperature — lower = more peaked / closer to argmax
+        hard:   if True, apply straight-through one-hot in forward pass
+
+    Returns:
+        (B, act_dim)  soft probabilities or hard one-hot
+    """
+    # Sample Gumbel noise: G ~ Gumbel(0,1) via the inverse-CDF trick.
+    # minval=tiny prevents log(0) which would give -inf noise.
+    u = jax.random.uniform(
+        key, logits.shape,
+        minval=jnp.finfo(jnp.float32).tiny,
+        maxval=1.0,
+    )
+    gumbel_noise = -jnp.log(-jnp.log(u))
+
+    # Perturb logits and apply temperature-scaled softmax
+    y_soft = jax.nn.softmax((logits + gumbel_noise) / tau, axis=-1)
+
+    if hard:
+        # Forward pass: hard one-hot at the argmax of y_soft
+        y_hard = jax.nn.one_hot(jnp.argmax(y_soft, axis=-1), logits.shape[-1])
+        # Straight-through trick:
+        #   value   = y_hard          (discrete, non-differentiable)
+        #   gradient = d/d(y_soft)    (continuous, differentiable)
+        # Written as stop_gradient(y_hard - y_soft) + y_soft so that:
+        #   forward:  y_soft cancels → y_hard
+        #   backward: stop_gradient term has zero gradient → gradient of y_soft passes through
+        return jax.lax.stop_gradient(y_hard - y_soft) + y_soft
+
+    return y_soft
+
+
+# ---------------------------------------------------------------------------
+# Shared constant and Dense factory
+# ---------------------------------------------------------------------------
+
+# Orthogonal gain for ReLU networks (√2 ≈ 1.414).
+# Defined as a plain Python float to avoid the Flax dataclass error that
+# occurs when a JAX array (jnp.sqrt(2)) is used as a field default.
+_SQRT2 = float(jnp.sqrt(2))
+
+
+def orthogonal_dense(features: int, gain: float = _SQRT2) -> nn.Dense:
+    """Create a Dense layer with orthogonal weight init and zero bias init.
+
+    Orthogonal initialisation preserves gradient norms through linear layers,
+    which stabilises early training. The gain scales the orthogonal matrix:
+      - √2  for hidden layers preceded by ReLU  (default)
+      - 0.01 for the final actor head (near-uniform initial policy)
+      - 1.0  for the critic value head
+    """
+    return nn.Dense(
+        features,
+        kernel_init=nn.initializers.orthogonal(gain),
+        bias_init=nn.initializers.zeros,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Building-block MLPs
+# ---------------------------------------------------------------------------
+
+class MLP(nn.Module):
+    """Single hidden-layer MLP: Linear -> ReLU -> Linear.
+
+    Used for the action predictor (predicts other agents' actions from obs)
+    and the obs predictor (predicts next obs delta).
+
+    Attributes:
+        hidden_dim: width of the hidden layer
+        out_dim:    output dimension
+        out_gain:   orthogonal init gain for the output layer (default √2)
+    """
+    hidden_dim: int
+    out_dim: int
+    out_gain: float = _SQRT2
+
+    def setup(self):
+        # setup() (not @nn.compact) is required here because this module
+        # is called inside a Python for-loop that JAX traces. Using setup()
+        # ensures parameters are created once before tracing begins.
+        self.hidden = orthogonal_dense(self.hidden_dim)
+        self.out    = orthogonal_dense(self.out_dim, self.out_gain)
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        return self.out(nn.relu(self.hidden(x)))
+
+
+class DeepMLP(nn.Module):
+    """Two hidden-layer MLP: Linear -> ReLU -> Linear -> ReLU -> Linear.
+
+    Used for the actor network. Deeper than MLP to give the policy more
+    capacity to combine observations and received messages.
+
+    Attributes:
+        hidden_dim: width of both hidden layers
+        out_dim:    output dimension (number of discrete actions)
+        out_gain:   orthogonal init gain for the final layer.
+                    Default 0.01 keeps initial logits near-uniform,
+                    encouraging exploration at the start of training.
+    """
+    hidden_dim: int
+    out_dim: int
+    out_gain: float = 0.01
+
+    def setup(self):
+        self.h1  = orthogonal_dense(self.hidden_dim)
+        self.h2  = orthogonal_dense(self.hidden_dim)
+        self.out = orthogonal_dense(self.out_dim, self.out_gain)
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        x = nn.relu(self.h1(x))
+        x = nn.relu(self.h2(x))
+        return self.out(x)
+
+
+# ---------------------------------------------------------------------------
+# Attention module
+# ---------------------------------------------------------------------------
+
+class AttentionProjection(nn.Module):
+    """Scaled dot-product attention over an imagined trajectory.
+
+    Computes a single-query attention where:
+      - Query  = projection of the received messages (what the agent cares about)
+      - Keys   = projection of each imagined (obs, action) step
+      - Values = projection of each imagined (obs, action) step
+
+    The output is a weighted sum of values — a message summarising the parts
+    of the imagined future most relevant to what other agents communicated.
+
+    Attributes:
+        hidden_dim: dimension of query and key projections
+        msg_dim:    dimension of the output message (= value projection dim)
+    """
+    hidden_dim: int
+    msg_dim: int
+
+    def setup(self):
+        self.W_Q = orthogonal_dense(self.hidden_dim)   # query projection
+        self.W_K = orthogonal_dense(self.hidden_dim)   # key   projection
+        self.W_V = orthogonal_dense(self.msg_dim)      # value projection
+
+    def __call__(
+        self,
+        msgs_flat: jnp.ndarray,            # (B, (N-1)*msg_dim)
+        imagined_trajectory: jnp.ndarray,  # (B, H, obs_dim + act_dim)
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        """
+        Returns:
+            msg_out: (B, msg_dim)   attention-weighted message
+            alpha:   (B, 1, H)     attention weights over horizon steps
+        """
+        # Project received messages to a single query vector
+        query = self.W_Q(msgs_flat)[:, None, :]        # (B, 1, hidden_dim)
+
+        # Project each imagined step to keys and values
+        keys   = self.W_K(imagined_trajectory)         # (B, H, hidden_dim)
+        values = self.W_V(imagined_trajectory)         # (B, H, msg_dim)
+
+        # Scaled dot-product attention scores
+        d_k    = keys.shape[-1]
+        scores = jnp.matmul(query, jnp.swapaxes(keys, 1, 2)) / jnp.sqrt(float(d_k))
+        # (B, 1, H) — divide by √d_k to prevent vanishing softmax gradients
+
+        alpha   = nn.softmax(scores, axis=-1)          # (B, 1, H)
+        msg_out = jnp.matmul(alpha, values).squeeze(1) # (B, msg_dim)
+
+        return msg_out, alpha
+
+
+# ---------------------------------------------------------------------------
+# Agent network (decentralised actor + message generator)
+# ---------------------------------------------------------------------------
+
+class ISAgentNet(nn.Module):
+    """Intention-Sharing agent network (decentralised execution).
+
+    Each agent runs its own copy of this network with shared parameters
+    (joint policy). At each timestep it:
+      1. Computes env action logits from (obs, received_messages).
+      2. Rolls out an imagined H-step future trajectory using learned
+         predictors for its own next obs and other agents' actions.
+      3. Attends over the imagined trajectory to produce a message
+         that summarises its intentions to other agents.
+
+    The imagined rollout uses a Python for-loop (not lax.scan) so that
+    Flax sub-module calls happen in normal tracing context. JAX unrolls
+    the loop at compile time, producing the same XLA graph as scan for
+    small horizon_H.
+
+    Attributes:
+        obs_dim:    dimension of the observation vector
+        act_dim:    number of discrete environment actions
+        msg_dim:    dimension of the continuous communication message
+        hidden_dim: width of all hidden layers
+        num_agents: total number of agents (including self), must be >= 2
+        horizon_H:  imagination horizon (number of rollout steps), must be >= 1
+    """
+    obs_dim:    int
+    act_dim:    int
+    msg_dim:    int
+    hidden_dim: int
+    num_agents: int
+    horizon_H:  int
+
+    def setup(self):
+        # Validation runs once at module construction time
+        if self.num_agents < 2:
+            raise ValueError("num_agents >= 2 required")
+        if self.horizon_H < 1:
+            raise ValueError("horizon_H >= 1 required")
+
+        # Predicts the discrete action probability for each other agent
+        # given the current imagined observation.
+        # Input:  (B, obs_dim)
+        # Output: (B, (N-1) * act_dim)
+        self.action_predictor = MLP(
+            hidden_dim=self.hidden_dim,
+            out_dim=(self.num_agents - 1) * self.act_dim,
+        )
+
+        # Predicts the change in observation (residual / delta) given
+        # current obs, own action, and other agents' predicted actions.
+        # Input:  (B, obs_dim + act_dim + (N-1)*act_dim)
+        # Output: (B, obs_dim)   — added to current obs as a residual
+        self.obs_predictor = MLP(
+            hidden_dim=self.hidden_dim,
+            out_dim=self.obs_dim,
+        )
+
+        # Policy network: maps (obs, received_msgs) -> action logits.
+        # Used both for the real action and inside the imagined rollout
+        # (soft probabilities, no Gumbel noise) so weights are shared.
+        # Input:  (B, obs_dim + (N-1)*msg_dim)
+        # Output: (B, act_dim)
+        self.actor_net = DeepMLP(
+            hidden_dim=self.hidden_dim,
+            out_dim=self.act_dim,
+            out_gain=0.01,   # near-zero init → near-uniform policy at start
+        )
+
+        # Attention module that reads the imagined trajectory and produces
+        # the outgoing communication message.
+        self.attention = AttentionProjection(
+            hidden_dim=self.hidden_dim,
+            msg_dim=self.msg_dim,
+        )
+
+    def __call__(
+        self,
+        obs: jnp.ndarray,            # (B, obs_dim)
+        received_msgs: jnp.ndarray,  # (B, N-1, msg_dim)
+        *,
+        rng: chex.PRNGKey,
+        gumbel_tau: float = 1.0,
+        gumbel_hard: bool = True,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """Forward pass: action selection + message generation.
+
+        Args:
+            obs:           current observation for this agent
+            received_msgs: messages received from all other agents last step
+            rng:           PRNG key (consumed for Gumbel sampling)
+            gumbel_tau:    Gumbel temperature (lower = harder / more greedy)
+            gumbel_hard:   if True, straight-through one-hot action
+
+        Returns:
+            action_logits: (B, act_dim)   raw logits (used for loss)
+            action_onehot: (B, act_dim)   hard or soft action sample
+            message_out:   (B, msg_dim)   outgoing communication message
+            alpha:         (B, 1, H)      attention weights over horizon
+        """
+        B = obs.shape[0]
+        chex.assert_shape(obs,           (B, self.obs_dim))
+        chex.assert_shape(received_msgs, (B, self.num_agents - 1, self.msg_dim))
+
+        # Flatten received messages for use as actor input
+        total_msg_dim = (self.num_agents - 1) * self.msg_dim
+        msgs_flat = received_msgs.reshape(B, total_msg_dim)  # (B, (N-1)*msg_dim)
+
+        # ------------------------------------------------------------------
+        # Step 1: Compute current env action
+        # ------------------------------------------------------------------
+
+        # Concatenate obs with flattened received messages, then get logits
+        action_logits = self.actor_net(jnp.concatenate([obs, msgs_flat], axis=-1))
+
+        # Split the RNG: one key for the real Gumbel action, one for rollout
+        key_action, key_rollout = jax.random.split(rng)
+
+        # Sample action via Gumbel-softmax (hard one-hot in forward pass)
+        action_onehot = gumbel_softmax(
+            action_logits, key_action, tau=gumbel_tau, hard=gumbel_hard
+        )
+
+        # ------------------------------------------------------------------
+        # Step 2: Imagined H-step rollout to build the trajectory τ^i
+        #
+        # τ^i = [(ô_t, â_t), (ô_{t+1}, â_{t+1}), ..., (ô_{t+H-1}, â_{t+H-1})]
+        #
+        # Each future step is predicted using:
+        #   - action_predictor:  other agents' next actions given ô
+        #   - obs_predictor:     next obs delta given (ô, â, â_others)
+        #   - actor_net:         own soft action at the predicted next obs
+        #
+        # msgs_flat is kept fixed throughout (messages from the *current*
+        # timestep are used as context for the whole rollout, matching the
+        # original paper's formulation).
+        #
+        # We use a Python for-loop rather than lax.scan because Flax sub-
+        # module calls inside lax.scan trigger scope/parameter allocation
+        # errors. JAX unrolls the loop at trace time, producing an identical
+        # XLA computation graph for small horizon_H.
+        # ------------------------------------------------------------------
+
+        # Initialise the trajectory list with the current (real) step
+        imagined_steps = [jnp.concatenate([obs, action_onehot], axis=-1)]  # [(B, obs+act)]
+
+        hat_o = obs           # imagined obs  at step h
+        hat_a = action_onehot # imagined action at step h
+        key   = key_rollout
+
+        for _ in range(self.horizon_H - 1):
+            # Advance the PRNG (subkey unused here but kept for reproducibility
+            # if stochastic elements are added to the rollout later)
+            key, subkey = jax.random.split(key)
+
+            # --- Predict other agents' actions from current imagined obs ---
+            pred_other_logits = self.action_predictor(hat_o)   # (B, (N-1)*act_dim)
+            pred_other_probs  = nn.softmax(
+                pred_other_logits.reshape(B, self.num_agents - 1, self.act_dim),
+                axis=-1,
+            ).reshape(B, -1)                                    # (B, (N-1)*act_dim)
+
+            # --- Predict next obs as current obs + residual delta ---
+            obs_in     = jnp.concatenate([hat_o, hat_a, pred_other_probs], axis=-1)
+            delta_o    = self.obs_predictor(obs_in)             # (B, obs_dim)
+            hat_o_next = hat_o + delta_o                        # residual connection
+
+            # --- Compute own soft action at predicted next obs ---
+            # No Gumbel noise here: we want smooth, differentiable probabilities
+            # so that gradients flow back through the entire rollout.
+            actor_in    = jnp.concatenate([hat_o_next, msgs_flat], axis=-1)
+            next_logits = self.actor_net(actor_in)
+            hat_a_next  = nn.softmax(next_logits, axis=-1)      # (B, act_dim)
+
+            imagined_steps.append(jnp.concatenate([hat_o_next, hat_a_next], axis=-1))
+            hat_o = hat_o_next
+            hat_a = hat_a_next
+
+        # Stack list of H tensors (B, obs+act) into (B, H, obs+act)
+        imagined_trajectory = jnp.stack(imagined_steps, axis=1)
+
+        # ------------------------------------------------------------------
+        # Step 3: Attend over imagined trajectory to produce message
+        #
+        # The query is derived from received messages (what others said),
+        # so the agent selects which parts of its imagined future are most
+        # relevant to the information it has received — and communicates that.
+        # ------------------------------------------------------------------
+        message_out, alpha = self.attention(msgs_flat, imagined_trajectory)
+
+        return action_logits, action_onehot, message_out, alpha
+
+
+# ---------------------------------------------------------------------------
+# Centralised critic (used only during training, not execution)
+# ---------------------------------------------------------------------------
+
+class ISCriticNet(nn.Module):
+    """Centralised critic shared across all agents (CTDE).
+
+    A single critic network estimates Q-values for any agent by conditioning
+    on a one-hot agent identity vector appended to the global state. This is
+    more parameter-efficient than one critic per agent and ensures a
+    consistent value function across the team.
+
+    Global state concatenation order:
+        [obs_all | prev_msgs_all | actions_all | msgs_all | agent_id_onehot]
+         (N*obs)   (N*msg)         (N*act)       (N*msg)    (N,)
+
+    Attributes:
+        num_agents: total number of agents N
+        obs_dim:    per-agent observation dimension
+        act_dim:    per-agent action dimension (one-hot)
+        msg_dim:    per-agent message dimension
+        hidden_dim: width of hidden layers (default 256)
+    """
+    num_agents: int
+    obs_dim:    int
+    act_dim:    int
+    msg_dim:    int
+    hidden_dim: int = 256
+
+    @nn.compact
+    def __call__(
+        self,
+        obs_all:       jnp.ndarray,  # (B, N, obs_dim)
+        prev_msgs_all: jnp.ndarray,  # (B, N, msg_dim)
+        actions_all:   jnp.ndarray,  # (B, N, act_dim)
+        msgs_all:      jnp.ndarray,  # (B, N, msg_dim)
+        agent_id:      jnp.ndarray,  # (B,)             integer agent index in [0, N)
+    ) -> jnp.ndarray:                # (B, 1)            scalar Q-value for that agent
+        B = obs_all.shape[0]
+
+        chex.assert_shape(obs_all,       (B, self.num_agents, self.obs_dim))
+        chex.assert_shape(prev_msgs_all, (B, self.num_agents, self.msg_dim))
+        chex.assert_shape(actions_all,   (B, self.num_agents, self.act_dim))
+        chex.assert_shape(msgs_all,      (B, self.num_agents, self.msg_dim))
+        chex.assert_shape(agent_id,      (B,))
+
+        # One-hot encode the agent index so the critic can condition on identity.
+        # This is what lets one network serve all N agents without ambiguity.
+        agent_onehot = jax.nn.one_hot(agent_id, self.num_agents)  # (B, N)
+
+        # Build global state vector, same for all agents, plus identity
+        x = jnp.concatenate([
+            obs_all.reshape(B, -1),        # (B, N*obs_dim)
+            prev_msgs_all.reshape(B, -1),  # (B, N*msg_dim)
+            actions_all.reshape(B, -1),    # (B, N*act_dim)
+            msgs_all.reshape(B, -1),       # (B, N*msg_dim)
+            agent_onehot,                  # (B, N)
+        ], axis=-1)
+
+        for _ in range(2):
+            x = nn.relu(nn.Dense(
+                self.hidden_dim,
+                kernel_init=nn.initializers.orthogonal(jnp.sqrt(2)),
+                bias_init=nn.initializers.zeros,
+            )(x))
+
+        q = nn.Dense(
+            1,
+            kernel_init=nn.initializers.orthogonal(1.0),
+            bias_init=nn.initializers.zeros,
+        )(x)
+
+        return q  # (B, 1)
+    
+
+
 # import jax
 # import jax.numpy as jnp
 # import flax.linen as nn
@@ -547,487 +1031,3 @@
 #         message_out, alpha = self.attention(msgs_flat, imagined_trajectory)
 
 #         return action_logits, action_onehot, message_out, alpha
-
-
-import jax
-import jax.numpy as jnp
-import flax.linen as nn
-import chex
-from typing import Tuple
-
-
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
-
-def split_other_agent_logits(flat: jnp.ndarray, num_other: int, act_dim: int) -> jnp.ndarray:
-    """Reshape flat other-agent logits into per-agent logits.
-
-    Args:
-        flat:      (B, (N-1) * act_dim)  — concatenated logits for all other agents
-        num_other: number of other agents (N-1)
-        act_dim:   number of discrete actions
-
-    Returns:
-        (B, N-1, act_dim)
-    """
-    B = flat.shape[0]
-    return flat.reshape(B, num_other, act_dim)
-
-
-def gumbel_softmax(
-    logits: jnp.ndarray,
-    key: chex.PRNGKey,
-    tau: float = 1.0,
-    hard: bool = True,
-) -> jnp.ndarray:
-    """Gumbel-softmax reparameterisation trick for discrete actions.
-
-    In soft mode (hard=False): returns a differentiable probability vector.
-    In hard mode (hard=True):  returns a one-hot vector in the forward pass,
-    but the gradient flows through the soft probabilities (straight-through
-    estimator), keeping the operation end-to-end differentiable.
-
-    Args:
-        logits: (B, act_dim)  unnormalised action scores
-        key:    JAX PRNG key consumed for Gumbel noise sampling
-        tau:    temperature — lower = more peaked / closer to argmax
-        hard:   if True, apply straight-through one-hot in forward pass
-
-    Returns:
-        (B, act_dim)  soft probabilities or hard one-hot
-    """
-    # Sample Gumbel noise: G ~ Gumbel(0,1) via the inverse-CDF trick.
-    # minval=tiny prevents log(0) which would give -inf noise.
-    u = jax.random.uniform(
-        key, logits.shape,
-        minval=jnp.finfo(jnp.float32).tiny,
-        maxval=1.0,
-    )
-    gumbel_noise = -jnp.log(-jnp.log(u))
-
-    # Perturb logits and apply temperature-scaled softmax
-    y_soft = jax.nn.softmax((logits + gumbel_noise) / tau, axis=-1)
-
-    if hard:
-        # Forward pass: hard one-hot at the argmax of y_soft
-        y_hard = jax.nn.one_hot(jnp.argmax(y_soft, axis=-1), logits.shape[-1])
-        # Straight-through trick:
-        #   value   = y_hard          (discrete, non-differentiable)
-        #   gradient = d/d(y_soft)    (continuous, differentiable)
-        # Written as stop_gradient(y_hard - y_soft) + y_soft so that:
-        #   forward:  y_soft cancels → y_hard
-        #   backward: stop_gradient term has zero gradient → gradient of y_soft passes through
-        return jax.lax.stop_gradient(y_hard - y_soft) + y_soft
-
-    return y_soft
-
-
-# ---------------------------------------------------------------------------
-# Shared constant and Dense factory
-# ---------------------------------------------------------------------------
-
-# Orthogonal gain for ReLU networks (√2 ≈ 1.414).
-# Defined as a plain Python float to avoid the Flax dataclass error that
-# occurs when a JAX array (jnp.sqrt(2)) is used as a field default.
-_SQRT2 = float(jnp.sqrt(2))
-
-
-def orthogonal_dense(features: int, gain: float = _SQRT2) -> nn.Dense:
-    """Create a Dense layer with orthogonal weight init and zero bias init.
-
-    Orthogonal initialisation preserves gradient norms through linear layers,
-    which stabilises early training. The gain scales the orthogonal matrix:
-      - √2  for hidden layers preceded by ReLU  (default)
-      - 0.01 for the final actor head (near-uniform initial policy)
-      - 1.0  for the critic value head
-    """
-    return nn.Dense(
-        features,
-        kernel_init=nn.initializers.orthogonal(gain),
-        bias_init=nn.initializers.zeros,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Building-block MLPs
-# ---------------------------------------------------------------------------
-
-class MLP(nn.Module):
-    """Single hidden-layer MLP: Linear -> ReLU -> Linear.
-
-    Used for the action predictor (predicts other agents' actions from obs)
-    and the obs predictor (predicts next obs delta).
-
-    Attributes:
-        hidden_dim: width of the hidden layer
-        out_dim:    output dimension
-        out_gain:   orthogonal init gain for the output layer (default √2)
-    """
-    hidden_dim: int
-    out_dim: int
-    out_gain: float = _SQRT2
-
-    def setup(self):
-        # setup() (not @nn.compact) is required here because this module
-        # is called inside a Python for-loop that JAX traces. Using setup()
-        # ensures parameters are created once before tracing begins.
-        self.hidden = orthogonal_dense(self.hidden_dim)
-        self.out    = orthogonal_dense(self.out_dim, self.out_gain)
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        return self.out(nn.relu(self.hidden(x)))
-
-
-class DeepMLP(nn.Module):
-    """Two hidden-layer MLP: Linear -> ReLU -> Linear -> ReLU -> Linear.
-
-    Used for the actor network. Deeper than MLP to give the policy more
-    capacity to combine observations and received messages.
-
-    Attributes:
-        hidden_dim: width of both hidden layers
-        out_dim:    output dimension (number of discrete actions)
-        out_gain:   orthogonal init gain for the final layer.
-                    Default 0.01 keeps initial logits near-uniform,
-                    encouraging exploration at the start of training.
-    """
-    hidden_dim: int
-    out_dim: int
-    out_gain: float = 0.01
-
-    def setup(self):
-        self.h1  = orthogonal_dense(self.hidden_dim)
-        self.h2  = orthogonal_dense(self.hidden_dim)
-        self.out = orthogonal_dense(self.out_dim, self.out_gain)
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        x = nn.relu(self.h1(x))
-        x = nn.relu(self.h2(x))
-        return self.out(x)
-
-
-# ---------------------------------------------------------------------------
-# Attention module
-# ---------------------------------------------------------------------------
-
-class AttentionProjection(nn.Module):
-    """Scaled dot-product attention over an imagined trajectory.
-
-    Computes a single-query attention where:
-      - Query  = projection of the received messages (what the agent cares about)
-      - Keys   = projection of each imagined (obs, action) step
-      - Values = projection of each imagined (obs, action) step
-
-    The output is a weighted sum of values — a message summarising the parts
-    of the imagined future most relevant to what other agents communicated.
-
-    Attributes:
-        hidden_dim: dimension of query and key projections
-        msg_dim:    dimension of the output message (= value projection dim)
-    """
-    hidden_dim: int
-    msg_dim: int
-
-    def setup(self):
-        self.W_Q = orthogonal_dense(self.hidden_dim)   # query projection
-        self.W_K = orthogonal_dense(self.hidden_dim)   # key   projection
-        self.W_V = orthogonal_dense(self.msg_dim)      # value projection
-
-    def __call__(
-        self,
-        msgs_flat: jnp.ndarray,            # (B, (N-1)*msg_dim)
-        imagined_trajectory: jnp.ndarray,  # (B, H, obs_dim + act_dim)
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        """
-        Returns:
-            msg_out: (B, msg_dim)   attention-weighted message
-            alpha:   (B, 1, H)     attention weights over horizon steps
-        """
-        # Project received messages to a single query vector
-        query = self.W_Q(msgs_flat)[:, None, :]        # (B, 1, hidden_dim)
-
-        # Project each imagined step to keys and values
-        keys   = self.W_K(imagined_trajectory)         # (B, H, hidden_dim)
-        values = self.W_V(imagined_trajectory)         # (B, H, msg_dim)
-
-        # Scaled dot-product attention scores
-        d_k    = keys.shape[-1]
-        scores = jnp.matmul(query, jnp.swapaxes(keys, 1, 2)) / jnp.sqrt(float(d_k))
-        # (B, 1, H) — divide by √d_k to prevent vanishing softmax gradients
-
-        alpha   = nn.softmax(scores, axis=-1)          # (B, 1, H)
-        msg_out = jnp.matmul(alpha, values).squeeze(1) # (B, msg_dim)
-
-        return msg_out, alpha
-
-
-# ---------------------------------------------------------------------------
-# Agent network (decentralised actor + message generator)
-# ---------------------------------------------------------------------------
-
-class ISAgentNet(nn.Module):
-    """Intention-Sharing agent network (decentralised execution).
-
-    Each agent runs its own copy of this network with shared parameters
-    (joint policy). At each timestep it:
-      1. Computes env action logits from (obs, received_messages).
-      2. Rolls out an imagined H-step future trajectory using learned
-         predictors for its own next obs and other agents' actions.
-      3. Attends over the imagined trajectory to produce a message
-         that summarises its intentions to other agents.
-
-    The imagined rollout uses a Python for-loop (not lax.scan) so that
-    Flax sub-module calls happen in normal tracing context. JAX unrolls
-    the loop at compile time, producing the same XLA graph as scan for
-    small horizon_H.
-
-    Attributes:
-        obs_dim:    dimension of the observation vector
-        act_dim:    number of discrete environment actions
-        msg_dim:    dimension of the continuous communication message
-        hidden_dim: width of all hidden layers
-        num_agents: total number of agents (including self), must be >= 2
-        horizon_H:  imagination horizon (number of rollout steps), must be >= 1
-    """
-    obs_dim:    int
-    act_dim:    int
-    msg_dim:    int
-    hidden_dim: int
-    num_agents: int
-    horizon_H:  int
-
-    def setup(self):
-        # Validation runs once at module construction time
-        if self.num_agents < 2:
-            raise ValueError("num_agents >= 2 required")
-        if self.horizon_H < 1:
-            raise ValueError("horizon_H >= 1 required")
-
-        # Predicts the discrete action probability for each other agent
-        # given the current imagined observation.
-        # Input:  (B, obs_dim)
-        # Output: (B, (N-1) * act_dim)
-        self.action_predictor = MLP(
-            hidden_dim=self.hidden_dim,
-            out_dim=(self.num_agents - 1) * self.act_dim,
-        )
-
-        # Predicts the change in observation (residual / delta) given
-        # current obs, own action, and other agents' predicted actions.
-        # Input:  (B, obs_dim + act_dim + (N-1)*act_dim)
-        # Output: (B, obs_dim)   — added to current obs as a residual
-        self.obs_predictor = MLP(
-            hidden_dim=self.hidden_dim,
-            out_dim=self.obs_dim,
-        )
-
-        # Policy network: maps (obs, received_msgs) -> action logits.
-        # Used both for the real action and inside the imagined rollout
-        # (soft probabilities, no Gumbel noise) so weights are shared.
-        # Input:  (B, obs_dim + (N-1)*msg_dim)
-        # Output: (B, act_dim)
-        self.actor_net = DeepMLP(
-            hidden_dim=self.hidden_dim,
-            out_dim=self.act_dim,
-            out_gain=0.01,   # near-zero init → near-uniform policy at start
-        )
-
-        # Attention module that reads the imagined trajectory and produces
-        # the outgoing communication message.
-        self.attention = AttentionProjection(
-            hidden_dim=self.hidden_dim,
-            msg_dim=self.msg_dim,
-        )
-
-    def __call__(
-        self,
-        obs: jnp.ndarray,            # (B, obs_dim)
-        received_msgs: jnp.ndarray,  # (B, N-1, msg_dim)
-        *,
-        rng: chex.PRNGKey,
-        gumbel_tau: float = 1.0,
-        gumbel_hard: bool = True,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        """Forward pass: action selection + message generation.
-
-        Args:
-            obs:           current observation for this agent
-            received_msgs: messages received from all other agents last step
-            rng:           PRNG key (consumed for Gumbel sampling)
-            gumbel_tau:    Gumbel temperature (lower = harder / more greedy)
-            gumbel_hard:   if True, straight-through one-hot action
-
-        Returns:
-            action_logits: (B, act_dim)   raw logits (used for loss)
-            action_onehot: (B, act_dim)   hard or soft action sample
-            message_out:   (B, msg_dim)   outgoing communication message
-            alpha:         (B, 1, H)      attention weights over horizon
-        """
-        B = obs.shape[0]
-        chex.assert_shape(obs,           (B, self.obs_dim))
-        chex.assert_shape(received_msgs, (B, self.num_agents - 1, self.msg_dim))
-
-        # Flatten received messages for use as actor input
-        total_msg_dim = (self.num_agents - 1) * self.msg_dim
-        msgs_flat = received_msgs.reshape(B, total_msg_dim)  # (B, (N-1)*msg_dim)
-
-        # ------------------------------------------------------------------
-        # Step 1: Compute current env action
-        # ------------------------------------------------------------------
-
-        # Concatenate obs with flattened received messages, then get logits
-        action_logits = self.actor_net(jnp.concatenate([obs, msgs_flat], axis=-1))
-
-        # Split the RNG: one key for the real Gumbel action, one for rollout
-        key_action, key_rollout = jax.random.split(rng)
-
-        # Sample action via Gumbel-softmax (hard one-hot in forward pass)
-        action_onehot = gumbel_softmax(
-            action_logits, key_action, tau=gumbel_tau, hard=gumbel_hard
-        )
-
-        # ------------------------------------------------------------------
-        # Step 2: Imagined H-step rollout to build the trajectory τ^i
-        #
-        # τ^i = [(ô_t, â_t), (ô_{t+1}, â_{t+1}), ..., (ô_{t+H-1}, â_{t+H-1})]
-        #
-        # Each future step is predicted using:
-        #   - action_predictor:  other agents' next actions given ô
-        #   - obs_predictor:     next obs delta given (ô, â, â_others)
-        #   - actor_net:         own soft action at the predicted next obs
-        #
-        # msgs_flat is kept fixed throughout (messages from the *current*
-        # timestep are used as context for the whole rollout, matching the
-        # original paper's formulation).
-        #
-        # We use a Python for-loop rather than lax.scan because Flax sub-
-        # module calls inside lax.scan trigger scope/parameter allocation
-        # errors. JAX unrolls the loop at trace time, producing an identical
-        # XLA computation graph for small horizon_H.
-        # ------------------------------------------------------------------
-
-        # Initialise the trajectory list with the current (real) step
-        imagined_steps = [jnp.concatenate([obs, action_onehot], axis=-1)]  # [(B, obs+act)]
-
-        hat_o = obs           # imagined obs  at step h
-        hat_a = action_onehot # imagined action at step h
-        key   = key_rollout
-
-        for _ in range(self.horizon_H - 1):
-            # Advance the PRNG (subkey unused here but kept for reproducibility
-            # if stochastic elements are added to the rollout later)
-            key, subkey = jax.random.split(key)
-
-            # --- Predict other agents' actions from current imagined obs ---
-            pred_other_logits = self.action_predictor(hat_o)   # (B, (N-1)*act_dim)
-            pred_other_probs  = nn.softmax(
-                pred_other_logits.reshape(B, self.num_agents - 1, self.act_dim),
-                axis=-1,
-            ).reshape(B, -1)                                    # (B, (N-1)*act_dim)
-
-            # --- Predict next obs as current obs + residual delta ---
-            obs_in     = jnp.concatenate([hat_o, hat_a, pred_other_probs], axis=-1)
-            delta_o    = self.obs_predictor(obs_in)             # (B, obs_dim)
-            hat_o_next = hat_o + delta_o                        # residual connection
-
-            # --- Compute own soft action at predicted next obs ---
-            # No Gumbel noise here: we want smooth, differentiable probabilities
-            # so that gradients flow back through the entire rollout.
-            actor_in    = jnp.concatenate([hat_o_next, msgs_flat], axis=-1)
-            next_logits = self.actor_net(actor_in)
-            hat_a_next  = nn.softmax(next_logits, axis=-1)      # (B, act_dim)
-
-            imagined_steps.append(jnp.concatenate([hat_o_next, hat_a_next], axis=-1))
-            hat_o = hat_o_next
-            hat_a = hat_a_next
-
-        # Stack list of H tensors (B, obs+act) into (B, H, obs+act)
-        imagined_trajectory = jnp.stack(imagined_steps, axis=1)
-
-        # ------------------------------------------------------------------
-        # Step 3: Attend over imagined trajectory to produce message
-        #
-        # The query is derived from received messages (what others said),
-        # so the agent selects which parts of its imagined future are most
-        # relevant to the information it has received — and communicates that.
-        # ------------------------------------------------------------------
-        message_out, alpha = self.attention(msgs_flat, imagined_trajectory)
-
-        return action_logits, action_onehot, message_out, alpha
-
-
-# ---------------------------------------------------------------------------
-# Centralised critic (used only during training, not execution)
-# ---------------------------------------------------------------------------
-
-class ISCriticNet(nn.Module):
-    """Centralised critic shared across all agents (CTDE).
-
-    A single critic network estimates Q-values for any agent by conditioning
-    on a one-hot agent identity vector appended to the global state. This is
-    more parameter-efficient than one critic per agent and ensures a
-    consistent value function across the team.
-
-    Global state concatenation order:
-        [obs_all | prev_msgs_all | actions_all | msgs_all | agent_id_onehot]
-         (N*obs)   (N*msg)         (N*act)       (N*msg)    (N,)
-
-    Attributes:
-        num_agents: total number of agents N
-        obs_dim:    per-agent observation dimension
-        act_dim:    per-agent action dimension (one-hot)
-        msg_dim:    per-agent message dimension
-        hidden_dim: width of hidden layers (default 256)
-    """
-    num_agents: int
-    obs_dim:    int
-    act_dim:    int
-    msg_dim:    int
-    hidden_dim: int = 256
-
-    @nn.compact
-    def __call__(
-        self,
-        obs_all:       jnp.ndarray,  # (B, N, obs_dim)
-        prev_msgs_all: jnp.ndarray,  # (B, N, msg_dim)
-        actions_all:   jnp.ndarray,  # (B, N, act_dim)
-        msgs_all:      jnp.ndarray,  # (B, N, msg_dim)
-        agent_id:      jnp.ndarray,  # (B,)             integer agent index in [0, N)
-    ) -> jnp.ndarray:                # (B, 1)            scalar Q-value for that agent
-        B = obs_all.shape[0]
-
-        chex.assert_shape(obs_all,       (B, self.num_agents, self.obs_dim))
-        chex.assert_shape(prev_msgs_all, (B, self.num_agents, self.msg_dim))
-        chex.assert_shape(actions_all,   (B, self.num_agents, self.act_dim))
-        chex.assert_shape(msgs_all,      (B, self.num_agents, self.msg_dim))
-        chex.assert_shape(agent_id,      (B,))
-
-        # One-hot encode the agent index so the critic can condition on identity.
-        # This is what lets one network serve all N agents without ambiguity.
-        agent_onehot = jax.nn.one_hot(agent_id, self.num_agents)  # (B, N)
-
-        # Build global state vector, same for all agents, plus identity
-        x = jnp.concatenate([
-            obs_all.reshape(B, -1),        # (B, N*obs_dim)
-            prev_msgs_all.reshape(B, -1),  # (B, N*msg_dim)
-            actions_all.reshape(B, -1),    # (B, N*act_dim)
-            msgs_all.reshape(B, -1),       # (B, N*msg_dim)
-            agent_onehot,                  # (B, N)
-        ], axis=-1)
-
-        for _ in range(2):
-            x = nn.relu(nn.Dense(
-                self.hidden_dim,
-                kernel_init=nn.initializers.orthogonal(jnp.sqrt(2)),
-                bias_init=nn.initializers.zeros,
-            )(x))
-
-        q = nn.Dense(
-            1,
-            kernel_init=nn.initializers.orthogonal(1.0),
-            bias_init=nn.initializers.zeros,
-        )(x)
-
-        return q  # (B, 1)
-    
