@@ -32,6 +32,8 @@ class TrainingMonitor:
         self._first_seed_seen: Optional[int] = None
         self._current_metrics: Dict[str, Any] = {}
         self._start_time: Optional[float] = None
+        self._last_time: Optional[float] = None
+        self._last_env_step: Optional[int] = None
         self._live = None
         self._progress = None
         self._task_id = None
@@ -91,12 +93,17 @@ class TrainingMonitor:
         if not self._should_track(seed):
             return
 
-        # Compute SPS from env_step if available
-        if self._start_time is not None and "env_step" in metrics:
-            elapsed = time.time() - self._start_time
-            if elapsed > 0:
-                sps = int(metrics["env_step"]) / elapsed
-                metrics = {**metrics, "SPS": sps}
+        # Compute instantaneous SPS from env_step delta
+        if "env_step" in metrics:
+            now = time.time()
+            env_step = int(metrics["env_step"])
+            if self._last_time is not None and self._last_env_step is not None:
+                dt = now - self._last_time
+                if dt > 0:
+                    sps = (env_step - self._last_env_step) / dt
+                    metrics = {**metrics, "SPS": sps}
+            self._last_time = now
+            self._last_env_step = env_step
 
         self._current_metrics = metrics
         self._progress.update(self._task_id, completed=step)

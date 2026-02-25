@@ -1,4 +1,11 @@
+"""
+IPPO (Independent PPO) with RNN + CNN for Overcooked V3.
+Based on ippo_rnn_overcooked_v2.py, adapted for the V3 environment
+which adds pot burning, order queues, and conveyor belts.
+"""
+
 import jax
+import jax.api_util
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
@@ -7,14 +14,13 @@ from flax.linen.initializers import constant, orthogonal
 from typing import Callable, Sequence, NamedTuple, Any, Dict
 from flax.training.train_state import TrainState
 import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 import jaxmarl
-from jaxmarl.wrappers.baselines import LogWrapper, OvercookedV2LogWrapper
-from jaxmarl.environments import overcooked_v2_layouts
-# from jaxmarl.viz.overcooked_v2_visualizer import OvercookedV2Visualizer
+from jaxmarl.wrappers.baselines import LogWrapper
+from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
+from jaxmarl.environments.overcooked_v3.common import DynamicObject
 import hydra
 from omegaconf import OmegaConf
-from datetime import datetime
+import copy
 import os
 import sys
 import wandb
@@ -54,7 +60,6 @@ class ScannedRNN(nn.Module):
 
     @staticmethod
     def initialize_carry(batch_size, hidden_size):
-        # Use a dummy key since the default state init fn is just zeros.
         cell = nn.GRUCell(features=hidden_size)
         return cell.initialize_carry(jax.random.PRNGKey(0), (batch_size, hidden_size))
 
@@ -131,8 +136,6 @@ class ActorCriticRNN(nn.Module):
     def __call__(self, hidden, x):
         obs, dones = x
 
-        embedding = obs
-
         if self.config["ACTIVATION"] == "relu":
             activation = nn.relu
         else:
@@ -142,7 +145,7 @@ class ActorCriticRNN(nn.Module):
             output_size=self.config["GRU_HIDDEN_DIM"],
             activation=activation,
         )
-        embedding = jax.vmap(embed_model)(embedding)
+        embedding = jax.vmap(embed_model)(obs)
 
         embedding = nn.LayerNorm()(embedding)
 
@@ -174,39 +177,6 @@ class ActorCriticRNN(nn.Module):
         return hidden, pi, jnp.squeeze(critic, axis=-1)
 
 
-class ActorCritic(nn.Module):
-    action_dim: Sequence[int]
-    activation: str = "tanh"
-
-    @nn.compact
-    def __call__(self, x):
-        if self.activation == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-
-        embedding = CNN(self.activation)(x)
-
-        actor_mean = nn.Dense(
-            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(embedding)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(
-            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
-        )(embedding)
-        pi = distrax.Categorical(logits=actor_mean)
-
-        critic = nn.Dense(
-            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(embedding)
-        critic = activation(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
-            critic
-        )
-
-        return pi, jnp.squeeze(critic, axis=-1)
-
-
 class Transition(NamedTuple):
     done: jnp.ndarray
     action: jnp.ndarray
@@ -215,6 +185,7 @@ class Transition(NamedTuple):
     log_prob: jnp.ndarray
     obs: jnp.ndarray
     info: jnp.ndarray
+
 
 def batchify(x: dict, agent_list, num_actors):
     x = jnp.stack([x[a] for a in agent_list])
@@ -227,7 +198,7 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
 
 
 def make_train(config, monitor=None):
-    env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
+    env = OvercookedV3(**config["ENV_KWARGS"])
 
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
     config["NUM_UPDATES"] = (
@@ -237,7 +208,7 @@ def make_train(config, monitor=None):
         config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
 
-    env = OvercookedV2LogWrapper(env, replace_info=False)
+    env = LogWrapper(env, replace_info=False)
 
     def create_learning_rate_fn():
         base_learning_rate = config["LR"]
@@ -256,10 +227,6 @@ def make_train(config, monitor=None):
             transition_steps=warmup_steps * steps_per_epoch,
         )
         cosine_epochs = max(update_steps - warmup_steps, 1)
-
-        print("Update steps: ", update_steps)
-        print("Warmup epochs: ", warmup_steps)
-        print("Cosine epochs: ", cosine_epochs)
 
         cosine_fn = optax.cosine_decay_schedule(
             init_value=base_learning_rate, decay_steps=cosine_epochs * steps_per_epoch
@@ -332,7 +299,6 @@ def make_train(config, monitor=None):
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
 
-                # obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
                 obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
                     -1, *env.observation_space().shape
                 )
@@ -619,21 +585,25 @@ def make_train(config, monitor=None):
 
 
 @hydra.main(
-    version_base=None, config_path="config", config_name="ippo_rnn_overcooked_v2"
+    version_base=None, config_path="config", config_name="ippo_rnn_overcooked_v3"
 )
 def main(config):
-    config = OmegaConf.to_container(config)
+    config = OmegaConf.to_container(config, resolve=True)
 
     layout_name = config["ENV_KWARGS"]["layout"]
     num_seeds = config["NUM_SEEDS"]
 
+    wandb_dir = config["WANDB_DIR"]
+    os.makedirs(wandb_dir, exist_ok=True)
+
     wandb.init(
+        dir=wandb_dir,
         entity=config["ENTITY"],
         project=config["PROJECT"],
-        tags=["IPPO", "RNN", "OvercookedV2"],
-        config=config,
+        tags=["IPPO", "RNN", "OvercookedV3"],
+        config=copy.deepcopy(config),
         mode=config["WANDB_MODE"],
-        name=f"ippo_rnn_overcooked_v2_{layout_name}",
+        name=f"ippo_rnn_overcooked_v3_{layout_name}",
     )
 
     num_updates = int(
@@ -645,7 +615,7 @@ def main(config):
         monitor = TrainingMonitor(
             total_updates=num_updates,
             config_dict={
-                "env": config["ENV_NAME"],
+                "env": "overcooked_v3",
                 "layout": layout_name,
                 "total_timesteps": int(config["TOTAL_TIMESTEPS"]),
                 "num_updates": num_updates,
@@ -654,7 +624,7 @@ def main(config):
                 "lr": config["LR"],
                 "gamma": config["GAMMA"],
             },
-            title=f"IPPO-RNN - OvercookedV2 ({layout_name})",
+            title=f"IPPO-RNN - OvercookedV3 ({layout_name})",
         )
 
     with jax.disable_jit(False):
@@ -666,6 +636,27 @@ def main(config):
                 out = jax.block_until_ready(jax.vmap(train_jit)(rngs))
         else:
             out = jax.vmap(train_jit)(rngs)
+
+    # Save model params
+    from jaxmarl.wrappers.baselines import save_params
+
+    save_dir = os.path.join(wandb_dir, "models")
+    os.makedirs(save_dir, exist_ok=True)
+
+    model_state = out["runner_state"][0]
+    OmegaConf.save(
+        config,
+        os.path.join(save_dir, f"ippo_rnn_overcooked_v3_{layout_name}_seed{config['SEED']}_config.yaml"),
+    )
+
+    for i, rng in enumerate(rngs):
+        params = jax.tree.map(lambda x: x[i], model_state.params)
+        save_path = os.path.join(
+            save_dir,
+            f"ippo_rnn_overcooked_v3_{layout_name}_seed{config['SEED']}_vmap{i}.safetensors",
+        )
+        save_params(params, save_path)
+        print(f"Saved params to {save_path}")
 
 
 if __name__ == "__main__":

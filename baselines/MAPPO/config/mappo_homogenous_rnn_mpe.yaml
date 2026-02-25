@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_homogenous_rnn_mpe/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 "LR": 2e-3
 "NUM_ENVS": 16 
 "NUM_STEPS": 128 

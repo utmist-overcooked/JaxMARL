@@ -690,7 +690,7 @@ def env_from_config(config):
 
 
 def single_run(config):
-    config = {**config, **config["alg"]}
+    config = {**config["alg"], **config}
     print("Config:\n", OmegaConf.to_yaml(config))
 
     alg_name = config["ALG_NAME"]

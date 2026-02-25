@@ -323,7 +323,7 @@ def main(config):
     out = jax.vmap(train_jit)(rngs)
 
     plt.plot(out["metrics"]["returned_episode_returns"].mean(axis=0))
-    plt.savefig(f"ippo_ff_{config['ENV_NAME']}.png")
+    plt.savefig(f"/scratch/zachtang/jaxmarl/ippo_ff_mpe/ippo_ff_{config['ENV_NAME']}.png")
     plt.xlabel("Updates")
     plt.ylabel("Returns")
     plt.title(f"IPPO-FF={config['ENV_NAME']}")

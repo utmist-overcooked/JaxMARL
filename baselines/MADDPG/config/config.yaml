@@ -1,20 +1,63 @@
-# experiment params
-"NUM_SEEDS": 1 # number of vmapped seeds
+# ── Experiment ──
+"NUM_SEEDS": 1          # number of vmapped seeds
 "SEED": 0
+"HYP_TUNE": False       # perform hyp tune
 
-"HYP_TUNE": False # perform hyp tune
+# ── Training ──
+"TOTAL_TIMESTEPS": 2e8
+"NUM_ENVS": 1024
+"NUM_STEPS": 16         # env steps per update
+"NUM_EPOCHS": 4         # gradient steps per update
+"LEARNING_STARTS": 10000
 
-# wandb params
+# ── Replay Buffer ──
+"BUFFER_SIZE": 1e5
+"BUFFER_BATCH_SIZE": 256
+
+# ── Networks ──
+"ACTOR_HIDDEN_SIZE": 64
+"CRITIC_HIDDEN_SIZE": 64
+"NUM_LAYERS": 2
+
+# ── Optimization ──
+"ACTOR_LR": 0.0007
+"CRITIC_LR": 0.0007
+"MAX_GRAD_NORM": 0.5
+"GAMMA": 0.95
+"TAU": 0.005            # soft target update rate
+"TARGET_UPDATE_INTERVAL": 1
+
+# ── Exploration ──
+"NOISE_STD": 0.1
+"NOISE_CLIP": 0.5
+"ACTION_REG": 0.001     # L2 penalty on actions
+
+# ── Environment ──
+"ENV_NAME": "MPE_simple_spread_v3"
+"ENV_KWARGS":
+  action_type: "Continuous"
+"ALG_NAME": "maddpg_ff"
+
+# ── Evaluation ──
+"TEST_DURING_TRAINING": True
+"TEST_INTERVAL": 0.05   # as a fraction of total updates
+"TEST_NUM_STEPS": 30
+"TEST_NUM_ENVS": 32
+
+# ── Logging ──
 "ENTITY": ""
 "PROJECT": ""
 "WANDB_MODE": "disabled"
-"WANDB_LOG_ALL_SEEDS": False # will log separately the vmapped seeds
+"WANDB_LOG_ALL_SEEDS": False
+"USE_RICH_MONITOR": True
 
-# terminal display
-"USE_RICH_MONITOR": True # rich live progress bar + metrics table
-
-# where to save the params (if None, will not save)
-"SAVE_PATH": "models"
+# ── Save ──
+"SAVE_PATH": "/scratch/zachtang/jaxmarl/maddpg"
 
 defaults:
   - alg: maddpg_ff_mpe
+  - _self_
+
+hydra:
+  run:
+    dir: /scratch/zachtang/jaxmarl/maddpg/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}

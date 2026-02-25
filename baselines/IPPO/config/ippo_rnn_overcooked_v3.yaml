@@ -1,14 +1,13 @@
 hydra:
   run:
-    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/ippo_rnn_overcooked_v2/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/ippo_rnn_overcooked_v3/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-"ENV_NAME": "overcooked_v2"
-"ENV_KWARGS": 
-  "layout" : "grounded_coord_simple"
+"ENV_KWARGS":
+  "layout": "cramped_room"
   "agent_view_size": 2
-  "negative_rewards": True
-  "sample_recipe_on_delivery": True
+  "shaped_rewards": True
   "random_agent_positions": True
+  "max_steps": 400
 
 "LR": 0.00025
 "ANNEAL_LR": True
@@ -22,22 +21,22 @@ hydra:
 "TOTAL_TIMESTEPS": 3e7
 "REW_SHAPING_HORIZON": 1.5e7
 
-"FC_DIM_SIZE": 64
+"FC_DIM_SIZE": 128
 "GRU_HIDDEN_DIM": 128
 
 "CLIP_EPS": 0.2
-"ENT_COEF": 0.04
+"ENT_COEF": 0.01
 "GAMMA": 0.99
 "GAE_LAMBDA": 0.95
-"SCALE_CLIP_EPS": False
 "VF_COEF": 0.5
-"MAX_GRAD_NORM": 0.5
+"MAX_GRAD_NORM": 0.25
 "ACTIVATION": "relu"
 "SEED": 0
 "NUM_SEEDS": 1
 
 "ENTITY": ""
 "PROJECT": ""
-"WANDB_MODE" : "online"
+"WANDB_MODE": "disabled"
+"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/ippo_overcooked_v3"
 "USE_RICH_MONITOR": True
 

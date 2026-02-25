@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_homogenous_rnn_smax/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 "LR": 0.002
 "NUM_ENVS": 128
 "NUM_STEPS": 128 

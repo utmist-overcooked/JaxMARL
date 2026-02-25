@@ -1,4 +1,4 @@
-""" 
+"""
 Based on PureJaxRL Implementation of PPO
 """
 
@@ -20,12 +20,23 @@ import hydra
 from omegaconf import OmegaConf
 import wandb
 import copy
+import os
+import sys
 
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+try:
+    from utils.monitor import TrainingMonitor
+
+    _MONITOR_AVAILABLE = True
+except ImportError:
+    _MONITOR_AVAILABLE = False
 
 
 class CNN(nn.Module):
     activation: str = "tanh"
+
     @nn.compact
     def __call__(self, x):
         if self.activation == "relu":
@@ -73,7 +84,7 @@ class ActorCritic(nn.Module):
             activation = nn.relu
         else:
             activation = nn.tanh
-        
+
         embedding = CNN(self.activation)(x)
 
         actor_mean = nn.Dense(
@@ -109,7 +120,9 @@ class Transition(NamedTuple):
 def get_rollout(params, config):
     env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
 
-    network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+    network = ActorCritic(
+        env.action_space(env.agents[0]).n, activation=config["ACTIVATION"]
+    )
     key = jax.random.PRNGKey(0)
     key, key_r, key_a = jax.random.split(key, 3)
 
@@ -120,13 +133,13 @@ def get_rollout(params, config):
     while not done:
         key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
-        obs_batch = jnp.stack([obs[a] for a in env.agents]).reshape(-1, *env.observation_space("agent_0").shape)
+        obs_batch = jnp.stack([obs[a] for a in env.agents]).reshape(
+            -1, *env.observation_space("agent_0").shape
+        )
 
         pi, value = network.apply(params, obs_batch)
         action = pi.sample(seed=key_a0)
-        env_act = unbatchify(
-            action, env.agents, 1, env.num_agents
-        )
+        env_act = unbatchify(action, env.agents, 1, env.num_agents)
 
         env_act = {k: v.squeeze() for k, v in env_act.items()}
 
@@ -149,7 +162,7 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
-def make_train(config):
+def make_train(config, monitor=None):
     env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
 
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
@@ -163,9 +176,7 @@ def make_train(config):
     env = LogWrapper(env, replace_info=False)
 
     rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config["REW_SHAPING_HORIZON"]
+        init_value=1.0, end_value=0.0, transition_steps=config["REW_SHAPING_HORIZON"]
     )
 
     def linear_schedule(count):
@@ -177,9 +188,12 @@ def make_train(config):
         return config["LR"] * frac
 
     def train(rng):
+        original_seed = rng[0]
 
         # INIT NETWORK
-        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+        network = ActorCritic(
+            env.action_space(env.agents[0]).n, activation=config["ACTIVATION"]
+        )
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros((1, *env.observation_space("agent_0").shape))
 
@@ -214,7 +228,9 @@ def make_train(config):
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
 
-                obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(-1, *env.observation_space("agent_0").shape)
+                obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
+                    -1, *env.observation_space("agent_0").shape
+                )
 
                 print("input_obs_shape", obs_batch.shape)
 
@@ -236,8 +252,14 @@ def make_train(config):
                 )(rng_step, env_state, env_act)
 
                 shaped_reward = info.pop("shaped_reward")
-                current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
-                reward = jax.tree.map(lambda x,y: x+y*rew_shaping_anneal(current_timestep), reward, shaped_reward)
+                current_timestep = (
+                    update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
+                )
+                reward = jax.tree.map(
+                    lambda x, y: x + y * rew_shaping_anneal(current_timestep),
+                    reward,
+                    shaped_reward,
+                )
 
                 info = jax.tree.map(lambda x: x.reshape((config["NUM_ACTORS"])), info)
                 transition = Transition(
@@ -258,7 +280,9 @@ def make_train(config):
 
             # CALCULATE ADVANTAGE
             train_state, env_state, last_obs, update_step, rng = runner_state
-            last_obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(-1, *env.observation_space("agent_0").shape)
+            last_obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
+                -1, *env.observation_space("agent_0").shape
+            )
             _, last_val = network.apply(train_state.params, last_obs_batch)
 
             def _calculate_gae(traj_batch, last_val):
@@ -340,9 +364,9 @@ def make_train(config):
                 train_state, traj_batch, advantages, targets, rng = update_state
                 rng, _rng = jax.random.split(rng)
                 batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
-                assert (
-                    batch_size == config["NUM_STEPS"] * config["NUM_ACTORS"]
-                ), "batch size must be equal to number of steps * number of actors"
+                assert batch_size == config["NUM_STEPS"] * config["NUM_ACTORS"], (
+                    "batch size must be equal to number of steps * number of actors"
+                )
                 permutation = jax.random.permutation(_rng, batch_size)
                 batch = (traj_batch, advantages, targets)
                 batch = jax.tree.map(
@@ -371,14 +395,31 @@ def make_train(config):
             metric = traj_batch.info
             rng = update_state[-1]
 
-            def callback(metric):
-                wandb.log(metric)
+            def callback(metric, original_seed):
+                step = int(metric["env_step"])
+                updates = int(metric["update_step"])
+                num_updates = int(config["NUM_UPDATES"])
+                ret = float(metric.get("returned_episode_returns", 0.0))
+
+                if monitor is not None:
+                    monitor.update(
+                        step=updates,
+                        metrics={
+                            "env_step": step,
+                            "update": f"{updates}/{num_updates}",
+                            "train_return": ret,
+                        },
+                        seed=int(original_seed),
+                    )
+
+                if config["WANDB_MODE"] != "disabled":
+                    wandb.log(metric)
 
             update_step = update_step + 1
             metric = jax.tree.map(lambda x: x.mean(), metric)
             metric["update_step"] = update_step
             metric["env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
-            jax.debug.callback(callback, metric)
+            jax.debug.callback(callback, metric, original_seed)
 
             runner_state = (train_state, env_state, last_obs, update_step, rng)
             return runner_state, metric
@@ -392,10 +433,15 @@ def make_train(config):
 
     return train
 
+
 def single_run(config):
     config = OmegaConf.to_container(config)
     layout_name = copy.deepcopy(config["ENV_KWARGS"]["layout"])
     config["ENV_KWARGS"]["layout"] = overcooked_layouts[layout_name]
+
+    os.environ["WANDB_MODE"] = config["WANDB_MODE"]
+    wandb_dir = os.path.join(os.environ.get("SCRATCH", "."), "jaxmarl", "wandb")
+    os.makedirs(wandb_dir, exist_ok=True)
 
     wandb.init(
         entity=config["ENTITY"],
@@ -403,71 +449,244 @@ def single_run(config):
         tags=["IPPO", "FF"],
         config=config,
         mode=config["WANDB_MODE"],
-        name=f'ippo_cnn_overcooked_tuned_{layout_name}'
+        name=f"ippo_cnn_overcooked_tuned_{layout_name}",
+        dir=wandb_dir,
     )
 
+    num_seeds = config["NUM_SEEDS"]
+    num_updates = int(
+        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
+    )
+    use_monitor = config.get("USE_RICH_MONITOR", True) and _MONITOR_AVAILABLE
+    monitor = None
+    if use_monitor:
+        monitor = TrainingMonitor(
+            total_updates=num_updates,
+            config_dict={
+                "env": config["ENV_NAME"],
+                "layout": layout_name,
+                "total_timesteps": int(config["TOTAL_TIMESTEPS"]),
+                "num_updates": num_updates,
+                "num_envs": config["NUM_ENVS"],
+                "num_seeds": num_seeds,
+                "lr": config["LR"],
+                "gamma": config["GAMMA"],
+            },
+            title=f"IPPO-CNN - Overcooked ({layout_name})",
+        )
+
     rng = jax.random.PRNGKey(config["SEED"])
-    rngs = jax.random.split(rng, config["NUM_SEEDS"])
-    train_jit = jax.jit(make_train(config))
-    out = jax.vmap(train_jit)(rngs)
+    rngs = jax.random.split(rng, num_seeds)
+    train_jit = jax.jit(make_train(config, monitor=monitor))
+    if monitor is not None:
+        with monitor:
+            out = jax.block_until_ready(jax.vmap(train_jit)(rngs))
+    else:
+        out = jax.vmap(train_jit)(rngs)
 
     print("** Saving Results **")
-    filename = f'{config["ENV_NAME"]}_{layout_name}_seed{config["SEED"]}'
+    save_dir = os.path.join(os.environ.get("SCRATCH", "."), "jaxmarl", "results")
+    os.makedirs(save_dir, exist_ok=True)
+    filename = f"{config['ENV_NAME']}_{layout_name}_seed{config['SEED']}"
+    filepath = os.path.join(save_dir, f"{filename}.gif")
     train_state = jax.tree.map(lambda x: x[0], out["runner_state"][0])
     state_seq = get_rollout(train_state.params, config)
     viz = OvercookedVisualizer()
     # agent_view_size is hardcoded as it determines the padding around the layout.
-    viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
+    viz.animate(state_seq, agent_view_size=5, filename=filepath)
+    print(f"Saved to {filepath}")
 
 
 def tune(default_config):
-    """Hyperparameter sweep with wandb."""
+    """Hyperparameter sweep with CARBS (local Bayesian optimization)."""
     import copy
+    import pickle
+    import time
+    from carbs import (
+        CARBS,
+        CARBSParams,
+        Param,
+        LogSpace,
+        LinearSpace,
+        ObservationInParam,
+    )
 
     default_config = OmegaConf.to_container(default_config)
-
     layout_name = default_config["ENV_KWARGS"]["layout"]
 
-    def wrapped_make_train():
+    num_trials = int(default_config.get("CARBS_NUM_TRIALS", 50))
 
-        wandb.init(project=default_config["PROJECT"])
-        # update the default params
+    # Define parameter search spaces
+    param_spaces = [
+        Param(
+            name="LR",
+            space=LogSpace(scale=0.5, min=1e-5, max=1e-2),
+            search_center=default_config["LR"],
+        ),
+        Param(
+            name="NUM_ENVS",
+            space=LogSpace(is_integer=True, min=32, max=2048),
+            search_center=default_config["NUM_ENVS"],
+        ),
+        Param(
+            name="NUM_STEPS",
+            space=LogSpace(is_integer=True, min=32, max=512),
+            search_center=default_config["NUM_STEPS"],
+        ),
+        Param(
+            name="UPDATE_EPOCHS",
+            space=LinearSpace(scale=4, is_integer=True, min=1, max=16),
+            search_center=default_config["UPDATE_EPOCHS"],
+        ),
+        Param(
+            name="NUM_MINIBATCHES",
+            space=LogSpace(is_integer=True, min=2, max=32),
+            search_center=default_config["NUM_MINIBATCHES"],
+        ),
+        Param(
+            name="CLIP_EPS",
+            space=LinearSpace(scale=0.1, min=0.05, max=0.5),
+            search_center=default_config["CLIP_EPS"],
+        ),
+        Param(
+            name="ENT_COEF",
+            space=LogSpace(scale=0.5, min=1e-5, max=0.1),
+            search_center=default_config["ENT_COEF"],
+        ),
+        Param(
+            name="GAE_LAMBDA",
+            space=LinearSpace(scale=0.05, min=0.8, max=1.0),
+            search_center=default_config["GAE_LAMBDA"],
+        ),
+    ]
+
+    save_dir = os.path.join(os.environ.get("SCRATCH", "."), "jaxmarl", "carbs_sweep")
+    os.makedirs(save_dir, exist_ok=True)
+
+    carbs_params = CARBSParams(
+        better_direction_sign=1,  # maximize return
+        is_wandb_logging_enabled=False,
+        resample_frequency=0,
+        num_random_samples=4,
+        initial_search_radius=0.3,
+        checkpoint_dir=os.path.join(save_dir, "checkpoints"),
+        is_saved_on_every_observation=True,
+    )
+    carbs = CARBS(carbs_params, param_spaces)
+
+    def nearest_power_of_2(x):
+        """Round to nearest power of 2."""
+        return int(2 ** round(np.log2(x)))
+
+    def sanitize_suggestion(suggestion):
+        """Round integer params to powers of 2 for batch size compatibility."""
+        s = dict(suggestion)
+        for key in ["NUM_ENVS", "NUM_STEPS", "NUM_MINIBATCHES"]:
+            if key in s:
+                s[key] = nearest_power_of_2(s[key])
+        return s
+
+    print(f"Starting CARBS sweep with {num_trials} trials")
+    print(f"Results will be saved to {save_dir}")
+
+    all_results = []
+    best_return = float("-inf")
+    best_config = None
+
+    for trial in range(num_trials):
+        raw_suggestion = carbs.suggest().suggestion
+        suggestion = sanitize_suggestion(raw_suggestion)
         config = copy.deepcopy(default_config)
-        for k, v in dict(wandb.config).items():
+        for k, v in suggestion.items():
             config[k] = v
         config["ENV_KWARGS"]["layout"] = overcooked_layouts[layout_name]
 
-        print("running experiment with params:", config)
+        print(f"\n{'=' * 60}")
+        print(f"Trial {trial + 1}/{num_trials}")
+        print(
+            f"  LR={config['LR']:.6f}  NUM_ENVS={config['NUM_ENVS']}  "
+            f"NUM_STEPS={config['NUM_STEPS']}  UPDATE_EPOCHS={config['UPDATE_EPOCHS']}"
+        )
+        print(
+            f"  NUM_MINIBATCHES={config['NUM_MINIBATCHES']}  CLIP_EPS={config['CLIP_EPS']:.3f}  "
+            f"ENT_COEF={config['ENT_COEF']:.5f}  GAE_LAMBDA={config['GAE_LAMBDA']:.3f}"
+        )
 
-        rng = jax.random.PRNGKey(config["SEED"])
-        rngs = jax.random.split(rng, config["NUM_SEEDS"])
-        train_vjit = jax.jit(jax.vmap(make_train(config)))
-        outs = jax.block_until_ready(train_vjit(rngs))
+        # Disable wandb logging during sweep trials (no wandb.init called)
+        config["WANDB_MODE"] = "disabled"
 
-    sweep_config = {
-        "name": "ppo_overcooked",
-        "method": "bayes",
-        "metric": {
-            "name": "returned_episode_returns",
-            "goal": "maximize",
-        },
-        "parameters": {
-            "NUM_ENVS": {"values": [32, 64, 128, 256]},
-            "LR": {"values": [0.0005, 0.0001, 0.00005, 0.00001]},
-            "ACTIVATION": {"values": ["relu", "tanh"]},
-            "UPDATE_EPOCHS": {"values": [2, 4, 8]},
-            "NUM_MINIBATCHES": {"values": [2, 4, 8, 16]},
-            "CLIP_EPS": {"values": [0.1, 0.2, 0.3]},
-            "ENT_COEF": {"values": [0.0001, 0.001, 0.01]},
-            "NUM_STEPS": {"values": [64, 128, 256]},
-        },
-    }
+        start_time = time.time()
+        try:
+            rng = jax.random.PRNGKey(config["SEED"])
+            rngs = jax.random.split(rng, config["NUM_SEEDS"])
+            train_vjit = jax.jit(jax.vmap(make_train(config)))
+            outs = jax.block_until_ready(train_vjit(rngs))
 
-    wandb.login()
-    sweep_id = wandb.sweep(
-        sweep_config, entity=default_config["ENTITY"], project=default_config["PROJECT"]
-    )
-    wandb.agent(sweep_id, wrapped_make_train, count=1000)
+            # Extract final mean return across seeds
+            final_return = float(
+                outs["metrics"]["returned_episode_returns"][:, -1].mean()
+            )
+            elapsed = time.time() - start_time
+
+            obs_out = carbs.observe(
+                ObservationInParam(input=suggestion, output=final_return, cost=elapsed)
+            )
+
+            if final_return > best_return:
+                best_return = final_return
+                best_config = {k: v for k, v in config.items() if k != "ENV_KWARGS"}
+
+            result = {
+                "trial": trial,
+                "suggestion": suggestion,
+                "return": final_return,
+                "cost": elapsed,
+            }
+            all_results.append(result)
+            print(
+                f"  Return: {final_return:.2f}  Time: {elapsed:.1f}s  Best: {best_return:.2f}"
+            )
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            print(f"  FAILED: {e}")
+            carbs.observe(
+                ObservationInParam(
+                    input=suggestion, output=0.0, cost=elapsed, is_failure=True
+                )
+            )
+            all_results.append(
+                {
+                    "trial": trial,
+                    "suggestion": suggestion,
+                    "return": None,
+                    "cost": elapsed,
+                    "error": str(e),
+                }
+            )
+
+        # Save checkpoint after each trial
+        with open(os.path.join(save_dir, "carbs_results.pkl"), "wb") as f:
+            pickle.dump(
+                {
+                    "results": all_results,
+                    "best_config": best_config,
+                    "best_return": best_return,
+                },
+                f,
+            )
+
+    print(f"\n{'=' * 60}")
+    print(f"Sweep complete. Best return: {best_return:.2f}")
+    print(f"Best config: {best_config}")
+    print(f"Full results saved to {save_dir}/carbs_results.pkl")
+
+
+scratch_dir = os.environ.get("SCRATCH", ".")
+hydra_output_dir = os.path.join(
+    scratch_dir, "jaxmarl", "outputs", "ippo_cnn_overcooked"
+)
+os.makedirs(hydra_output_dir, exist_ok=True)
 
 
 @hydra.main(version_base=None, config_path="config", config_name="ippo_cnn_overcooked")
@@ -476,6 +695,7 @@ def main(config):
         tune(config)
     else:
         single_run(config)
+
 
 if __name__ == "__main__":
     main()
