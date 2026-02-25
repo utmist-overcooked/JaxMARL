@@ -2,6 +2,27 @@
 
 A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, order queues, and conveyor belts.
 
+## 🎨 Visual Level Editor
+
+```bash
+# If installed via pip
+overcooked-editor
+
+# Or run directly
+python -m jaxmarl.tools.layout_editor_v3
+```
+
+Features:
+- ✅ Visual click-to-place grid editor
+- ✅ Live preview with proper tile rendering
+- ✅ Test play your layouts immediately
+- ✅ Automatic validation
+- ✅ Export ready-to-use code
+- ✅ Load and edit existing layouts
+- ✅ Undo/redo support
+
+**[📖 See full Level Editor documentation](../../tools/README_LEVEL_EDITOR.md)**
+
 ## File Structure
 
 ```
@@ -9,7 +30,7 @@ overcooked_v3/
 ├── __init__.py          # Package exports
 ├── common.py            # Core data structures and enums
 ├── settings.py          # Configuration constants
-├── layouts.py           # Layout definitions and parsing
+├── layouts.py           # Layout definitions, parsing, and utilities
 ├── overcooked.py        # Main environment implementation
 ├── utils.py             # Helper functions
 └── README.md            # This file
