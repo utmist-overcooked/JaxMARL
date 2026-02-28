@@ -41,13 +41,20 @@ def create_env(layout_name):
         layout=layout_name,
         enable_moving_walls=True,
         enable_buttons=True,
+        enable_item_conveyors=True, # Need this for custom demos
+        
         pot_cook_time=20,
         pot_burn_time=10,
     )
 
 
 def main():
-    layout_name = "pressure_plate_demo"
+    # CHANGE LAYOUT NAME HERE:
+    # pressure_gated_conveyor_access
+    # pressure_gated_circuit
+    # pressure_gated_zones
+    # twin_movement
+    layout_name = "pressure_gated_conveyor_access" # "pressure_plate_demo"
 
     print("=" * 55)
     print("  OVERCOOKED V3 - Moving Walls & Buttons Demo")

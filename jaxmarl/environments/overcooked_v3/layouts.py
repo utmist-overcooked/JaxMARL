@@ -240,7 +240,53 @@ WWWW WW
 WWWWWWW
 """
 
+# pressure gated conveyor access
+pressure_gated_conveyor_access = """
+WWWWWWBWW
+WA  #   W
+W  _W1v0W
+WX  WWvWW
+W  _WWvWW
+WA  #  PW
+WWWWWWRWW
+"""
 
+# pressure gated circuit
+pressure_gated_circuit = """
+WWWWWWWWW
+W   #   W
+W PWWW0 W
+W W _ W W
+W#W_A_W#W
+W W _ W W
+W XWWWB W
+W   #  AW
+WWWWWWRWW
+"""
+
+pressure_gated_zones = """
+WWWWWWW0W
+WP  #   1
+W  _R_  W
+W _ W _ W
+W#RWWWR#W
+W _ W _ W
+W  _R_ AW
+WB  # AXW
+WWWWWWWWW
+"""
+
+twin_movement = """
+WWWWWWWWWWPWWWW
+WWWWWWWWWW#WWWW
+WWW_WWWW#   #WW
+WW___WWW W#W XW
+W__A__B# #A# #0
+WW___WWW W#W XW
+WWW_WWWW#   #WW
+WWWWWWWWWW#WWWW
+WWWWWWWWWW1WWWW
+"""
 
 @dataclass
 class Layout:
@@ -638,6 +684,96 @@ overcooked_v3_layouts = {
             True,  # Barrier 2 (Bottom lane) - initially active
         ],
     ),
+
+    # Pressure Plate Demo:
+    "pressure_gated_conveyor_access": Layout.from_string(
+        pressure_gated_conveyor_access,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER)
+        ],
+        barrier_config=[
+            True,  # Barrier 0 (Top) - initially active
+            True,  # Barrier 1 (Bottom) - initially active
+        ],
+    ),
+
+    # Pressure Plate Demo:
+    "pressure_gated_circuit": Layout.from_string(
+        pressure_gated_circuit,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER)
+        ],
+        barrier_config=[
+            True,  # Barrier 0 (?) - initially active
+            True,  # Barrier 1 (?) - initially active
+            True,  # Barrier 2 (?) - initially active
+            True  # Barrier 3 (?) - initially active
+        ],
+    ),
+
+    # Pressure Plate Demo:
+    "pressure_gated_zones": Layout.from_string(
+        pressure_gated_zones,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER)
+        ],
+        barrier_config=[
+            True,  # Barrier 0 (?) - initially active
+            True,  # Barrier 1 (?) - initially active
+            True,  # Barrier 2 (?) - initially active
+            True  # Barrier 3 (?) - initially active
+        ],
+    ),
+
+    # Pressure Plate Demo:
+    "twin_movement": Layout.from_string(
+        twin_movement,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (4, ButtonAction.TOGGLE_BARRIER),
+            (5, ButtonAction.TOGGLE_BARRIER),
+            (6, ButtonAction.TOGGLE_BARRIER),
+            (7, ButtonAction.TOGGLE_BARRIER),
+            (9, ButtonAction.TOGGLE_BARRIER),
+            (8, ButtonAction.TOGGLE_BARRIER),
+            (10, ButtonAction.TOGGLE_BARRIER),
+            (11, ButtonAction.TOGGLE_BARRIER)
+        ],
+        barrier_config=[
+            True,  # Barrier 0 (?) - initially active
+            True,  # Barrier 1 (?) - initially active
+            True,  # Barrier 2 (?) - initially active
+            True,  # Barrier 3 (?) - initially active
+            True,  # Barrier 4 (?) - initially active
+            True,  # Barrier 5 (?) - initially active
+            True,  # Barrier 6 (?) - initially active
+            True,  # Barrier 7 (?) - initially active
+            True,  # Barrier 8 (?) - initially active
+            True,  # Barrier 9 (?) - initially active
+            True,  # Barrier 10 (?) - initially active
+            True   # Barrier 11 (?) - initially active
+        ],
+    ),
+
+
 
     "middle_conveyor": Layout.from_string(
         middle_conveyor, possible_recipes=[[0, 0, 0]],
