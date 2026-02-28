@@ -708,7 +708,8 @@ class OvercookedV3(MultiAgentEnv):
 
                 is_walkable = (
                     (new_cell_static == StaticObject.EMPTY)
-                    | (new_cell_static == StaticObject.ITEM_CONVEYOR)
+                    # Make a modification to this, item conveyors should not be walkable by players
+                    # | (new_cell_static == StaticObject.ITEM_CONVEYOR)
                     | (new_cell_static == StaticObject.PLAYER_CONVEYOR)
                     | (new_cell_static == StaticObject.PRESSURE_PLATE)
                     | (
