@@ -6,7 +6,7 @@ hydra:
   "layout": "cramped_room"
   "agent_view_size": 2
   "shaped_rewards": True
-  "random_agent_positions": True
+  "random_agent_positions": False
   "max_steps": 400
 
 "LR": 0.00025
@@ -20,6 +20,7 @@ hydra:
 
 "TOTAL_TIMESTEPS": 3e7
 "REW_SHAPING_HORIZON": 1.5e7
+"SHAPED_REWARD_SCALE": 1.0
 
 "FC_DIM_SIZE": 128
 "GRU_HIDDEN_DIM": 128
@@ -37,6 +38,7 @@ hydra:
 "ENTITY": ""
 "PROJECT": ""
 "WANDB_MODE": "disabled"
+"WANDB_RUN_NAME": ""
 "WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/ippo_overcooked_v3"
 "USE_RICH_MONITOR": True
 
