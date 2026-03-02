@@ -4,6 +4,7 @@ Based on ippo_rnn_overcooked_v2.py, adapted for the V3 environment
 which adds pot burning, order queues, and conveyor belts.
 """
 
+import datetime
 import jax
 import jax.api_util
 import jax.numpy as jnp
@@ -15,7 +16,7 @@ from typing import Callable, Sequence, NamedTuple, Any, Dict
 from flax.training.train_state import TrainState
 import distrax
 import jaxmarl
-from jaxmarl.wrappers.baselines import LogWrapper
+from jaxmarl.wrappers.baselines import LogWrapper, save_params
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
 from jaxmarl.environments.overcooked_v3.common import DynamicObject
 import hydra
@@ -29,6 +30,7 @@ import functools
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from utils.monitor import TrainingMonitor
+
     _MONITOR_AVAILABLE = True
 except ImportError:
     _MONITOR_AVAILABLE = False
@@ -217,9 +219,7 @@ def make_train(config, monitor=None):
         update_steps = config["NUM_UPDATES"]
         warmup_steps = int(lr_warmup * update_steps)
 
-        steps_per_epoch = (
-            config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]
-        )
+        steps_per_epoch = config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]
 
         warmup_fn = optax.linear_schedule(
             init_value=0.0,
@@ -241,8 +241,11 @@ def make_train(config, monitor=None):
         init_value=1.0, end_value=0.0, transition_steps=config["REW_SHAPING_HORIZON"]
     )
 
-    def train(rng):
+    checkpoint_interval = max(int(config["NUM_UPDATES"]) // 10, 1)
+    checkpoint_dir = os.path.join(config["WANDB_DIR"], "models")
+    layout_name = config["ENV_KWARGS"]["layout"]
 
+    def train(rng):
         original_seed = rng[0]
 
         # INIT NETWORK
@@ -330,7 +333,9 @@ def make_train(config, monitor=None):
                 )
                 anneal_factor = rew_shaping_anneal(current_timestep)
                 reward = jax.tree_util.tree_map(
-                    lambda x, y: x + y * anneal_factor, reward, info["shaped_reward"]
+                    lambda x, y: x + y * anneal_factor * config["SHAPED_REWARD_SCALE"],
+                    reward,
+                    info["shaped_reward"],
                 )
 
                 shaped_reward = jnp.array(
@@ -453,12 +458,22 @@ def make_train(config, monitor=None):
                         loss_actor = loss_actor.mean()
                         entropy = pi.entropy().mean()
 
+                        # Diagnostic metrics
+                        approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
+                        clip_frac = jnp.mean(jnp.abs(ratio - 1.0) > config["CLIP_EPS"])
+
                         total_loss = (
                             loss_actor
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
-                        return total_loss, (value_loss, loss_actor, entropy)
+                        return total_loss, (
+                            value_loss,
+                            loss_actor,
+                            entropy,
+                            approx_kl,
+                            clip_frac,
+                        )
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
@@ -526,7 +541,7 @@ def make_train(config, monitor=None):
             metric = traj_batch.info
             rng = update_state[-1]
 
-            def callback(metric, original_seed):
+            def callback(metric, original_seed, params):
                 step = int(metric["env_step"])
                 updates = int(metric["update_step"])
                 num_updates = int(config["NUM_UPDATES"])
@@ -540,7 +555,9 @@ def make_train(config, monitor=None):
                             "update": f"{updates}/{num_updates}",
                             "train_return": ret,
                             "shaped_reward": float(metric.get("shaped_reward", 0.0)),
-                            "original_reward": float(metric.get("original_reward", 0.0)),
+                            "original_reward": float(
+                                metric.get("original_reward", 0.0)
+                            ),
                             "anneal_factor": float(metric.get("anneal_factor", 0.0)),
                         },
                         seed=int(original_seed),
@@ -549,11 +566,33 @@ def make_train(config, monitor=None):
                 if config["WANDB_MODE"] != "disabled":
                     wandb.log(metric)
 
+                # Periodic checkpointing
+                if updates % checkpoint_interval == 0:
+                    run_name = wandb.run.name if wandb.run else "offline"
+                    date_str = datetime.datetime.now().strftime("%Y%m%d")
+                    ckpt_subdir = os.path.join(checkpoint_dir, f"{run_name}_{date_str}")
+                    os.makedirs(ckpt_subdir, exist_ok=True)
+                    ckpt_path = os.path.join(
+                        ckpt_subdir,
+                        f"{updates}.safetensors",
+                    )
+                    save_params(params, ckpt_path)
+                    print(f"Checkpoint saved: {ckpt_path}")
+
             update_step = update_step + 1
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
+            total_loss, (value_loss, loss_actor, entropy, approx_kl, clip_frac) = (
+                loss_info
+            )
+            metric["total_loss"] = total_loss.mean()
+            metric["value_loss"] = value_loss.mean()
+            metric["actor_loss"] = loss_actor.mean()
+            metric["entropy"] = entropy.mean()
+            metric["approx_kl"] = approx_kl.mean()
+            metric["clip_frac"] = clip_frac.mean()
             metric["update_step"] = update_step
             metric["env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
-            jax.debug.callback(callback, metric, original_seed)
+            jax.debug.callback(callback, metric, original_seed, train_state.params)
 
             runner_state = (
                 train_state,
@@ -603,7 +642,7 @@ def main(config):
         tags=["IPPO", "RNN", "OvercookedV3"],
         config=copy.deepcopy(config),
         mode=config["WANDB_MODE"],
-        name=f"ippo_rnn_overcooked_v3_{layout_name}",
+        name=config["WANDB_RUN_NAME"] or f"ippo_rnn_overcooked_v3_{layout_name}",
     )
 
     num_updates = int(
@@ -637,16 +676,17 @@ def main(config):
         else:
             out = jax.vmap(train_jit)(rngs)
 
-    # Save model params
-    from jaxmarl.wrappers.baselines import save_params
-
+    # Save final model params
     save_dir = os.path.join(wandb_dir, "models")
     os.makedirs(save_dir, exist_ok=True)
 
     model_state = out["runner_state"][0]
     OmegaConf.save(
         config,
-        os.path.join(save_dir, f"ippo_rnn_overcooked_v3_{layout_name}_seed{config['SEED']}_config.yaml"),
+        os.path.join(
+            save_dir,
+            f"ippo_rnn_overcooked_v3_{layout_name}_seed{config['SEED']}_config.yaml",
+        ),
     )
 
     for i, rng in enumerate(rngs):
