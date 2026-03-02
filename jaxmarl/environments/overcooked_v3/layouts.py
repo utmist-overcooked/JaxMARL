@@ -20,6 +20,16 @@ W   W
 WBWXW
 """
 
+around_the_island = """
+WW0W0WWWWW
+B        W
+W  A     W
+WWWWWWW  X
+W  A     W
+W        W
+WWWPWWWWWW
+"""
+
 asymm_advantages = """
 WWWWWWWWW
 O WXWOW X
@@ -175,15 +185,7 @@ W     WW
 WWWWWWWW
 """
 
-around_the_island = """
-WW0W1WWWWW
-B        W
-W  A     W
-WWWWWWW  X
-W  A     W
-W        W
-WWWPWWWWWW
-"""
+
 
 single_file = """
 WBWWPWW
