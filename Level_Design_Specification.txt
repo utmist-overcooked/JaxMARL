@@ -1,0 +1,378 @@
+Level Design Specification Document
+====================================
+
+This document formats your level designs and descriptions based on the provided whiteboard sketches and layout strings. It categorizes them by their intended gameplay purpose and the specific mechanics they are meant to exhibit.
+
+
+================================================================================
+CORE MECHANIC LEVELS
+================================================================================
+
+These levels focus on fundamental player movement and basic kitchen management.
+
+
+--------------------------------------------------------------------------------
+Cramped Room (v1 & v2)
+--------------------------------------------------------------------------------
+
+File name (variable):   cramped_room / cramped_room_v2
+Layout key:             "cramped_room" / "cramped_room_v2"
+
+List of features/mechanics used:
+  - Narrow walkways
+  - Shared workspace
+  - Single pot/sink
+
+Description:
+  This level is designed to force players to manage "collision bounds" and
+  pathing. The main challenge is the physical bottleneck, requiring players to
+  communicate their movements (e.g., "coming through!") to avoid trapping each
+  other in corners.
+
+
+--------------------------------------------------------------------------------
+Asymm Advantages
+--------------------------------------------------------------------------------
+
+File name (variable):   asymm_advantages
+Layout key:             "asymm_advantages"
+
+List of features/mechanics used:
+  - Offset resource placement (Ingredients on one side, cooking/delivery on the
+    other)
+
+Description:
+  One player is positioned closer to the raw ingredients while the other is
+  closer to the pot and delivery station. It forces a "Supplier/Chef" dynamic
+  where players must coordinate the hand-off of items to maintain efficiency.
+
+
+--------------------------------------------------------------------------------
+Coord Ring
+--------------------------------------------------------------------------------
+
+File name (variable):   coord_ring
+Layout key:             "coord_ring"
+
+List of features/mechanics used:
+  - Circular counter layout
+  - Central obstacle
+
+Description:
+  Players must move in a continuous loop to reach different stations. The
+  challenge lies in "The Merry-Go-Round" effect, where players must synchronize
+  their rotation direction to avoid colliding or blocking access to the
+  sink/pot.
+
+
+--------------------------------------------------------------------------------
+Forced Coordination (The "Steal" Layout)
+--------------------------------------------------------------------------------
+
+File name (variable):   forced_coord
+Layout key:             "forced_coord"
+
+List of features/mechanics used:
+  - Physical divider (walls or counters)
+  - Pass-through stations
+
+Description:
+  Players are completely separated by a counter. One player has the
+  ingredients, but the other has the pot and delivery zone; items MUST be
+  passed across the counter to progress, making verbal coordination of "what is
+  needed next" mandatory.
+
+
+--------------------------------------------------------------------------------
+Counter Circuit
+--------------------------------------------------------------------------------
+
+File name (variable):   counter_circuit
+Layout key:             "counter_circuit"
+
+List of features/mechanics used:
+  - Central counter island
+  - Dual pots
+  - Wraparound pathing
+
+Description:
+  A large rectangular counter block sits in the middle, forcing agents to loop
+  around it. Ingredients are at the bottom and delivery is on the right, while
+  both pots sit at the top. The challenge is efficient lane-sharing: agents must
+  decide who circles clockwise vs. counter-clockwise to avoid head-on collisions
+  in the narrow corridors.
+
+
+================================================================================
+CONVEYOR & AUTOMATION LEVELS
+================================================================================
+
+These levels introduce the conveyor mechanics for both items and players.
+
+
+--------------------------------------------------------------------------------
+Conveyor Demo
+--------------------------------------------------------------------------------
+
+File name (variable):   conveyor_demo
+Layout key:             "conveyor_demo"
+
+List of features/mechanics used:
+  - Item conveyors (> < ^ v)
+
+Description:
+  A basic introduction to item movement. The challenge is learning the timing
+  of the belts so ingredients don't pile up or fall into "dead zones" where
+  they are hard to retrieve.
+
+
+--------------------------------------------------------------------------------
+Player Conveyor Demo
+--------------------------------------------------------------------------------
+
+File name (variable):   player_conveyor_demo
+Layout key:             "player_conveyor_demo"
+
+List of features/mechanics used:
+  - Player-moving conveyors ([ and ])
+  - Single agent
+
+Description:
+  A gentle introduction to player conveyors with just one agent. A rightward
+  belt (]) near the top and a leftward belt ([) near the bottom create a simple
+  two-lane shuttle. The agent must learn to step on and off the belt at the
+  right time to reach ingredients, the pot, and the delivery zone without being
+  carried past their target.
+
+
+--------------------------------------------------------------------------------
+Player Conveyor Loop
+--------------------------------------------------------------------------------
+
+File name (variable):   player_conveyor_loop
+Layout key:             "player_conveyor_loop"
+
+List of features/mechanics used:
+  - Four-way player conveyors forming a 2x2 clockwise loop
+  - Single agent
+  - Minimal layout (testing/demo)
+
+Description:
+  A compact 5x4 testing layout with a tight 2x2 clockwise conveyor loop
+  (] } [ {). A single agent is placed on the loop and must time their exit to
+  reach the ingredient pile and delivery zone. Intentionally has no plate pile
+  or pot — this layout exists purely to test and demonstrate the player conveyor
+  loop mechanic.
+
+
+--------------------------------------------------------------------------------
+Player Conveyor Demo (General Conveyor Level 1)
+--------------------------------------------------------------------------------
+
+File name (variable):   general_conveyor_level_1
+Layout key:             "general_conveyor_level_1"
+
+List of features/mechanics used:
+  - Player-moving conveyors ([ and ])
+
+Description:
+  This level introduces belts that push the agents themselves. Players must
+  learn to "ride" the belt to move faster than walking, which is necessary to
+  meet tight deadlines.
+
+  Layout Exhibit: Uses a split path where the top belt moves right and the
+  bottom moves left.
+
+
+--------------------------------------------------------------------------------
+General Conveyor Level 2
+--------------------------------------------------------------------------------
+
+File name (variable):   general_conveyor_level_2
+Layout key:             "general_conveyor_level_2"
+
+List of features/mechanics used:
+  - Player-moving conveyors ([ and ])
+  - Three ingredient types
+  - Winding multi-room layout
+
+Description:
+  A larger, maze-like layout with three ingredient types and player conveyors
+  threading through wall gaps. A rightward belt (])]) on the upper half and a
+  leftward belt ([[[) on the lower half connect the ingredient area to the
+  cooking and delivery zones. Agents must navigate between staggered wall
+  columns and coordinate who rides which belt, as going the wrong direction
+  wastes significant time.
+
+
+--------------------------------------------------------------------------------
+Player Conveyor Loop (General Conveyor Level 3)
+--------------------------------------------------------------------------------
+
+File name (variable):   general_conveyor_level_3
+Layout key:             "general_conveyor_level_3"
+
+List of features/mechanics used:
+  - Four-way player conveyors ([ ] { })
+
+Description:
+  A complex "circuit" of agent movement. Players must time their entry into the
+  conveyor stream to reach specific quadrants of the room (Ingredients,
+  Cooking, Delivery) without being swept past their destination.
+
+
+--------------------------------------------------------------------------------
+Maze Conveyor Hell
+--------------------------------------------------------------------------------
+
+File name (variable):   maze_conveyor_hell
+Layout key:             "maze_conveyor_hell"
+
+List of features/mechanics used:
+  - Interlocking item and player conveyors
+  - Dead ends
+
+Description:
+  A high-complexity level where paths are non-intuitive. The main challenge is
+  spatial navigation; players must communicate to "track" where an item is
+  currently traveling through the maze.
+
+
+================================================================================
+ADVANCED & NARRATIVE LEVELS
+================================================================================
+
+Levels that combine mechanics with high-pressure scenarios.
+
+
+--------------------------------------------------------------------------------
+Coordinated Temporal Conveyor
+--------------------------------------------------------------------------------
+
+File name (variable):   coordinated_temporal_conveyor
+Layout key:             "coordinated_temporal_conveyor"
+
+List of features/mechanics used:
+  - Burning mechanic
+  - Long-distance travel
+  - Item conveyors
+
+Description:
+  Based on the whiteboard note: "If you run all the way, food will burn." The
+  cook time is balanced such that players must use conveyors to move items
+  because walking takes too long, causing the pot to catch fire before the
+  player arrives.
+
+
+--------------------------------------------------------------------------------
+Race Against the Clock
+--------------------------------------------------------------------------------
+
+File name (variable):   race_against_the_clock
+Layout key:             "race_against_the_clock"
+
+List of features/mechanics used:
+  - High-speed conveyors
+  - Multiple ingredient types
+
+Description:
+  A level focused on throughput. The challenge isn't just finishing the recipe,
+  but doing it fast enough to keep up with a rapidly depleting timer, requiring
+  "double-step walks" and optimal belt usage.
+
+
+--------------------------------------------------------------------------------
+Moving Wall Vertical (Middle Conveyor)
+--------------------------------------------------------------------------------
+
+File name (variable):   middle_conveyor
+Layout key:             "middle_conveyor"
+
+List of features/mechanics used:
+  - Central vertical conveyor strip (^)
+
+Description:
+  A large central belt divides the room. Players must cross this "river" to
+  exchange items, but the belt constantly pushes them toward the top of the
+  map, requiring them to fight the current or time their crossings perfectly.
+
+
+--------------------------------------------------------------------------------
+Follow the Leader
+--------------------------------------------------------------------------------
+
+File name (variable):   follow_the_leader
+Layout key:             "follow_the_leader"
+
+List of features/mechanics used:
+  - Single-tile wide corridors
+  - Restrictive walls
+
+Description:
+  The layout forces one player to lead the other through a narrow path. If the
+  leader stops or turns back, the second player is trapped. This exhibits the
+  need for "march timing" and clear communication on intent.
+
+
+--------------------------------------------------------------------------------
+Figure out the Island (Around the Island)
+--------------------------------------------------------------------------------
+
+File name (variable):   around_the_island
+Layout key:             "around_the_island"
+
+List of features/mechanics used:
+  - Central "island" counter
+  - Open perimeter
+
+Description:
+  A level that looks simple but has long travel distances. Players must decide
+  whether to work on the same side of the island or split up, testing their
+  ability to divide labor dynamically as recipes change.
+
+
+--------------------------------------------------------------------------------
+Single File
+--------------------------------------------------------------------------------
+
+File name (variable):   single_file
+Layout key:             "single_file"
+
+List of features/mechanics used:
+  - Linear pathing
+  - Bottlenecked delivery
+
+Description:
+  A layout where the path to the delivery zone (X) is extremely narrow. It
+  tests "stacking" — players must line up their items and deliver them in a
+  specific order to avoid blocking the exit for the player behind them.
+
+
+================================================================================
+APPENDIX: Layout Registration Status
+================================================================================
+
+All levels are registered in the overcooked_v3_layouts dictionary and can be
+loaded by key name:
+
+  - "cramped_room"
+  - "cramped_room_v2"
+  - "asymm_advantages"
+  - "coord_ring"
+  - "forced_coord"
+  - "counter_circuit"
+  - "conveyor_demo"
+  - "player_conveyor_demo"
+  - "player_conveyor_loop"
+  - "middle_conveyor"
+  - "follow_the_leader"
+  - "around_the_island"
+  - "single_file"
+  - "general_conveyor_level_1"
+  - "general_conveyor_level_2"
+  - "general_conveyor_level_3"
+  - "race_against_the_clock"
+  - "maze_conveyor_hell"
+  - "coordinated_temporal_conveyor"
+
+All layouts are described in this document. No outstanding validation issues.

@@ -97,6 +97,7 @@ AW        WWW
  WWWWWWWWWW 0
             1
 XWWWWWWWWWW 2
+B
 """
 
 maze_conveyor_hell  = """
@@ -112,7 +113,7 @@ B
 """
 
 coordinated_temporal_conveyor = """
->>>>>>vW   X
+>>>>>>vW  PX
       vW  A 
      WvW    
      Wv    B
@@ -122,12 +123,12 @@ coordinated_temporal_conveyor = """
 
 general_conveyor_level_1 = """
 012    P
-       W
+A      W
        W
 ]]]]]]]]
 [[[[[[[[
        W
-       W
+A      W
 BX     P
 """
 
@@ -148,7 +149,7 @@ A 01WWW
 A]]]]}2
 W{WWW}W
 W{[[[[W
-WBWWPWW
+WBWXPWW
 """
 
 middle_conveyor = """
@@ -618,6 +619,28 @@ overcooked_v3_layouts = {
 
     "single_file": Layout.from_string(
         single_file, possible_recipes=[[0, 0, 0]],
+    ),
+
+    # Conveyor levels
+    "general_conveyor_level_1": Layout.from_string(
+        general_conveyor_level_1, possible_recipes=[[0, 1, 2]],
+    ),
+    "general_conveyor_level_2": Layout.from_string(
+        general_conveyor_level_2, possible_recipes=[[0, 1, 2]],
+    ),
+    "general_conveyor_level_3": Layout.from_string(
+        general_conveyor_level_3, possible_recipes=[[0, 1, 2]],
+    ),
+
+    # Advanced levels
+    "race_against_the_clock": Layout.from_string(
+        race_against_the_clock, possible_recipes=[[0, 1, 2]],
+    ),
+    "maze_conveyor_hell": Layout.from_string(
+        maze_conveyor_hell, possible_recipes=[[0, 0, 1]],
+    ),
+    "coordinated_temporal_conveyor": Layout.from_string(
+        coordinated_temporal_conveyor, possible_recipes=[[0, 0, 1]],
     ),
 
 }
