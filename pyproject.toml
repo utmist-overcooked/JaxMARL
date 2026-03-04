@@ -62,6 +62,9 @@ dev = [
   "pygame",
 ]
 
+[project.scripts]
+overcooked-editor = "jaxmarl.tools.layout_editor_v3:main"
+
 [project.urls]
 "Homepage" = "https://github.com/FLAIROx/JaxMARL"
 "Bug Tracker" = "https://github.com/FLAIROx/JaxMARL/issues"
