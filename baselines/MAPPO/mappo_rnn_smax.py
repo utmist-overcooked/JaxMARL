@@ -5,6 +5,7 @@ Based on PureJaxRL Implementation of IPPO, with changes to give a centralised cr
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
+import inspect
 from flax import struct
 import numpy as np
 import optax
@@ -20,6 +21,29 @@ from functools import partial
 
 from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
+
+
+def _ensure_flax_scan_jax_compatibility():
+    api_util = jax.api_util
+    linear_util = jax.extend.linear_util
+
+    if not hasattr(api_util, "debug_info"):
+        def _debug_info(*args, **kwargs):
+            return None
+
+        api_util.debug_info = _debug_info
+
+    wrap_init_sig = inspect.signature(linear_util.wrap_init)
+    if "debug_info" not in wrap_init_sig.parameters:
+        original_wrap_init = linear_util.wrap_init
+
+        def _wrap_init_compat(f, params=None, debug_info=None):
+            return original_wrap_init(f, params=params)
+
+        linear_util.wrap_init = _wrap_init_compat
+
+
+_ensure_flax_scan_jax_compatibility()
 
 class SMAXWorldStateWrapper(JaxMARLWrapper):
     """
