@@ -6,6 +6,7 @@ ENV_KWARGS:
   vision: 1
   max_steps: 80
   mode: "mixed"
+  compact_obs: true
 
 BASELINE: "ic3net"
 HIDDEN_DIM: 128
@@ -15,10 +16,11 @@ COMM_MODE: "avg"
 SHARE_WEIGHTS: false
 COMM_ACTION_ONE: false
 
-MODEL_PATH: "checkpoints/ic3net_pp_hard/model_update_20000.msgpack"
+MODEL_PATH: "baselines/IC3Net/checkpoints/ic3net_pp_hard_stable/model.msgpack"
 NUM_EPISODES: 10
 MAX_STEPS: 80
 SAVE_GIF: "/tmp/ic3net_pp_hard.gif"
+DETERMINISTIC: false
 
 SEED: 42
 

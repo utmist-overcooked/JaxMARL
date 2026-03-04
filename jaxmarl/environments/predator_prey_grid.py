@@ -44,6 +44,7 @@ class PredatorPreyGrid(MultiAgentEnv):
         vision: int = 0,
         max_steps: int = 20,
         mode: str = "mixed",
+        compact_obs: bool = False,
     ):
         super().__init__(num_agents)
 
@@ -51,8 +52,17 @@ class PredatorPreyGrid(MultiAgentEnv):
         self.vision = vision
         self.max_steps = max_steps
         self.mode = mode
+        self.compact_obs = compact_obs
         self.npredator = num_agents
         self.nprey = 1
+
+        # Agents (must be before observation_spaces)
+        self.agents = [f"agent_{i}" for i in range(num_agents)]
+
+        # Reward constants (matching reference)
+        self.TIMESTEP_PENALTY = -0.05
+        self.PREY_REWARD = 0.0       # reward for agent ON prey in mixed mode
+        self.POS_PREY_REWARD = 0.05  # reward for agent ON prey in cooperative mode
 
         # Grid constants
         self.base = dim * dim
@@ -64,22 +74,22 @@ class PredatorPreyGrid(MultiAgentEnv):
         # Vision window
         self.vis_size = 2 * vision + 1
 
-        # Flat observation dim: vocab_size * vis_size * vis_size
-        self.obs_dim = self.vocab_size * self.vis_size * self.vis_size
-
-        # Agents
-        self.agents = [f"agent_{i}" for i in range(num_agents)]
-
-        # Reward constants (matching reference)
-        self.TIMESTEP_PENALTY = -0.05
-        self.PREY_REWARD = 0.0       # reward for agent ON prey in mixed mode
-        self.POS_PREY_REWARD = 0.05  # reward for agent ON prey in cooperative mode
-
-        # Spaces
-        self.observation_spaces = {
-            a: Box(0.0, 1.0, (self.vocab_size, self.vis_size, self.vis_size))
-            for a in self.agents
-        }
+        if compact_obs:
+            # Compact obs: 4 entity channels per vision cell + 2 position values
+            # Channels: [empty, outside, prey, predator]
+            self.compact_channels = 4
+            self.obs_dim = self.compact_channels * self.vis_size * self.vis_size + 2  # +2 for (row, col)
+            self.observation_spaces = {
+                a: Box(0.0, float(num_agents), (self.obs_dim,))
+                for a in self.agents
+            }
+        else:
+            # Full obs: one-hot cell IDs (vocab_size per cell in vision window)
+            self.obs_dim = self.vocab_size * self.vis_size * self.vis_size
+            self.observation_spaces = {
+                a: Box(0.0, 1.0, (self.vocab_size, self.vis_size, self.vis_size))
+                for a in self.agents
+            }
         self.action_spaces = {a: Discrete(5) for a in self.agents}
 
         # Action deltas: UP(0), RIGHT(1), DOWN(2), LEFT(3), STAY(4)
@@ -119,6 +129,9 @@ class PredatorPreyGrid(MultiAgentEnv):
     ) -> Tuple[Dict, PredatorPreyState, Dict, Dict, Dict]:
         action_arr = jnp.stack([actions[a] for a in self.agents])  # (N,)
 
+        # Distance-to-prey before move (for shaped reward)
+        prev_dist = jnp.sum(jnp.abs(state.predator_loc - state.prey_loc[0]), axis=-1).astype(jnp.float32)
+
         # Move predators
         new_locs = self._take_actions(state.predator_loc, state.reached_prey, action_arr)
         state = state.replace(predator_loc=new_locs)
@@ -128,12 +141,25 @@ class PredatorPreyGrid(MultiAgentEnv):
             state.predator_loc == state.prey_loc[0], axis=-1
         ).astype(jnp.float32)  # (N,)
 
+        # Distance-to-prey after move (for shaped reward)
+        new_dist = jnp.sum(jnp.abs(state.predator_loc - state.prey_loc[0]), axis=-1).astype(jnp.float32)
+
         # Rewards (mixed mode: -0.05 per step, 0 when on prey)
         reward = jnp.full(self.npredator, self.TIMESTEP_PENALTY)
         reward = jnp.where(on_prey > 0, self.PREY_REWARD, reward)
 
         # Update reached
         new_reached = jnp.maximum(state.reached_prey, on_prey)
+        newly_reached = jnp.clip(new_reached - state.reached_prey, 0.0, 1.0)
+
+        # Dense shaping signal:
+        # - progress: + when moving closer, - when moving farther
+        # - first-touch bonus when an agent reaches prey for first time
+        # - stay penalty (unless already reached prey) to avoid degenerate STAY policy
+        progress = prev_dist - new_dist
+        stay_action = (action_arr == 4).astype(jnp.float32)
+        stay_penalty = -0.05 * stay_action * (1.0 - state.reached_prey)
+        shaped_reward = 0.10 * progress + 1.00 * newly_reached + stay_penalty
 
         # Done: all predators reached prey OR max_steps
         step = state.step + 1
@@ -153,6 +179,7 @@ class PredatorPreyGrid(MultiAgentEnv):
         done_dict["__all__"] = episode_over
         info = {
             "success": jnp.all(new_reached > 0).astype(jnp.float32),
+            "shaped_reward": {a: shaped_reward[i] for i, a in enumerate(self.agents)},
         }
         return obs, state, reward_dict, done_dict, info
 
@@ -168,7 +195,63 @@ class PredatorPreyGrid(MultiAgentEnv):
         return jax.vmap(_move)(predator_loc, reached_prey, actions)
 
     def _get_obs(self, state: PredatorPreyState) -> Dict[str, chex.Array]:
-        """Build one-hot vision-window observations for all agents."""
+        """Build observations for all agents."""
+        if self.compact_obs:
+            return self._get_compact_obs(state)
+        return self._get_full_obs(state)
+
+    def _get_compact_obs(self, state: PredatorPreyState) -> Dict[str, chex.Array]:
+        """Build compact entity-type observations (much smaller than full one-hot).
+
+        Per agent: [empty, outside, prey, predator] × vis_h × vis_w + [row, col]
+        For dim=20, vision=1: 4×3×3 + 2 = 38 dims (vs 3636 for full obs).
+        """
+        pad_size = self.vision
+        padded_dim = self.dim + 2 * pad_size
+
+        # Build entity-type grid: 0=empty, 1=outside
+        # Start with empty (0) for grid cells, outside (1) for padding
+        entity_grid = jnp.zeros((padded_dim, padded_dim), dtype=jnp.int32)
+        if pad_size > 0:
+            entity_grid = jnp.full((padded_dim, padded_dim), 1, dtype=jnp.int32)  # outside=1
+            entity_grid = entity_grid.at[pad_size:pad_size + self.dim,
+                                         pad_size:pad_size + self.dim].set(0)     # empty=0
+
+        # One-hot: 4 channels [empty, outside, prey, predator]
+        grid_oh = jax.nn.one_hot(entity_grid, 4)  # (padded, padded, 4)
+
+        # Add predator marks (channel 3)
+        def _add_pred(grid, i):
+            r = state.predator_loc[i, 0] + pad_size
+            c = state.predator_loc[i, 1] + pad_size
+            return grid.at[r, c, 3].add(1.0)  # predator channel
+        grid_oh = jax.lax.fori_loop(0, self.npredator, lambda i, g: _add_pred(g, i), grid_oh)
+
+        # Add prey mark (channel 2)
+        r_prey = state.prey_loc[0, 0] + pad_size
+        c_prey = state.prey_loc[0, 1] + pad_size
+        grid_oh = grid_oh.at[r_prey, c_prey, 2].add(1.0)  # prey channel
+
+        # Extract vision windows + position for each agent
+        def _agent_obs(pred_idx):
+            r = state.predator_loc[pred_idx, 0]
+            c = state.predator_loc[pred_idx, 1]
+            window = jax.lax.dynamic_slice(
+                grid_oh, (r, c, 0), (self.vis_size, self.vis_size, 4)
+            )
+            # Flatten window: (vis_h * vis_w * 4,)
+            flat_window = window.reshape(-1)
+            # Agent position normalized to [0, 1]
+            pos = jnp.array([r / jnp.maximum(self.dim - 1, 1),
+                             c / jnp.maximum(self.dim - 1, 1)], dtype=jnp.float32)
+            return jnp.concatenate([flat_window, pos])
+
+        all_obs = jax.vmap(_agent_obs)(jnp.arange(self.npredator))  # (N, obs_dim)
+
+        return {a: all_obs[i] for i, a in enumerate(self.agents)}
+
+    def _get_full_obs(self, state: PredatorPreyState) -> Dict[str, chex.Array]:
+        """Build full one-hot vision-window observations for all agents."""
         # Build padded grid with cell IDs
         base_grid = jnp.arange(self.base, dtype=jnp.int32).reshape(self.dim, self.dim)
         pad_size = self.vision

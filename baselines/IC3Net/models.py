@@ -414,11 +414,13 @@ class CommNetLSTM(nn.Module):
         # Encoder: multi-layer MLP for high-dim observations
         enc_layers = []
         for i in range(self.encoder_layers):
+            # Use 'encoder' name for single layer (backward compat with saved checkpoints)
+            name = 'encoder' if self.encoder_layers == 1 else f'enc_{i}'
             enc_layers.append(nn.Dense(
                 self.hidden_dim,
                 kernel_init=orthogonal(jnp.sqrt(2)),
                 bias_init=constant(0.0),
-                name=f'enc_{i}'
+                name=name
             ))
         self.enc_layers = enc_layers
         

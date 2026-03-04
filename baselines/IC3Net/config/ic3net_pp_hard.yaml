@@ -6,6 +6,7 @@ ENV_KWARGS:
   vision: 1
   max_steps: 80
   mode: "mixed"
+  compact_obs: true
 
 BASELINE: "ic3net"
 HIDDEN_DIM: 128
@@ -16,23 +17,27 @@ SHARE_WEIGHTS: false
 COMM_ACTION_ONE: false
 DETACH_GAP: 10
 
+# With compact_obs, obs_dim drops from 3636 to 38 (4*3*3+2).
+# Hard mode is still exploration-sensitive, so use stronger anti-collapse settings.
 TOTAL_TIMESTEPS: 25_600_000
-NUM_ENVS: 16
+NUM_ENVS: 32
 NUM_STEPS: 80
 GAMMA: 1.0
-NORMALIZE_ADVANTAGES: false
+NORMALIZE_ADVANTAGES: true
+USE_SHAPED_REWARD: true
+SHAPED_REWARD_COEFF: 1.0
 
-LR: 0.001
+LR: 0.0005
 RMSPROP_ALPHA: 0.97
 RMSPROP_EPS: 1e-6
 MAX_GRAD_NORM: 0.5
 VALUE_COEFF: 0.01
-ENTROPY_COEFF: 0.0
+ENTROPY_COEFF: 0.03
 
 WANDB_MODE: "disabled"
 WANDB_PROJECT: "jaxmarl-ic3net"
 WANDB_NAME: "ic3net_pp_hard"
-SAVE_PATH: "checkpoints/ic3net_pp_hard"
+SAVE_PATH: "baselines/IC3Net/checkpoints/ic3net_pp_hard_stable"
 LOG_EVERY: 100
 
 SEED: 42
