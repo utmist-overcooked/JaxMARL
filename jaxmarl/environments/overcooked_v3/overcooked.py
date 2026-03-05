@@ -114,7 +114,7 @@ class State:
 
     # Pressure Plate State
     pressure_plate_positions: chex.Array  # [max_pressure_plates, 2] - (y, x)
-    pressure_plate_linked_barrier: chex.Array  # [max_pressure_plates] - index into barrier arrays
+    pressure_plate_linked_barrier: chex.Array  # [max_pressure_plates, max_barriers] - linked barrier mask
     pressure_plate_action_type: chex.Array  # [max_pressure_plates] - ButtonAction enum (currently only barrier toggle)
     pressure_plate_active_mask: chex.Array  # [max_pressure_plates] - bool (which slots are valid)
     pressure_plate_toggled: chex.Array  # [max_pressure_plates] - bool (current toggle state, e.g. whether currently pressed or not)
@@ -369,14 +369,20 @@ class OvercookedV3(MultiAgentEnv):
 
         # Extract pressure plate info from layout
         self._pressure_plate_positions = np.zeros((MAX_PRESSURE_PLATES, 2), dtype=np.int32)
-        self._pressure_plate_linked_barrier = np.zeros(MAX_PRESSURE_PLATES, dtype=np.int32)
+        self._pressure_plate_linked_barrier = np.zeros(
+            (MAX_PRESSURE_PLATES, MAX_BARRIERS), dtype=bool
+        )
         self._pressure_plate_action_type = np.zeros(MAX_PRESSURE_PLATES, dtype=np.int32)
         self._pressure_plate_active_mask = np.zeros(MAX_PRESSURE_PLATES, dtype=bool)
 
         # Iterate through the actual pressure plate info provided by the layout
-        for i, (y, x, barrier_idx, action_type) in enumerate(layout.pressure_plate_info[:MAX_PRESSURE_PLATES]):
+        for i, (y, x, barrier_targets, action_type) in enumerate(
+            layout.pressure_plate_info[:MAX_PRESSURE_PLATES]
+        ):
             self._pressure_plate_positions[i] = [y, x]
-            self._pressure_plate_linked_barrier[i] = barrier_idx
+            for barrier_idx in barrier_targets:
+                if 0 <= barrier_idx < MAX_BARRIERS:
+                    self._pressure_plate_linked_barrier[i, barrier_idx] = True
             self._pressure_plate_action_type[i] = action_type
             self._pressure_plate_active_mask[i] = True
 
@@ -653,7 +659,7 @@ class OvercookedV3(MultiAgentEnv):
 
         def _check_pressure_plate(barrier_walkable, plate_idx):
             plate_valid = state.pressure_plate_active_mask[plate_idx]
-            linked_barrier_idx = state.pressure_plate_linked_barrier[plate_idx]
+            linked_barrier_mask = state.pressure_plate_linked_barrier[plate_idx]
 
             # Check if any agent is on this pressure plate
             def _agent_on_plate(agent_pos):
@@ -666,10 +672,8 @@ class OvercookedV3(MultiAgentEnv):
 
             plate_pressed = plate_valid & any_agent_on_plate
 
-            # Mark the linked barrier as walkable if this plate is pressed
-            updated_barrier_walkable = barrier_walkable.at[linked_barrier_idx].set(
-                barrier_walkable[linked_barrier_idx] | plate_pressed
-            )
+            # Mark all linked barriers as walkable if this plate is pressed.
+            updated_barrier_walkable = barrier_walkable | (linked_barrier_mask & plate_pressed)
             return updated_barrier_walkable, None
 
         barrier_walkable_by_pressure_plate, _ = jax.lax.scan(
@@ -1418,48 +1422,49 @@ class OvercookedV3(MultiAgentEnv):
         agent_xs = state.agents.pos.x
         agent_ys = state.agents.pos.y
 
-        def _check_single_plate(barrier_carry, plate_idx):
-            
-            # Get plate location and the barrier index it points to
+        def _check_single_plate(carry, plate_idx):
+            barrier_carry, timer_carry = carry
+
             py = state.pressure_plate_positions[plate_idx, 0]
             px = state.pressure_plate_positions[plate_idx, 1]
             is_active = state.pressure_plate_active_mask[plate_idx]
-            target_idx = state.pressure_plate_action_type[plate_idx]
+            linked_barrier_mask = (
+                state.pressure_plate_linked_barrier[plate_idx] & state.barrier_active_mask
+            )
+            action_type = state.pressure_plate_action_type[plate_idx]
 
             # Check for agent overlap
             agent_on_plate = jnp.any((agent_xs == px) & (agent_ys == py))
-            should_open = is_active & agent_on_plate
+            plate_triggered = is_active & agent_on_plate
 
-            # Update the specific barrier in the array
-            # This only modifies the barrier at the index 'target_idx'
-            new_barriers = jax.lax.select(
-                should_open,
-                barrier_carry.at[target_idx].set(False),
-                barrier_carry,
+            # Default pressure plate behavior is to open linked barriers while pressed.
+            is_open_action = (
+                (action_type == ButtonAction.TOGGLE_BARRIER)
+                | (action_type == ButtonAction.TIMED_BARRIER)
             )
-            
-            return new_barriers, agent_on_plate
+            should_open = plate_triggered & is_open_action
+            new_barriers = jnp.where(linked_barrier_mask & should_open, False, barrier_carry)
+
+            # TIMED_BARRIER additionally starts per-barrier timers.
+            should_time = plate_triggered & (action_type == ButtonAction.TIMED_BARRIER)
+            new_timers = jnp.where(
+                linked_barrier_mask & should_time,
+                state.barrier_duration,
+                timer_carry,
+            )
+
+            return (new_barriers, new_timers), plate_triggered
 
         # Iterate (scan) through all plates
-        final_barriers, toggled_mask = jax.lax.scan(
+        (final_barriers, final_timers), toggled_mask = jax.lax.scan(
             _check_single_plate, 
-            state.barrier_active, 
+            (state.barrier_active, state.barrier_timer),
             jnp.arange(MAX_PRESSURE_PLATES)
         )
 
         return state.replace(
             barrier_active=final_barriers,
-            pressure_plate_toggled=toggled_mask
-        )
-
-        final_barrier_active, toggled_mask = jax.lax.scan(
-            _check_single_plate, 
-            state.barrier_active, 
-            jnp.arange(MAX_PRESSURE_PLATES)
-        )
-
-        return state.replace(
-            barrier_active=final_barrier_active,
+            barrier_timer=final_timers,
             pressure_plate_toggled=toggled_mask
         )
     

@@ -6,7 +6,7 @@ DESIGN NOTES:
 
 from jaxmarl.environments.overcooked_v3.common import StaticObject, Direction, ButtonAction
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 from dataclasses import dataclass, field
 import itertools
 
@@ -267,11 +267,11 @@ WWWWWWRWW
 pressure_gated_zones = """
 WWWWWWW0W
 WP  #   1
-W  _R_  W
-W _ W _ W
-W#RWWWR#W
-W _ W _ W
-W  _R_ AW
+W _ # _ W
+W   #   W
+W###W###W
+W   #   W
+W _ # _AW
 WB  # AXW
 WWWWWWWWW
 """
@@ -316,8 +316,8 @@ class Layout:
     # Buttons: list of (y, x, linked_wall_idx, action_type) tuples
     button_info: List[Tuple[int, int, int, int]] = field(default_factory=list)
 
-    # Pressure Plates: list of (y, x, target_barrier_idx, action_type) tuples
-    pressure_plate_info: List[Tuple[int, int, int, int]] = field(default_factory=list)
+    # Pressure Plates: list of (y, x, target_barrier_indices, action_type) tuples
+    pressure_plate_info: List[Tuple[int, int, Tuple[int, ...], int]] = field(default_factory=list)
 
     # Barriers: list of (y, x, active) tuples
     barrier_info: List[Tuple[int, int, bool]] = field(default_factory=list)
@@ -391,8 +391,8 @@ class Layout:
             Buttons (interact to trigger linked wall action):
             !: button (linked to wall by button_config)
 
-            Pressure Plate (interact to trigger linked wall action):
-            _: pressure plate (linked to wall by button_config, triggers when agent overlaps)
+            Pressure Plate (triggers when an agent overlaps):
+            _: pressure plate (linked to barriers by pressure_plate_config)
 
             Barriers (togglable blocking tiles):
             #: barrier (blocks all movement when active)
@@ -409,6 +409,11 @@ class Layout:
                 Default: all (0, ButtonAction.TOGGLE_DIRECTION).
             barrier_config: List of bools per barrier (by parse order),
                 whether barrier is initially active. Default: all False.
+            pressure_plate_config: List of (targets, action_type) per pressure
+                plate (by parse order). targets can be either a single barrier
+                index (int) or a tuple/list of barrier indices to control.
+                Default: all pressure plates target barrier 0 with
+                ButtonAction.TOGGLE_BARRIER.
 
         Legacy:
             O: onion pile - will be interpreted as ingredient 0
@@ -580,7 +585,10 @@ class Layout:
             for (y, x), active in zip(barrier_positions, barrier_config)
         ]
 
-        # Build pressure plate info with config
+        # Build pressure plate info with config.
+        # pressure_plate_config entries support either:
+        # - (barrier_idx, action_type)
+        # - ((barrier_idx_1, barrier_idx_2, ...), action_type)
         if pressure_plate_config is None:
             pressure_plate_config = [(0, ButtonAction.TOGGLE_BARRIER)] * len(pressure_plate_positions)
         if len(pressure_plate_config) != len(pressure_plate_positions):
@@ -588,10 +596,27 @@ class Layout:
                 f"pressure_plate_config length ({len(pressure_plate_config)}) must match "
                 f"number of pressure plates ({len(pressure_plate_positions)})"
             )
-        pressure_plate_info = [
-            (y, x, barrier_idx, action_type)
-            for (y, x), (barrier_idx, action_type) in zip(pressure_plate_positions, pressure_plate_config)
-        ]
+        pressure_plate_info = []
+        for (y, x), (barrier_targets, action_type) in zip(pressure_plate_positions, pressure_plate_config):
+            if isinstance(barrier_targets, int):
+                normalized_targets = (barrier_targets,)
+            elif isinstance(barrier_targets, (tuple, list)):
+                if len(barrier_targets) == 0:
+                    raise ValueError("pressure_plate_config barrier target tuple/list cannot be empty")
+                normalized_targets = tuple(int(idx) for idx in barrier_targets)
+            else:
+                raise ValueError(
+                    "pressure_plate_config entries must use an int or tuple/list of ints as the first value"
+                )
+
+            for barrier_idx in normalized_targets:
+                if barrier_idx < 0 or barrier_idx >= len(barrier_positions):
+                    raise ValueError(
+                        f"pressure plate target barrier index {barrier_idx} is out of range for "
+                        f"{len(barrier_positions)} barriers"
+                    )
+
+            pressure_plate_info.append((y, x, normalized_targets, action_type))
 
         layout = Layout(
             agent_positions=agent_positions,
@@ -722,20 +747,24 @@ overcooked_v3_layouts = {
         pressure_gated_zones,
         possible_recipes=[[0, 0, 0]],
         pressure_plate_config=[
-            (0, ButtonAction.TOGGLE_BARRIER),
-            (0, ButtonAction.TOGGLE_BARRIER),
-            (1, ButtonAction.TOGGLE_BARRIER),
-            (2, ButtonAction.TOGGLE_BARRIER),
-            (1, ButtonAction.TOGGLE_BARRIER),
-            (2, ButtonAction.TOGGLE_BARRIER),
-            (3, ButtonAction.TOGGLE_BARRIER),
-            (3, ButtonAction.TOGGLE_BARRIER)
+            ((0,1,2,3,4,5), ButtonAction.TOGGLE_BARRIER),
+            ((0,1,2,6,7,8), ButtonAction.TOGGLE_BARRIER),
+            ((3,4,5,9,10,11), ButtonAction.TOGGLE_BARRIER),
+            ((6,7,8,9,10,11), ButtonAction.TOGGLE_BARRIER)
         ],
         barrier_config=[
-            True,  # Barrier 0 (?) - initially active
-            True,  # Barrier 1 (?) - initially active
-            True,  # Barrier 2 (?) - initially active
-            True  # Barrier 3 (?) - initially active
+            True, # Barrier 0 (?) - initially active
+            True, # Barrier 1 (?) - initially active
+            True, # Barrier 2 (?) - initially active
+            True, # Barrier 3 (?) - initially active
+            True, # Barrier 4 (?) - initially active
+            True, # Barrier 5 (?) - initially active
+            True, # Barrier 6 (?) - initially active
+            True, # Barrier 7 (?) - initially active
+            True, # Barrier 8 (?) - initially active
+            True, # Barrier 9 (?) - initially active
+            True, # Barrier 10 (?) - initially active
+            True  # Barrier 11 (?) - initially active
         ],
     ),
 
