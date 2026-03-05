@@ -134,6 +134,9 @@ class OvercookedV3Visualizer:
         barrier_active = state.barrier_active
         barrier_timer = state.barrier_timer
         barrier_active_mask = state.barrier_active_mask
+        pressure_plate_positions = state.pressure_plate_positions
+        pressure_plate_active_mask = state.pressure_plate_active_mask
+        pressure_plate_toggled = state.pressure_plate_toggled
 
         num_agents = agents.dir.shape[0]
 
@@ -201,6 +204,35 @@ class OvercookedV3Visualizer:
 
         grid, _ = jax.lax.scan(
             _update_barrier_in_grid, grid, jnp.arange(barrier_active_mask.shape[0])
+        )
+
+        # Update pressure plate info in grid for rendering
+        def _update_pressure_plate_in_grid(grid, plate_idx):
+            is_valid = pressure_plate_active_mask[plate_idx]
+
+            def _update_plate(grid):
+                plate_y = pressure_plate_positions[plate_idx, 0]
+                plate_x = pressure_plate_positions[plate_idx, 1]
+
+                # Only update if static object is still a pressure plate (not occupied by agent)
+                current_static = grid[plate_y, plate_x, 0]
+                is_plate = current_static == StaticObject.PRESSURE_PLATE
+
+                # Store pressed state in channel 2 for visual feedback
+                plate_state = jnp.where(pressure_plate_toggled[plate_idx], 1, 0)
+                return jax.lax.select(
+                    is_plate,
+                    grid.at[plate_y, plate_x, 2].set(plate_state),
+                    grid,
+                )
+
+            new_grid = jax.lax.select(is_valid, _update_plate(grid), grid)
+            return new_grid, None
+
+        grid, _ = jax.lax.scan(
+            _update_pressure_plate_in_grid,
+            grid,
+            jnp.arange(pressure_plate_active_mask.shape[0]),
         )
 
         static_objects = grid[:, :, 0]
@@ -589,10 +621,32 @@ class OvercookedV3Visualizer:
             
             return img
 
+        def _render_pressure_plate(cell, img):
+            """Render pressure plate as red outline on a dark tile."""
+            is_pressed = cell[2] > 0
+
+            # Unpressed: dark tile with square red outline.
+            img_unpressed = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["black"]
+            )
+            img_unpressed = rendering.fill_coords(
+                img_unpressed, rendering.point_in_rect(0.14, 0.86, 0.14, 0.86), COLORS["red"]
+            )
+            img_unpressed = rendering.fill_coords(
+                img_unpressed, rendering.point_in_rect(0.24, 0.76, 0.24, 0.76), COLORS["black"]
+            )
+
+            # Pressed: add a red center indicator.
+            img_pressed = rendering.fill_coords(
+                img_unpressed, rendering.point_in_circle(0.5, 0.5, 0.11), COLORS["red"]
+            )
+
+            return jax.lax.select(is_pressed, img_pressed, img_unpressed)
 
         # Build render function lookup
         # Map static object types to render functions
-        render_fns = [_render_empty] * 26  # Enough for all object types (up to 25)
+        # Keep an extra slot at the end for ingredient piles dispatch.
+        render_fns = [_render_empty] * 27  # StaticObject max is 25, slot 26 is ingredient pile
         render_fns[StaticObject.EMPTY] = _render_empty
         render_fns[StaticObject.WALL] = _render_wall
         render_fns[StaticObject.AGENT] = _render_agent
@@ -606,6 +660,7 @@ class OvercookedV3Visualizer:
         render_fns[StaticObject.MOVING_WALL] = _render_moving_wall
         render_fns[StaticObject.BUTTON] = _render_button
         render_fns[StaticObject.BARRIER] = _render_barrier
+        render_fns[StaticObject.PRESSURE_PLATE] = _render_pressure_plate
 
         # Handle ingredient piles (10-19)
         is_ingredient_pile = (static_object >= StaticObject.INGREDIENT_PILE_BASE) & \
