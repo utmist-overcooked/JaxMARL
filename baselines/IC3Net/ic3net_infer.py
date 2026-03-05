@@ -207,6 +207,14 @@ def main(config):
             from jaxmarl.viz.overcooked_visualizer import OvercookedVisualizer
             viz = OvercookedVisualizer()
             viz.animate(best_seq, env.agent_view_size, filename=save_gif)
+        elif config["ENV_NAME"] == "overcooked_v3":
+            from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
+
+            stacked_seq = jax.tree_util.tree_map(
+                lambda *xs: jnp.stack(xs), *best_seq
+            )
+            viz = OvercookedV3Visualizer(env)
+            viz.animate(stacked_seq, filename=save_gif)
         else:
             from jaxmarl.viz.visualizer import Visualizer
             viz = Visualizer(env, best_seq)

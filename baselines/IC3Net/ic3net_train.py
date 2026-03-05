@@ -528,10 +528,74 @@ def make_train(config):
     }
 
 
+def _build_cramped_room_sweep_configuration():
+    """W&B sweep config for ic3net_overcooked_v3 (refined from sweep analysis).
+
+    Narrowed ranges based on top-5 performers from around_the_island sweeps:
+      - High LR (0.002-0.003), large hidden dim (256), 2 comm passes,
+        grad norm 1.0, higher value coeff (0.75-1.0).
+    """
+    return {
+        "method": "bayes",
+        "metric": {"goal": "maximize", "name": "mean_reward_per_step"},
+        "parameters": {
+            "LR": {"distribution": "log_uniform_values", "min": 8e-4, "max": 3e-3},
+            "ENTROPY_COEFF": {
+                "distribution": "log_uniform_values",
+                "min": 1e-4,
+                "max": 5e-3,
+            },
+            "VALUE_COEFF": {"values": [0.75, 1.0]},
+            "MAX_GRAD_NORM": {"values": [0.5, 1.0]},
+            "RMSPROP_ALPHA": {"values": [0.95, 0.97, 0.99]},
+            "GAMMA": {"values": [0.99, 0.995]},
+            "DETACH_GAP": {"values": [5, 10]},
+            "HIDDEN_DIM": {"values": [128, 256]},
+            "SHAPED_REWARD_COEFF": {"values": [2.0, 3.0, 5.0]},
+        },
+    }
+
+
+def run_wandb_sweep(base_config):
+    """Run a W&B sweep using current config as base defaults."""
+    project = base_config.get("WANDB_PROJECT", "jaxmarl-ic3net")
+    sweep_count = int(base_config.get("WANDB_SWEEP_COUNT", 20))
+    sweep_configuration = _build_cramped_room_sweep_configuration()
+
+    def _objective():
+        with wandb.init(project=project, config=base_config, mode="online") as run:
+            run_config = dict(run.config)
+            train_config = dict(base_config)
+            train_config.update(run_config)
+            train_config["WANDB_MODE"] = "online"
+            train_config["WANDB_NAME"] = run.name
+            train_config["SAVE_PATH"] = os.path.join(
+                base_config.get("SAVE_PATH", "checkpoints/ic3net_overcooked_v3_cramped_room"),
+                f"sweep_{run.id}",
+            )
+
+            output = make_train(train_config)
+            final_mean_reward = output["metrics"].get("mean_reward_per_step", [0.0])[-1]
+            final_episode_return = output["metrics"].get("returned_episode_returns", [0.0])[-1]
+            wandb.log(
+                {
+                    "mean_reward_per_step": float(final_mean_reward),
+                    "final_episode_return": float(final_episode_return),
+                }
+            )
+
+    sweep_id = wandb.sweep(sweep=sweep_configuration, project=project)
+    wandb.agent(sweep_id, function=_objective, count=sweep_count)
+
+
 @hydra.main(version_base=None, config_path="config", config_name="ic3net_mpe")
 def main(config):
     """Main training entry point."""
-    config = OmegaConf.to_container(config)
+    config = OmegaConf.to_container(config, resolve=True)
+
+    if config.get("WANDB_SWEEP", False):
+        run_wandb_sweep(config)
+        return
 
     # Setup wandb
     if config.get("WANDB_MODE", "disabled") != "disabled":
