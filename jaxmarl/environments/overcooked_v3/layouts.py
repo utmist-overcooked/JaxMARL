@@ -176,8 +176,8 @@ WWWWWWWW
 """
 
 around_the_island = """
-WW0W1WWWWW
-B        W
+WW0W1BWWWW
+W        W
 W  A     W
 WWWWWWW  X
 W  A     W

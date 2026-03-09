@@ -19,12 +19,31 @@ from flax.linen.initializers import constant, orthogonal
 from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
+from flax import serialization
 import jaxmarl
 from jaxmarl.wrappers.baselines import LogWrapper
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 import hydra
 from omegaconf import OmegaConf
 import wandb
+
+
+def _save_model_params(params, save_path):
+    """Save model params to a msgpack checkpoint."""
+    os.makedirs(save_path, exist_ok=True)
+    model_path = os.path.join(save_path, "model.msgpack")
+    with open(model_path, "wb") as f:
+        f.write(serialization.to_bytes({"params": params}))
+    print(f"** Checkpoint saved to: {model_path} **", flush=True)
+    return model_path
+
+
+def _load_model_params(checkpoint_path, template_params):
+    """Load model params from a msgpack checkpoint."""
+    with open(checkpoint_path, "rb") as f:
+        data = f.read()
+    restored = serialization.from_bytes({"params": template_params}, data)
+    return restored["params"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -168,6 +187,12 @@ def make_train(config):
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros((1, *env.observation_space("agent_0").shape))
         network_params = network.init(_rng, init_x)
+
+        # Optionally warm-start from a pre-trained checkpoint
+        init_ckpt = config.get("INIT_CHECKPOINT", None)
+        if init_ckpt:
+            print(f"** Loading init weights from: {init_ckpt} **", flush=True)
+            network_params = _load_model_params(init_ckpt, network_params)
 
         if config.get("ANNEAL_LR", True):
             tx = optax.chain(
@@ -357,6 +382,13 @@ def main(config):
 
     print("** Saving Results **", flush=True)
     train_state = jax.tree.map(lambda x: x[0], out["runner_state"][0])
+
+    # Save checkpoint
+    save_path = config.get("SAVE_CHECKPOINT_PATH") or os.path.join(
+        "/workspace/JaxMARL/checkpoints",
+        f'ippo_cnn_v3_{config["ENV_KWARGS"]["layout"]}'
+    )
+    _save_model_params(train_state.params, save_path)
     state_seq_list = get_rollout(train_state.params, config)
     state_seq = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq_list)
 

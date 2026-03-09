@@ -35,3 +35,8 @@ WANDB_MODE: "disabled"
 
 # Set to an absolute path to control where the gif is saved
 SAVE_GIF_PATH: ~
+
+# Checkpoint paths (~ means use default auto-generated path)
+SAVE_CHECKPOINT_PATH: ~
+# Set to a .msgpack path to warm-start from pre-trained weights
+INIT_CHECKPOINT: ~
