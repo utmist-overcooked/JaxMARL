@@ -16,4 +16,15 @@ wandb/
 outputs/
 models/
 venv/
-.history/
+**/*.msgpack
+*.bak
+*.bak2
+/checkpoints/*
+/baselines/*/checkpoints/*
+/baselines/*/results/*
+/logs/*
+/logs/*/*
+/outputs/*
+/outputs/*/*
+build/
+*.csv

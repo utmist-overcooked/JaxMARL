@@ -1,0 +1,48 @@
+# IPPO RNN training configuration for Overcooked V3
+# Based on ic3net_overcooked_v3_cramped_room + ippo_rnn_overcooked_v2 defaults
+ENV_NAME: "overcooked_v3"
+ENV_KWARGS:
+  layout: "cramped_room"
+  max_steps: 400
+
+# Network
+GRU_HIDDEN_DIM: 128
+FC_DIM_SIZE: 128
+ACTIVATION: "relu"
+
+# Training
+TOTAL_TIMESTEPS: 80_000_000
+NUM_ENVS: 128
+NUM_STEPS: 200
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 8
+ANNEAL_LR: true
+
+# Reward shaping (linear anneal from 1.0 → 0.0 over this many timesteps)
+# Set to 50% of TOTAL_TIMESTEPS (matching v1 baseline ratio).
+REW_SHAPING_HORIZON: 60_000_000
+# v3 shaped rewards are 0.1–0.3; v1 uses 3.0–5.0.
+# SHAPED_REWARD_COEFF=30 makes v3 values (30×0.1=3.0) match v1 magnitudes.
+SHAPED_REWARD_COEFF: 30.0
+
+# PPO hyperparameters (matching v1 IPPO baseline)
+LR: 0.0005
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+ENT_COEF_MIN: 0.0
+ENTROPY_FLOOR: 0.0
+ENTROPY_FLOOR_COEF: 0.0
+VF_COEF: 0.5
+MAX_GRAD_NORM: 0.5
+
+# Logging
+WANDB_MODE: "disabled"
+WANDB_PROJECT: "jaxmarl-ippo"
+WANDB_NAME: "ippo_rnn_overcooked_v3_cramped_room"
+SAVE_PATH: "checkpoints/ippo_overcooked_v3_cramped_room"
+LOG_EVERY: 100
+CHECKPOINT_EVERY: 5000
+
+SEED: 42

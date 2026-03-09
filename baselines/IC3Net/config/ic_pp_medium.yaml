@@ -1,0 +1,34 @@
+# IC (Independent Controller) training configuration for PredatorPrey (Medium)
+ENV_NAME: "predator_prey_grid"
+ENV_KWARGS:
+  num_agents: 5
+  dim: 10
+  vision: 1
+  max_steps: 40
+  mode: "mixed"
+
+BASELINE: "ic"
+HIDDEN_DIM: 128
+RECURRENT: true
+DETACH_GAP: 10
+
+TOTAL_TIMESTEPS: 12_800_000
+NUM_ENVS: 16
+NUM_STEPS: 40
+GAMMA: 1.0
+NORMALIZE_ADVANTAGES: false
+
+LR: 0.001
+RMSPROP_ALPHA: 0.97
+RMSPROP_EPS: 1e-6
+MAX_GRAD_NORM: 0.5
+VALUE_COEFF: 0.01
+ENTROPY_COEFF: 0.0
+
+WANDB_MODE: "disabled"
+WANDB_PROJECT: "jaxmarl-ic3net"
+WANDB_NAME: "ic_pp_medium"
+SAVE_PATH: "checkpoints/ic_pp_medium"
+LOG_EVERY: 100
+SEED: 42
+

@@ -1,0 +1,21 @@
+# Inference config for around_the_island sweep_yeki1tfh checkpoint
+ENV_NAME: "overcooked_v3"
+ENV_KWARGS:
+  layout: "around_the_island"
+  max_steps: 200
+
+BASELINE: "ic3net"
+HIDDEN_DIM: 128
+RECURRENT: true
+COMM_PASSES: 2
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false
+
+MAX_STEPS: 200
+DETERMINISTIC: true
+NUM_EPISODES: 5
+SEED: 42
+
+MODEL_PATH: "/workspace/JaxMARL/checkpoints/ic3net_overcooked_v3_all_maps_sweeps/around_the_island/train_sweeps/sweep_yeki1tfh/model.msgpack"
+SAVE_GIF: "/workspace/JaxMARL/exports/ic3net_around_the_island_sweep_yeki1tfh.gif"

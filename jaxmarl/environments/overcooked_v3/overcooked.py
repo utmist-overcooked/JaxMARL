@@ -673,6 +673,14 @@ class OvercookedV3(MultiAgentEnv):
             + object_is_conveyor * ~object_has_no_ingredients * inventory_is_empty
         )
 
+        # Ingredient pickup reward (picking up ingredient from pile)
+        if self.shaped_rewards_enabled:
+            successful_ingredient_pickup = object_is_ingredient_pile * inventory_is_empty
+            shaped_reward += (
+                successful_ingredient_pickup
+                * SHAPED_REWARDS["INGREDIENT_PICKUP"]
+            )
+
         # Pot placement
         pot_full = DynamicObject.ingredient_count(interact_ingredients) == 3
 
