@@ -68,12 +68,13 @@ for MAP_NAME in "${MAPS[@]}"; do
     ENV_KWARGS.layout="$MAP_NAME" \
     SAVE_PATH="$TRAIN_SAVE_PATH" \
     NUM_ENVS=128 \
-    USE_SHAPED_REWARD=true \
-    SHAPED_REWARD_COEFF=2.0 \
+    REW_SHAPING_HORIZON=80000000 \
+    SHAPED_REWARD_COEFF=40.0 \
+    ENT_COEF=0.05 \
     WANDB_MODE="$WANDB_MODE" \
     WANDB_PROJECT="$WANDB_PROJECT" \
     WANDB_NAME="ippo_overcooked_v3_${MAP_NAME}_train_sweep" \
-    +WANDB_SWEEP=TRUE \
+    +WANDB_SWEEP=true \
     +WANDB_SWEEP_COUNT="$WANDB_SWEEP_COUNT"; then
     echo "WARNING: train sweep failed for map=$MAP_NAME; continuing to next map"
     continue

@@ -1,0 +1,37 @@
+# IPPO CNN training configuration for Overcooked V3 - cramped_room
+# Exact same hyperparameters as ippo_cnn_overcooked.yaml (v1)
+# Only addition: SHAPED_REWARD_COEFF=30 to compensate v3's smaller raw rewards
+ENV_NAME: "overcooked_v3"
+ENV_KWARGS:
+  layout: "cramped_room"
+  max_steps: 400
+
+LR: 0.0005
+NUM_ENVS: 64
+NUM_STEPS: 256
+TOTAL_TIMESTEPS: 5_000_000
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 16
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+VF_COEF: 0.5
+MAX_GRAD_NORM: 0.5
+ACTIVATION: "relu"
+ANNEAL_LR: true
+
+# v3 raw shaped rewards are 0.1-0.3; v1 are 3.0-5.0
+# COEFF=30 brings them to the same magnitude (~3.0 per useful action)
+SHAPED_REWARD_COEFF: 30.0
+REW_SHAPING_HORIZON: 2_500_000
+
+SEED: 42
+NUM_SEEDS: 1
+
+ENTITY: ""
+PROJECT: "ippo_v3_cnn"
+WANDB_MODE: "disabled"
+
+# Set to an absolute path to control where the gif is saved
+SAVE_GIF_PATH: ~

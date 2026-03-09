@@ -27,3 +27,4 @@ venv/
 /outputs/*
 /outputs/*/*
 build/
+*.csv
