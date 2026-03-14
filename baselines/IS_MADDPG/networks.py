@@ -361,7 +361,7 @@ class ISAgentNet(nn.Module):
 
         hat_o = obs           # imagined obs  at step h
         hat_a = action_onehot # imagined action at step h
-        key   = key_rollout
+        key   = key_rollout    
 
         for _ in range(self.horizon_H - 1):
             # Advance the PRNG (subkey unused here but kept for reproducibility
@@ -378,6 +378,11 @@ class ISAgentNet(nn.Module):
             # --- Predict next obs as current obs + residual delta ---
             obs_in     = jnp.concatenate([hat_o, hat_a, pred_other_probs], axis=-1)
             delta_o    = self.obs_predictor(obs_in)             # (B, obs_dim)
+
+            # Clip delta to prevent runaway imagined trajectories.
+            # Without this, obs_predictor errors compound over H steps
+            # and produce inf/nan that propagates into the attention output.
+            delta_o    = jnp.clip(delta_o, -1.0, 1.0)            
             hat_o_next = hat_o + delta_o                        # residual connection
 
             # --- Compute own soft action at predicted next obs ---
@@ -404,6 +409,35 @@ class ISAgentNet(nn.Module):
         message_out, alpha = self.attention(msgs_flat, imagined_trajectory)
 
         return action_logits, action_onehot, message_out, alpha
+    
+    
+    def apply_action_predictor(self, obs: jnp.ndarray) -> jnp.ndarray:
+        """Call action_predictor submodule directly.
+
+        Used in update.py to compute other-agent action prediction loss
+        without running the full forward pass.
+
+        Args:
+            obs: (B, obs_dim)
+
+        Returns:
+            (B, (N-1) * act_dim)  flat logits for all other agents
+        """
+        return self.action_predictor(obs)
+    
+
+    def apply_obs_predictor(self, obs_pred_input: jnp.ndarray) -> jnp.ndarray:
+        """Call obs_predictor submodule directly.
+
+        Used in update.py to compute next-obs delta prediction loss.
+
+        Args:
+            obs_pred_input: (B, obs_dim + act_dim + (N-1)*act_dim)
+
+        Returns:
+            (B, obs_dim)  predicted observation delta
+        """
+        return self.obs_predictor(obs_pred_input)
 
 
 # ---------------------------------------------------------------------------
