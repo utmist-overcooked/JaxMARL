@@ -54,7 +54,7 @@ def main():
     # pressure_gated_circuit
     # pressure_gated_zones
     # twin_movement
-    layout_name = "pressure_gated_conveyor_access" # "pressure_plate_demo"
+    layout_name = "pressure_gated_zones" # "pressure_plate_demo"
 
     print("=" * 55)
     print("  OVERCOOKED V3 - Moving Walls & Buttons Demo")
@@ -88,7 +88,7 @@ def main():
     pygame.display.set_caption(f"Moving Walls Demo - {layout_name}")
     clock = pygame.time.Clock()
 
-    key = jax.random.PRNGKey(42)
+    key = jax.random.PsRNGKey(42)
     key, subkey = jax.random.split(key)
     obs, state = jit_reset(subkey)
 

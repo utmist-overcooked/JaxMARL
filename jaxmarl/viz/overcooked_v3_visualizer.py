@@ -62,6 +62,24 @@ AGENT_COLORS = jnp.array(
     ]
 )
 
+# Distinct palette used to visually pair pressure plates with their linked barriers.
+PAIR_COLORS = jnp.array(
+    [
+        jnp.array([255, 99, 71], dtype=jnp.uint8),    # tomato
+        jnp.array([30, 144, 255], dtype=jnp.uint8),   # dodger blue
+        jnp.array([50, 205, 50], dtype=jnp.uint8),    # lime green
+        jnp.array([255, 215, 0], dtype=jnp.uint8),    # gold
+        jnp.array([186, 85, 211], dtype=jnp.uint8),   # medium orchid
+        jnp.array([255, 140, 0], dtype=jnp.uint8),    # dark orange
+        jnp.array([0, 206, 209], dtype=jnp.uint8),    # dark turquoise
+        jnp.array([255, 105, 180], dtype=jnp.uint8),  # hot pink
+        jnp.array([205, 133, 63], dtype=jnp.uint8),   # peru
+        jnp.array([154, 205, 50], dtype=jnp.uint8),   # yellow green
+        jnp.array([70, 130, 180], dtype=jnp.uint8),   # steel blue
+        jnp.array([220, 20, 60], dtype=jnp.uint8),    # crimson
+    ]
+)
+
 
 class OvercookedV3Visualizer:
     """Visualizer for Overcooked V3 environment."""
@@ -135,6 +153,7 @@ class OvercookedV3Visualizer:
         barrier_timer = state.barrier_timer
         barrier_active_mask = state.barrier_active_mask
         pressure_plate_positions = state.pressure_plate_positions
+        pressure_plate_linked_barrier = state.pressure_plate_linked_barrier
         pressure_plate_active_mask = state.pressure_plate_active_mask
         pressure_plate_toggled = state.pressure_plate_toggled
 
@@ -173,6 +192,20 @@ class OvercookedV3Visualizer:
             _update_pot_timer_in_grid, grid, jnp.arange(pot_positions.shape[0])
         )
 
+        # Build stable pair ids from plate<->barrier links so each pair shares a color.
+        plate_pair_ids = jnp.arange(pressure_plate_positions.shape[0], dtype=jnp.int32)
+        barrier_to_plate_links = (
+            pressure_plate_linked_barrier & pressure_plate_active_mask[:, None]
+        ).T
+        barrier_has_linked_plate = jnp.any(barrier_to_plate_links, axis=1)
+        barrier_first_plate = jnp.argmax(barrier_to_plate_links, axis=1).astype(jnp.int32)
+        barrier_pair_ids = jnp.where(
+            barrier_has_linked_plate,
+            plate_pair_ids[barrier_first_plate],
+            jnp.arange(barrier_positions.shape[0], dtype=jnp.int32)
+            + pressure_plate_positions.shape[0],
+        )
+
         # Update barrier info in grid for rendering
         def _update_barrier_in_grid(grid, barrier_idx):
             is_valid = barrier_active_mask[barrier_idx]
@@ -187,9 +220,15 @@ class OvercookedV3Visualizer:
                 
                 active = barrier_active[barrier_idx]
                 timer = barrier_timer[barrier_idx]
+                pair_id = barrier_pair_ids[barrier_idx] & 0xFF
                 
-                # Encode barrier state in channel 2: [active (1 bit), timer_value (31 bits)]
-                barrier_state = jnp.where(active, 1, 0) | (timer << 1)
+                # Encode barrier state in channel 2:
+                # bit 0 active, bits 1-12 timer, bits 13-20 pair id.
+                barrier_state = (
+                    jnp.where(active, 1, 0)
+                    | ((timer & 0xFFF) << 1)
+                    | (pair_id << 13)
+                )
                 
                 # Only update if this is actually a barrier (not an agent standing on it)
                 new_grid = jax.lax.select(
@@ -218,8 +257,11 @@ class OvercookedV3Visualizer:
                 current_static = grid[plate_y, plate_x, 0]
                 is_plate = current_static == StaticObject.PRESSURE_PLATE
 
-                # Store pressed state in channel 2 for visual feedback
-                plate_state = jnp.where(pressure_plate_toggled[plate_idx], 1, 0)
+                # Store pressed state + pair id in channel 2 for paired coloring.
+                pair_id = plate_pair_ids[plate_idx] & 0xFF
+                plate_state = jnp.where(pressure_plate_toggled[plate_idx], 1, 0) | (
+                    pair_id << 1
+                )
                 return jax.lax.select(
                     is_plate,
                     grid.at[plate_y, plate_x, 2].set(plate_state),
@@ -535,7 +577,10 @@ class OvercookedV3Visualizer:
             """
             barrier_state = cell[2]  # Barrier state stored in channel 2
             is_active = barrier_state & 1
-            timer_value = barrier_state >> 1
+            timer_value = (barrier_state >> 1) & 0xFFF
+            pair_id = (barrier_state >> 13) & 0xFF
+            pair_color = PAIR_COLORS[pair_id % PAIR_COLORS.shape[0]]
+            inactive_fill = ((pair_color.astype(jnp.int32) + COLORS["light_grey"].astype(jnp.int32)) // 2).astype(jnp.uint8)
             
             # Base background
             img = rendering.fill_coords(
@@ -543,9 +588,9 @@ class OvercookedV3Visualizer:
             )
             
             # Render center based on active/inactive state
-            # Active: red with white X
+            # Active: paired color with white X
             active_center = rendering.point_in_rect(0.1, 0.9, 0.1, 0.9)
-            img_active = rendering.fill_coords(img, active_center, COLORS["red"])
+            img_active = rendering.fill_coords(img, active_center, pair_color)
             
             # Draw white lines for X (two diagonal lines)
             # Diagonal 1: top-left to bottom-right
@@ -561,31 +606,31 @@ class OvercookedV3Visualizer:
                 COLORS["white"]
             )
             
-            # Inactive: light grey with corner dots
+            # Inactive: muted paired color with corner dots
             inactive_center = rendering.point_in_rect(0.1, 0.9, 0.1, 0.9)
-            img_inactive = rendering.fill_coords(img, inactive_center, COLORS["light_grey"])
+            img_inactive = rendering.fill_coords(img, inactive_center, inactive_fill)
             
             # Draw corner indicators (small circles)
             corner_radius = 0.1
             img_c1 = rendering.fill_coords(
                 img_inactive,
                 rendering.point_in_circle(0.2, 0.2, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             img_c2 = rendering.fill_coords(
                 img_c1,
                 rendering.point_in_circle(0.8, 0.2, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             img_c3 = rendering.fill_coords(
                 img_c2,
                 rendering.point_in_circle(0.2, 0.8, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             img_c4 = rendering.fill_coords(
                 img_c3,
                 rendering.point_in_circle(0.8, 0.8, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             
             # Choose active or inactive version
@@ -623,22 +668,24 @@ class OvercookedV3Visualizer:
 
         def _render_pressure_plate(cell, img):
             """Render pressure plate as red outline on a dark tile."""
-            is_pressed = cell[2] > 0
+            is_pressed = (cell[2] & 1) > 0
+            pair_id = (cell[2] >> 1) & 0xFF
+            pair_color = PAIR_COLORS[pair_id % PAIR_COLORS.shape[0]]
 
-            # Unpressed: dark tile with square red outline.
+            # Unpressed: dark tile with paired-color outline.
             img_unpressed = rendering.fill_coords(
                 img, rendering.point_in_rect(0, 1, 0, 1), COLORS["black"]
             )
             img_unpressed = rendering.fill_coords(
-                img_unpressed, rendering.point_in_rect(0.14, 0.86, 0.14, 0.86), COLORS["red"]
+                img_unpressed, rendering.point_in_rect(0.14, 0.86, 0.14, 0.86), pair_color
             )
             img_unpressed = rendering.fill_coords(
                 img_unpressed, rendering.point_in_rect(0.24, 0.76, 0.24, 0.76), COLORS["black"]
             )
 
-            # Pressed: add a red center indicator.
+            # Pressed: add a paired-color center indicator.
             img_pressed = rendering.fill_coords(
-                img_unpressed, rendering.point_in_circle(0.5, 0.5, 0.11), COLORS["red"]
+                img_unpressed, rendering.point_in_circle(0.5, 0.5, 0.11), pair_color
             )
 
             return jax.lax.select(is_pressed, img_pressed, img_unpressed)

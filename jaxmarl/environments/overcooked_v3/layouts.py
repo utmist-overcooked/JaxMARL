@@ -232,11 +232,11 @@ WWWBWWW
 # Pressure Plate Sample Level - step on plate to toggle multiple walls
 pressure_plate_demo = """
 WWWWWWW
-0 #_AWW
+B #_AWW
 WWWW WW
 P #_  X
 WWWW WW
-1 #_AWW
+0 #_AWW
 WWWWWWW
 """
 

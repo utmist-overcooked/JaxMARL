@@ -174,7 +174,7 @@ class OvercookedV3(MultiAgentEnv):
     def __init__(
         self,
         layout: Union[str, Layout] = "cramped_room",
-        max_steps: int = 400,
+        max_steps: int = 10e9,
         observation_type: Union[
             ObservationType, List[ObservationType]
         ] = ObservationType.DEFAULT,
