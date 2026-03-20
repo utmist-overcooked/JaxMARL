@@ -42,3 +42,56 @@ hydra:
 "WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/ippo_overcooked_v3"
 "USE_RICH_MONITOR": True
 
+# CARBS sweep
+"TUNE": False
+"CARBS_NUM_TRIALS": 20
+
+"CARBS_SWEEP":
+  "LR":
+    space: "log"
+    scale: 0.5
+    min: 1.0e-4
+    max: 1.0e-2
+  # "NUM_ENVS":
+  #   space: "log"
+  #   scale: 0.5
+  #   min: 256
+  #   max: 1024
+  #   is_integer: true
+  #   round_pow2: true
+  # "NUM_STEPS":
+  #   space: "log"
+  #   scale: 0.5
+  #   min: 512
+  #   max: 2048
+  #   is_integer: true
+  #   round_pow2: true
+  # "UPDATE_EPOCHS":
+  #   space: "linear"
+  #   scale: 4
+  #   min: 1
+  #   max: 16
+  #   is_integer: true
+  # "NUM_MINIBATCHES":
+  #   space: "log"
+  #   scale: 0.5
+  #   min: 2
+  #   max: 64
+  #   is_integer: true
+  #   round_pow2: true
+  "CLIP_EPS":
+    space: "linear"
+    scale: 0.1
+    min: 0.05
+    max: 0.5
+  "ENT_COEF":
+    space: "log"
+    scale: 0.5
+    min: 1.0e-5
+    max: 0.1
+  "GAE_LAMBDA":
+    space: "linear"
+    scale: 0.05
+    min: 0.8
+    max: 1.0
+

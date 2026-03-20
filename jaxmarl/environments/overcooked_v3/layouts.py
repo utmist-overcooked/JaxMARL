@@ -30,6 +30,16 @@ W        W
 WWWPWWWWWW
 """
 
+around_the_island_nerfed = """
+WW0WWWWW
+B      W
+W  A   W
+WWWWW  X
+W  A   W
+W      W
+WWPWWWWW
+"""
+
 asymm_advantages = """
 WWWWWWWWW
 O WXWOW X
@@ -616,6 +626,10 @@ overcooked_v3_layouts = {
 
     "around_the_island": Layout.from_string(
         around_the_island, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "around_the_island_nerfed": Layout.from_string(
+        around_the_island_nerfed, possible_recipes=[[0, 0, 0]],
     ),
 
     "single_file": Layout.from_string(

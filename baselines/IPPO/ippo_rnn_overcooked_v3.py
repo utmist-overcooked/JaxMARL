@@ -5,6 +5,7 @@ which adds pot burning, order queues, and conveyor belts.
 """
 
 import datetime
+import time
 import jax
 import jax.api_util
 import jax.numpy as jnp
@@ -623,12 +624,8 @@ def make_train(config, monitor=None):
     return train
 
 
-@hydra.main(
-    version_base=None, config_path="config", config_name="ippo_rnn_overcooked_v3"
-)
-def main(config):
-    config = OmegaConf.to_container(config, resolve=True)
-
+def single_run(config):
+    """Execute a single training run."""
     layout_name = config["ENV_KWARGS"]["layout"]
     num_seeds = config["NUM_SEEDS"]
 
@@ -697,6 +694,112 @@ def main(config):
         )
         save_params(params, save_path)
         print(f"Saved params to {save_path}")
+
+
+def tune(config):
+    """Hyperparameter sweep with CARBS."""
+    from carbs_sweep import CARBSSweep
+    from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
+
+    layout_name = config["ENV_KWARGS"]["layout"]
+    sweep = CARBSSweep(config)
+
+    print(f"Starting CARBS sweep: {sweep.num_trials} trials, layout={layout_name}")
+
+    best_return = float("-inf")
+    best_params = None
+    best_trial_config = None
+
+    for trial in range(sweep.num_trials):
+        suggestion = sweep.suggest()
+        trial_config = sweep.apply_suggestion(suggestion)
+        trial_config["WANDB_MODE"] = "disabled"
+
+        print(f"\n{'='*60}")
+        print(f"Trial {trial+1}/{sweep.num_trials}")
+        print(f"  {CARBSSweep.format_suggestion(suggestion)}")
+
+        start_time = time.time()
+        try:
+            rng = jax.random.PRNGKey(trial_config["SEED"])
+            rngs = jax.random.split(rng, trial_config["NUM_SEEDS"])
+            train_fn = make_train(trial_config, monitor=None)
+            outs = jax.block_until_ready(jax.jit(jax.vmap(train_fn))(rngs))
+
+            final_return = float(
+                outs["metrics"]["returned_episode_returns"][:, -1].mean()
+            )
+            elapsed = time.time() - start_time
+
+            # Save best params
+            if final_return > best_return:
+                best_return = final_return
+                best_params = jax.tree.map(lambda x: x[0], outs["runner_state"][0].params)
+                best_trial_config = copy.deepcopy(trial_config)
+
+            sweep.observe(suggestion, output=final_return, cost=elapsed)
+            print(
+                f"  Return: {final_return:.2f}  Time: {elapsed:.1f}s  "
+                f"Best: {sweep.best_return:.2f}"
+            )
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            print(f"  FAILED: {e}")
+            sweep.observe_failure(suggestion, cost=elapsed)
+
+    sweep.print_summary()
+
+    # Save best model and generate rollout GIF
+    if best_params is not None:
+        model_path = os.path.join(sweep.save_dir, f"best_model_{layout_name}.safetensors")
+        save_params(best_params, model_path)
+        print(f"Saved best model to {model_path}")
+
+        # Generate rollout GIF
+        try:
+            env = OvercookedV3(**best_trial_config["ENV_KWARGS"])
+            network = ActorCriticRNN(env.action_space(env.agents[0]).n, config=best_trial_config)
+            hstate = ScannedRNN.initialize_carry(env.num_agents, best_trial_config["GRU_HIDDEN_DIM"])
+
+            rng = jax.random.PRNGKey(0)
+            rng, rng_reset = jax.random.split(rng)
+            obs, state = env.reset(rng_reset)
+            state_seq = [state]
+
+            max_steps = best_trial_config["ENV_KWARGS"].get("max_steps", 200)
+            for step in range(max_steps):
+                rng, rng_act = jax.random.split(rng)
+                obs_batch = jnp.stack([obs[a] for a in env.agents])
+                done_batch = jnp.zeros(env.num_agents)
+                ac_in = (obs_batch[np.newaxis, :], done_batch[np.newaxis, :])
+                hstate, pi, _ = network.apply(best_params, hstate, ac_in)
+                action = jnp.argmax(pi.logits, axis=-1)
+                actions = {a: action.squeeze()[i] for i, a in enumerate(env.agents)}
+                rng, rng_step = jax.random.split(rng)
+                obs, state, reward, dones, info = env.step(rng_step, state, actions)
+                state_seq.append(state)
+                if dones["__all__"]:
+                    break
+
+            stacked_states = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq)
+            gif_path = os.path.join(sweep.save_dir, f"rollout_{layout_name}.gif")
+            viz = OvercookedV3Visualizer(env)
+            viz.animate(stacked_states, filename=gif_path)
+            print(f"Saved rollout GIF to {gif_path}")
+        except Exception as e:
+            print(f"Failed to generate rollout GIF: {e}")
+
+
+@hydra.main(
+    version_base=None, config_path="config", config_name="ippo_rnn_overcooked_v3"
+)
+def main(config):
+    config = OmegaConf.to_container(config, resolve=True)
+    if config.get("TUNE", False):
+        tune(config)
+    else:
+        single_run(config)
 
 
 if __name__ == "__main__":
