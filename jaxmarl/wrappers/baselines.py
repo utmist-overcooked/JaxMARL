@@ -50,6 +50,8 @@ class LogEnvState:
     episode_lengths: int
     returned_episode_returns: float
     returned_episode_lengths: int
+    episode_deliveries: float
+    returned_episode_deliveries: float
 
 
 class LogWrapper(JaxMARLWrapper):
@@ -70,6 +72,8 @@ class LogWrapper(JaxMARLWrapper):
             jnp.zeros((self._env.num_agents,)),
             jnp.zeros((self._env.num_agents,)),
             jnp.zeros((self._env.num_agents,)),
+            jnp.zeros((self._env.num_agents,)),
+            jnp.zeros((self._env.num_agents,)),
         )
         return obs, state
 
@@ -86,6 +90,11 @@ class LogWrapper(JaxMARLWrapper):
         ep_done = done["__all__"]
         new_episode_return = state.episode_returns + self._batchify_floats(reward)
         new_episode_length = state.episode_lengths + 1
+        delivery_signal = jnp.full(
+            (self._env.num_agents,),
+            jnp.asarray(getattr(env_state, "new_correct_delivery", False), dtype=jnp.float32),
+        )
+        new_episode_deliveries = state.episode_deliveries + delivery_signal
         state = LogEnvState(
             env_state=env_state,
             episode_returns=new_episode_return * (1 - ep_done),
@@ -94,11 +103,18 @@ class LogWrapper(JaxMARLWrapper):
             + new_episode_return * ep_done,
             returned_episode_lengths=state.returned_episode_lengths * (1 - ep_done)
             + new_episode_length * ep_done,
+            episode_deliveries=new_episode_deliveries * (1 - ep_done),
+            returned_episode_deliveries=state.returned_episode_deliveries * (1 - ep_done)
+            + new_episode_deliveries * ep_done,
         )
         if self.replace_info:
             info = {}
         info["returned_episode_returns"] = state.returned_episode_returns
         info["returned_episode_lengths"] = state.returned_episode_lengths
+        info["returned_episode_deliveries"] = state.returned_episode_deliveries
+        info["delivery_count"] = {
+            agent: delivery_signal[i] for i, agent in enumerate(self._env.agents)
+        }
         info["returned_episode"] = jnp.full((self._env.num_agents,), ep_done)
         return obs, state, reward, done, info
     
@@ -110,6 +126,8 @@ class OvercookedV2LogEnvState:
     returned_episode_returns: float
     returned_episode_lengths: int
     returned_episode_recipe_returns: Dict[str, float]
+    episode_deliveries: float
+    returned_episode_deliveries: float
 
 
 class OvercookedV2LogWrapper(JaxMARLWrapper):
@@ -139,6 +157,8 @@ class OvercookedV2LogWrapper(JaxMARLWrapper):
             jnp.zeros((self._env.num_agents,)),
             jnp.zeros((self._env.num_agents,)),
             recipe_returns,
+            jnp.zeros((self._env.num_agents,)),
+            jnp.zeros((self._env.num_agents,)),
         )
         return obs, state
 
@@ -155,6 +175,11 @@ class OvercookedV2LogWrapper(JaxMARLWrapper):
         ep_done = done["__all__"]
         new_episode_return = state.episode_returns + self._batchify_floats(reward)
         new_episode_length = state.episode_lengths + 1
+        delivery_signal = jnp.full(
+            (self._env.num_agents,),
+            jnp.asarray(getattr(env_state, "new_correct_delivery", False), dtype=jnp.float32),
+        )
+        new_episode_deliveries = state.episode_deliveries + delivery_signal
 
         updated_recipe_returns = {
             id: jax.lax.select(
@@ -176,11 +201,19 @@ class OvercookedV2LogWrapper(JaxMARLWrapper):
                 ep_done, new_episode_length, state.returned_episode_lengths
             ),
             returned_episode_recipe_returns=updated_recipe_returns,
+            episode_deliveries=new_episode_deliveries * (1 - ep_done),
+            returned_episode_deliveries=jax.lax.select(
+                ep_done, new_episode_deliveries, state.returned_episode_deliveries
+            ),
         )
         if self.replace_info:
             info = {}
         info["returned_episode_returns"] = state.returned_episode_returns
         info["returned_episode_lengths"] = state.returned_episode_lengths
+        info["returned_episode_deliveries"] = state.returned_episode_deliveries
+        info["delivery_count"] = {
+            agent: delivery_signal[i] for i, agent in enumerate(self._env.agents)
+        }
         info["returned_episode"] = jnp.full((self._env.num_agents,), ep_done)
         info["returned_episode_recipe_returns"] = state.returned_episode_recipe_returns
         return obs, state, reward, done, info
@@ -212,11 +245,18 @@ class MPELogWrapper(LogWrapper):
             + new_episode_return * ep_done,
             returned_episode_lengths=state.returned_episode_lengths * (1 - ep_done)
             + new_episode_length * ep_done,
+            episode_deliveries=state.episode_deliveries * (1 - ep_done),
+            returned_episode_deliveries=state.returned_episode_deliveries * (1 - ep_done),
         )
         if self.replace_info:
             info = {}
         info["returned_episode_returns"] = state.returned_episode_returns
         info["returned_episode_lengths"] = state.returned_episode_lengths
+        info["returned_episode_deliveries"] = state.returned_episode_deliveries
+        info["delivery_count"] = {
+            agent: jnp.array(0.0, dtype=jnp.float32)
+            for agent in self._env.agents
+        }
         info["returned_episode"] = jnp.full((self._env.num_agents,), ep_done)
         return obs, state, reward, done, info
 

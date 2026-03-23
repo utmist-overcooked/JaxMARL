@@ -1,0 +1,37 @@
+"LR": 3e-4
+"NUM_ENVS": 32
+"NUM_STEPS": 256
+"TOTAL_TIMESTEPS": 2e7
+"FC_DIM_SIZE": 256
+"GRU_HIDDEN_DIM": 256
+"UPDATE_EPOCHS": 4
+"NUM_MINIBATCHES": 8
+"GAMMA": 0.99
+"GAE_LAMBDA": 0.95
+"CLIP_EPS": 0.2
+"SCALE_CLIP_EPS": False
+"ENT_COEF": 0.01
+"VF_COEF": 0.5
+"MAX_GRAD_NORM": 0.5
+"ACTIVATION": "relu"
+"SEED": 1
+"NUM_SEEDS": 1
+"ANNEAL_LR": True
+
+"ENV_NAME": "overcooked_v3"
+"ENV_KWARGS": {
+  "layout": "single_file",
+  "max_steps": 400,
+  "shaped_rewards": true
+}
+
+"TEST_DURING_TRAINING": True
+"TEST_INTERVAL": 0.05
+"TEST_NUM_STEPS": 256
+"NUM_TEST_ENVS": 16
+
+"WANDB_MODE": "disabled"
+"ENTITY": ""
+"PROJECT": ""
+"WANDB_NAME": ""
+"SAVE_PATH": "checkpoints/mappo_overcooked_v3"

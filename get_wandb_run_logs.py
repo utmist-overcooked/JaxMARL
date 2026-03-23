@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +10,6 @@ import wandb
 
 ENTITY = os.getenv("WANDB_ENTITY", "dannyb3334-university-of-toronto")
 PROJECT = os.getenv("WANDB_PROJECT", "overcookedv3_ippo_20260306_032919")
-TARGET_NAMES = ["expert-sweep-1"]  # Target all runs
 
 
 def _json_safe(value):
@@ -43,9 +43,9 @@ def _to_plain(value, seen=None):
 	return str(value)
 
 
-def collect_runs():
+def collect_runs(entity, project):
 	api = wandb.Api()
-	path = f"{ENTITY}/{PROJECT}"
+	path = f"{entity}/{project}"
 	runs = list(api.runs(path))
 
 	records = []
@@ -83,13 +83,34 @@ def collect_runs():
 	return records
 
 
-def main():
-	records = collect_runs()
+def parse_args():
+	parser = argparse.ArgumentParser(description="Export W&B run metadata for a project.")
+	parser.add_argument("--entity", default=ENTITY, help="W&B entity name")
+	parser.add_argument("--project", default=PROJECT, help="W&B project name")
+	parser.add_argument(
+		"--output-dir",
+		default=None,
+		help="Directory to write export files into. Defaults to outputs/wandb_export_<timestamp>",
+	)
+	return parser.parse_args()
 
-	full_file = Path("wandb_runs_full.json")
+
+def main():
+	args = parse_args()
+	stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+	output_dir = (
+		Path(args.output_dir)
+		if args.output_dir is not None
+		else Path("outputs") / f"wandb_export_{stamp}"
+	)
+	output_dir.mkdir(parents=True, exist_ok=True)
+
+	records = collect_runs(args.entity, args.project)
+
+	full_file = output_dir / "wandb_runs_full.json"
 	full_file.write_text(json.dumps(records, indent=2, default=_json_safe), encoding="utf-8")
 
-	rows_file = Path("wandb_runs_table.csv")
+	rows_file = output_dir / "wandb_runs_table.csv"
 	with rows_file.open("w", newline="", encoding="utf-8") as f:
 		writer = csv.DictWriter(
 			f,
@@ -108,7 +129,7 @@ def main():
 		for record in records:
 			writer.writerow({k: record.get(k) for k in writer.fieldnames})
 
-	print(f"Fetched {len(records)} runs from {ENTITY}/{PROJECT}")
+	print(f"Fetched {len(records)} runs from {args.entity}/{args.project}")
 	for record in records:
 		print(f"  {record['name']:40s}  state={record['state']}")
 	print(f"Wrote full run export: {full_file.resolve()}")

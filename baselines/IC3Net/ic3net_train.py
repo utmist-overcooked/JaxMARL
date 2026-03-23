@@ -27,7 +27,6 @@ from flax.linen.initializers import constant, orthogonal
 from typing import NamedTuple, Dict, Any, List
 from flax.training.train_state import TrainState
 from flax import serialization
-import distrax
 import jaxmarl
 from jaxmarl.wrappers.baselines import LogWrapper
 import hydra
@@ -38,12 +37,22 @@ from baselines.IC3Net.models import IndependentMLP, IndependentLSTM, CommNetDisc
 from baselines.IC3Net.monitor import TrainingMonitorInterface
 
 
+if not hasattr(jax.interpreters.xla, "pytype_aval_mappings"):
+    jax.interpreters.xla.pytype_aval_mappings = jax.core.pytype_aval_mappings
+
+
+import distrax
+
+
 class Transition(NamedTuple):
     """Transition for REINFORCE rollouts."""
     obs: jnp.ndarray         # (T, B, N, obs_dim)
     action: jnp.ndarray      # (T, B, N)
     talk_action: jnp.ndarray # (T, B, N)  talk actions for IC3Net
+    base_reward: jnp.ndarray # (T, B, N)
+    shaped_reward: jnp.ndarray # (T, B, N)
     reward: jnp.ndarray      # (T, B, N)
+    delivery_count: jnp.ndarray # (T, B, N)
     done: jnp.ndarray        # (T, B, N)
 
 
@@ -129,6 +138,15 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
             obs_list.append(flat_obs)
         return jnp.stack(obs_list, axis=1)
 
+    def _stack_info_agents(info_value, default_shape):
+        """Normalize per-agent info leaves to (B, N)."""
+        if isinstance(info_value, dict):
+            return jnp.stack([info_value[a] for a in env.agents], axis=1)
+        info_array = jnp.asarray(info_value)
+        if info_array.ndim == 1:
+            return jnp.broadcast_to(info_array[:, None], default_shape)
+        return info_array
+
     def _update_step(runner_state):
         train_state, env_state, last_obs, comm_action, hstate, cstate, rng = runner_state
 
@@ -189,16 +207,29 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
             obsv, env_state, reward, done, info = jax.vmap(env.step)(
                 rng_step, env_state, action_dict)
 
-            reward_batch = jnp.stack([reward[a] for a in env.agents], axis=1)
+            base_reward_batch = jnp.stack([reward[a] for a in env.agents], axis=1)
+            shaped_reward_batch = jnp.zeros_like(base_reward_batch)
             if use_shaped_reward and "shaped_reward" in info:
-                shaped = jnp.stack([info["shaped_reward"][a] for a in env.agents], axis=1)
-                reward_batch = reward_batch + shaped_reward_coeff * shaped
+                shaped_reward_batch = _stack_info_agents(
+                    info["shaped_reward"], base_reward_batch.shape
+                )
+            reward_batch = base_reward_batch + shaped_reward_coeff * shaped_reward_batch
+            if not use_shaped_reward:
+                shaped_reward_batch = jnp.zeros_like(base_reward_batch)
+            delivery_count_batch = jnp.zeros_like(base_reward_batch)
+            if "delivery_count" in info:
+                delivery_count_batch = _stack_info_agents(
+                    info["delivery_count"], base_reward_batch.shape
+                )
             done_batch = jnp.stack([done[a] for a in env.agents], axis=1)
 
             transition = Transition(
                 obs=obs_batch, action=action_env,
                 talk_action=talk_action,
+                base_reward=base_reward_batch,
+                shaped_reward=shaped_reward_batch,
                 reward=reward_batch, done=done_batch,
+                delivery_count=delivery_count_batch,
             )
 
             # Reset hidden state at episode boundaries
@@ -337,7 +368,11 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
         train_state = train_state.apply_gradients(grads=grads)
 
         metrics["returned_episode_returns"] = env_state.returned_episode_returns[0].mean()
-        # Also track mean reward per step from the rollout (useful when episodes span multiple rollouts)
+        metrics["returned_episode_deliveries"] = env_state.returned_episode_deliveries[0].mean()
+        metrics["base_reward_per_step"] = transitions.base_reward.mean()
+        metrics["shaped_reward_per_step"] = transitions.shaped_reward.mean()
+        metrics["delivery_rate_per_step"] = transitions.delivery_count.mean()
+        # Track the exact reward signal used by REINFORCE updates.
         metrics["mean_reward_per_step"] = transitions.reward.mean()
 
         runner_state = (train_state, env_state, last_obs, comm_action, hstate, cstate, rng)
@@ -490,6 +525,9 @@ def make_train(config):
                 else:
                     # Episodes don't finish in one rollout; show mean reward/step instead
                     display["MeanRew"] = step_metrics.get("mean_reward_per_step", 0.0)
+                deliveries = step_metrics.get("returned_episode_deliveries", 0.0)
+                if deliveries != 0.0:
+                    display["Deliveries"] = deliveries
                 display["Loss"] = step_metrics.get("loss", 0.0)
                 display["Pi Loss"] = step_metrics.get("policy_loss", 0.0)
                 display["V Loss"] = step_metrics.get("value_loss", 0.0)
@@ -516,11 +554,18 @@ def make_train(config):
 
     # -- Final summary ---------------------------------------------------
     final_return = all_metrics.get("returned_episode_returns", [0.0])[-1]
+    final_deliveries = all_metrics.get("returned_episode_deliveries", [0.0])[-1]
     if final_return == 0.0:
         final_rew = all_metrics.get("mean_reward_per_step", [0.0])[-1]
-        print(f"\nTraining complete! Final mean reward/step: {final_rew:.4f}")
+        print(
+            f"\nTraining complete! Final mean reward/step: {final_rew:.4f} | "
+            f"Final deliveries: {final_deliveries:.2f}"
+        )
     else:
-        print(f"\nTraining complete! Final episode return: {final_return:.2f}")
+        print(
+            f"\nTraining complete! Final episode return: {final_return:.2f} | "
+            f"Final deliveries: {final_deliveries:.2f}"
+        )
 
     return {
         "runner_state": runner_state,
