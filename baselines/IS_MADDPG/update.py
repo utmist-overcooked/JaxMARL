@@ -270,25 +270,17 @@ def train_step(
                 next_msgs_all,
                 agent_id_batch,
             )
+
+            # Clip q_next before Bellman backup to prevent runaway bootstrap.
+            # Shaped rewards are ~0.1-0.5, delivery is 20.
+            # Cap at 10 is conservative but prevents critic divergence.
+            q_next   = jnp.clip(q_next, -5.0, 10.0)
             reward_i = batch.rewards[:, agent_i : agent_i + 1]
-
-            # Normalize rewards to zero mean unit variance within the batch.
-            # Overcooked rewards are sparse (0 most steps, +20 on delivery)
-            # which causes huge Bellman target variance without normalization.
-            reward_mean = jnp.mean(reward_i)
-            reward_std  = jnp.std(reward_i) + 1e-6
-            reward_norm = (reward_i - reward_mean) / reward_std
-
-            done = batch.dones[:, None]
+            done     = batch.dones[:, None]
             y = jax.lax.stop_gradient(
-                reward_norm + gamma * (1.0 - done) * q_next
+                reward_i + gamma * (1.0 - done) * q_next
             )
 
-            # Clip target to prevent extreme Bellman backup values.
-            # With normalized rewards, ±10 is very conservative.
-            y = jnp.clip(y, -10.0, 10.0)            
-
-            # Online Q
             q_val = critic.apply(
                 c_params,
                 batch.obs,
@@ -297,12 +289,10 @@ def train_step(
                 batch.msgs,
                 agent_id_batch,
             )
-
             loss = jnp.mean((q_val - y) ** 2)
-            # Replace NaN loss with zero so one bad batch doesn't
-            # corrupt all subsequent parameter updates
             loss = jnp.where(jnp.isnan(loss), jnp.zeros_like(loss), loss)
             return loss, q_val
+            # No clip on y needed now — q_next is already bounded
 
         (c_loss, q_val), c_grads = jax.value_and_grad(
             critic_loss_fn, has_aux=True
