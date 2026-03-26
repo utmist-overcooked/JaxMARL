@@ -517,36 +517,41 @@ def make_train(config: dict, env_vec, env_eval, monitor=None):
             rewards_all  = batchify_rewards(rewards_dict, agent_ids, num_envs)
             dones_all    = batchify_dones(dones_dict, agent_ids, num_envs)
 
-            # --- Add each env's transition to the shared buffer ---
-            # Sequential loop over envs — numpy buffer can't be vmapped
-            for e in range(num_envs):
-                buffer_state = buffer_add(
-                    buffer_state,
-                    obs=           obs_all[e],
-                    prev_msgs=     prev_msgs[e],
-                    actions=       actions_onehot[e],
-                    msgs=          msgs[e],
-                    rewards=       rewards_all[e],
-                    next_obs=      next_obs_all[e],
-                    next_prev_msgs=msgs[e],       # current msgs become next prev_msgs
-                    done=          bool(dones_all[e]),
-                )
+            # Adding each env's info to the buffer
+            # Convert all env data to numpy once
+            obs_np      = np.array(obs_all)           # already numpy
+            msgs_np     = np.array(msgs)              # already numpy  
+            next_obs_np = np.array(next_obs_all)      # already numpy
+            rewards_np  = np.array(rewards_all)       # already numpy
+            dones_np    = np.array(dones_all)         # already numpy
+            prev_msgs_np= np.array(prev_msgs)         # already numpy
 
-            # Track episode returns
-            ep_returns += rewards_all
-            for e in range(num_envs):
-                if dones_all[e]:
-                    all_returns.append(float(ep_returns[e].sum()))
-                    ep_returns[e] = 0.0
+            # Single vectorised write for all envs at once
+            idxs = np.arange(buffer_state.idx, buffer_state.idx + num_envs) % buffer_state.obs.shape[0]
+            buffer_state.obs[idxs]            = obs_np
+            buffer_state.prev_msgs[idxs]      = prev_msgs_np
+            buffer_state.actions[idxs]        = actions_onehot
+            buffer_state.msgs[idxs]           = msgs_np
+            buffer_state.rewards[idxs]        = rewards_np
+            buffer_state.next_obs[idxs]       = next_obs_np
+            buffer_state.next_prev_msgs[idxs] = msgs_np
+            buffer_state.dones[idxs]          = dones_np
+
+            new_idx  = (buffer_state.idx + num_envs) % buffer_state.obs.shape[0]
+            new_size = min(buffer_state.size + num_envs, buffer_state.obs.shape[0])
+            buffer_state = buffer_state._replace(idx=new_idx, size=new_size)
+
+            # Episode tracking
+            ep_returns += rewards_np
+            done_envs = dones_np.astype(bool)
+            for e in np.where(done_envs)[0]:
+                all_returns.append(float(ep_returns[e].sum()))
+                ep_returns[e] = 0.0
+                prev_msgs[e]  = 0.0 # Reset prev_msgs for done envs
 
             obs_dict  = next_obs_dict
             prev_msgs = msgs
-
-            # Reset prev_msgs for done envs
-            for e in range(num_envs):
-                if dones_all[e]:
-                    prev_msgs[e] = 0.0
-
+        
             # --- Gradient updates ---
             if (buffer_is_ready(buffer_state, batch_size)
                     and global_step >= learn_start
@@ -650,7 +655,7 @@ def main():
     parser = argparse.ArgumentParser(description="IS-MADDPG generic training entry point")
     parser.add_argument("--env_name",          type=str,   default="overcooked_v3")
     parser.add_argument("--total_timesteps",   type=int,   default=2_000_000)
-    parser.add_argument("--num_envs",          type=int,   default=8)
+    parser.add_argument("--num_envs",          type=int,   default=4)
     parser.add_argument("--seed",              type=int,   default=0)
     parser.add_argument("--save_path",         type=str,   default=None)
     parser.add_argument("--wandb",             action="store_true")
