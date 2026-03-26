@@ -112,21 +112,21 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         "MSG_DIM":          3,
         "HORIZON_H":        5,
         "HIDDEN_DIM":       128,
-        "ACTOR_LR":         3e-4,
-        "CRITIC_LR":        3e-4,
-        "GAMMA":            0.95,
+        "ACTOR_LR":         1e-4,
+        "CRITIC_LR":        1e-4,
+        "GAMMA":            0.90, # lower gamma = smaller Bellman targets = more stable
         "TAU":              0.01,
-        "GRAD_CLIP":        0.5,
+        "GRAD_CLIP":        0.5, # tight clip
         "GUMBEL_TAU":       1.0,
         "GUMBEL_HARD":      True,
-        "PRED_LOSS_COEF":   0.1,
+        "PRED_LOSS_COEF":   0.05,
 
         # ── Training schedule ────────────────────────────────────────────
         "TOTAL_TIMESTEPS":  args.total_timesteps,
         "NUM_ENVS":         args.num_envs,
-        "BATCH_SIZE":       256,
-        "BUFFER_SIZE":      50_000,
-        "LEARNING_STARTS":  2_000,
+        "BATCH_SIZE":       512,
+        "BUFFER_SIZE":      100_000,
+        "LEARNING_STARTS":  5_000,
         "UPDATE_EVERY":     1,
         "UPDATES_PER_STEP": 1,
         "NUM_EPOCHS":       1,
@@ -135,8 +135,8 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         # Decay epsilon over first 30% of training — Overcooked is dense
         # reward so the policy picks up signal quickly
         "EPSILON_START":    1.0,
-        "EPSILON_END":      0.05,
-        "EPSILON_DECAY":    int(args.total_timesteps * 0.3),
+        "EPSILON_END":      0.1, # higher minimum epsilon — don't go fully greedy
+        "EPSILON_DECAY":    int(args.total_timesteps * 0.7),
 
         # ── Logging / saving ─────────────────────────────────────────────
         "SEED":             args.seed,
@@ -225,11 +225,8 @@ def dones_dict_to_array(dones_dict: dict, agent_ids: list,
     Returns:
         (num_envs,) float32
     """
-    if "__all__" in dones_dict:
-        # Use the __all__ key directly — most reliable for shared termination
-        return np.asarray(dones_dict["__all__"]).reshape(num_envs).astype(np.float32)
 
-    # Fallback: episode done if all agents are done
+    # episode done if all agents are done
     per_agent = np.stack(
         [np.asarray(dones_dict[aid]).reshape(num_envs) for aid in agent_ids],
         axis=1,
@@ -366,8 +363,9 @@ def evaluate(
         # Single env: add batch dim of 1 for select_actions compatibility
         prev_msgs = np.zeros((1, num_agents, msg_dim), dtype=np.float32)
         ep_return = 0.0
+        max_steps = getattr(env, 'max_steps', 400)
 
-        while True:
+        for _step in range(max_steps):   # bounded — never hangs
             obs_all = obs_dict_to_array(obs_dict, agent_ids, num_envs=1, obs_dim=obs_dim)
 
             _, acts_idx, msgs, rng = select_actions(
@@ -411,7 +409,7 @@ def evaluate(
 # Training loop
 # ---------------------------------------------------------------------------
 
-def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
+def run(config: dict, env_vec: OvercookedV3,
         monitor=None) -> dict:
     """IS-MADDPG training loop for OvercookedV3.
 
@@ -554,6 +552,9 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
     print(f"  act_dim         : {act_dim}")
     print(f"  msg_dim         : {msg_dim}\n")
 
+    print("JAX devices:", jax.devices())
+    print("Default backend:", jax.default_backend())
+
     # ------------------------------------------------------------------
     # 6. Main loop — Python for-loop owns the numpy buffer boundary
     # ------------------------------------------------------------------
@@ -565,7 +566,7 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
     eval_interval_steps = max(1, int(config["TOTAL_TIMESTEPS"] * config["TEST_INTERVAL"]))    
 
     for t in range(1, total_steps_target + 1):
-        global_step = t * num_envs
+        global_step = t * num_envs 
 
         # ── Epsilon schedule ─────────────────────────────────────────
         frac    = min(1.0, global_step / max(1, eps_decay))
@@ -592,11 +593,30 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
         next_obs_dict, env_states, rewards_dict, dones_dict, info = jit_step(
         step_rngs, env_states, action_dict
         )
+        # check rewards used
+        if t == 1:
+            print("rewards_dict sample:")
+            for k, v in rewards_dict.items():
+                print(f"  {k}: {jnp.array(v)[:3]}")
+            print("info keys:", list(info.keys()))
+            if "shaped_reward" in info:
+                print("shaped_rewards sample:", {k: jnp.array(v)[:3] for k, v in info["shaped_reward"].items()})
 
         # ── Convert ───────────────────────────────────────────────────
         next_obs_all = obs_dict_to_array(next_obs_dict, agent_ids, num_envs, obs_dim)
-        rewards_all  = rewards_dict_to_array(rewards_dict, agent_ids, num_envs)
-        dones_all    = dones_dict_to_array(dones_dict, agent_ids, num_envs)
+        dones_all = dones_dict_to_array(dones_dict, agent_ids, num_envs)
+
+        # Use shaped rewards for training signal, sparse for logging
+        if config.get("USE_SHAPED_REWARDS", True) and "shaped_reward" in info:
+            shaped = info["shaped_reward"]
+            # Combine: sparse delivery + shaped intermediate rewards
+            combined_rewards = {
+                aid: jnp.array(rewards_dict[aid]) + jnp.array(shaped[aid])
+                for aid in agent_ids
+            }
+            rewards_all = rewards_dict_to_array(combined_rewards, agent_ids, num_envs)
+        else:
+            rewards_all = rewards_dict_to_array(rewards_dict, agent_ids, num_envs)            
 
         # ── Buffer ───────────────────────────────────────────────────
         for e in range(num_envs):
@@ -619,7 +639,41 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
                 all_returns.append(float(ep_returns[e].sum()))
                 ep_returns[e] = 0.0
 
-        obs_dict  = next_obs_dict
+        # ── Auto-reset done envs ──────────────────────────────────────
+        # JaxMARL does NOT auto-reset — when an env is done it stays
+        # in terminal state returning done=True every subsequent step
+        # until manually reset. This is why dones_all stays [1,1,1,1].
+        if jnp.any(dones_all):
+            rng, reset_rng = jax.random.split(rng)
+            reset_rngs = jax.random.split(reset_rng, num_envs)
+
+            # Reset ALL envs that are done
+            new_obs, new_states = jax.vmap(env_vec.reset)(reset_rngs)
+
+            # Only replace done envs — keep running envs as-is
+            done_mask = jnp.array(dones_all, dtype=jnp.bool_)  # (num_envs,)
+
+            # Merge: use new state for done envs, keep old state for running envs
+            env_states = jax.tree_util.tree_map(
+                lambda new, old: jnp.where(
+                    done_mask.reshape([-1] + [1] * (new.ndim - 1)),
+                    new,
+                    old,
+                ),
+                new_states,
+                env_states,
+            )
+
+            # Update obs for done envs
+            for aid in agent_ids:
+                obs_dict[aid] = jnp.where(
+                    done_mask.reshape([-1] + [1] * (jnp.array(obs_dict[aid]).ndim - 1)),
+                    new_obs[aid],
+                    obs_dict[aid],
+                )   
+
+        # ── Advance state ─────────────────────────────────────────────
+        obs_dict  = next_obs_dict   # contains reset obs for done envs
         prev_msgs = msgs
         for e in range(num_envs):
             if dones_all[e]:
@@ -700,6 +754,7 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
                 print(
                     f"  step={global_step:>8,} "
                     f"upd={total_updates:>5d} "
+                    f"episodes={len(all_returns):>4d} "
                     f"ret={metrics_log['return_mean']:>7.2f}±{metrics_log['return_std']:.2f} "
                     f"c_loss={metrics_log['critic_loss']:>7.4f} "
                     f"a_loss={metrics_log['actor_loss']:>7.4f} "
@@ -714,31 +769,31 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
                 wandb.log(metrics_log, step=global_step)
 
         # ── Evaluation ───────────────────────────────────────────────
-        if (total_updates > 0
-                and global_step - last_eval_step >= eval_interval_steps):
-            last_eval_step = global_step            
-            rng, eval_rng = jax.random.split(rng)
-            eval_metrics = evaluate(
-                train_state, actor, env_eval,
-                eval_rng, config=config, num_episodes=5,
-            )
-            print(
-                f"  [EVAL] step={global_step:,} "
-                f"test_return={eval_metrics['test_return_mean']:.2f}"
-                f" ± {eval_metrics['test_return_std']:.2f}",
-                flush=True,
-            )
-            if config["WANDB_MODE"] != "disabled":
-                wandb.log(eval_metrics, step=global_step)
+        # if (total_updates > 0
+        #         and global_step - last_eval_step >= eval_interval_steps):
+        #     last_eval_step = global_step            
+        #     rng, eval_rng = jax.random.split(rng)
+        #     eval_metrics = evaluate(
+        #         train_state, actor, env_eval,
+        #         eval_rng, config=config, num_episodes=5,
+        #     )
+        #     print(
+        #         f"  [EVAL] step={global_step:,} "
+        #         f"test_return={eval_metrics['test_return_mean']:.2f}"
+        #         f" ± {eval_metrics['test_return_std']:.2f}",
+        #         flush=True,
+        #     )
+        #     if config["WANDB_MODE"] != "disabled":
+        #         wandb.log(eval_metrics, step=global_step)
 
         # ── Checkpoint ───────────────────────────────────────────────
-        if (ckpt_dir is not None and total_updates > 0
-                and total_updates % max(1, total_steps_target // 5) == 0):
-            ckpt_path = os.path.join(
-                ckpt_dir,
-                f"is_maddpg_{config['LAYOUT']}_step{global_step}.pkl"
-            )
-            save_checkpoint(train_state, ckpt_path, config)
+        # if (ckpt_dir is not None and total_updates > 0
+        #         and total_updates % max(1, total_steps_target // 5) == 0):
+        #     ckpt_path = os.path.join(
+        #         ckpt_dir,
+        #         f"is_maddpg_{config['LAYOUT']}_step{global_step}.pkl"
+        #     )
+        #     save_checkpoint(train_state, ckpt_path, config)
 
     
     # ── Post-training summary + plots ───────────────────────────────────────────────
@@ -757,6 +812,9 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
     print("="*60)
 
     if all_returns:
+        plot_dir = ckpt_dir if ckpt_dir else "."
+        os.makedirs(plot_dir, exist_ok=True)
+
         fig, axes = plt.subplots(1, 2, figsize=(14, 4))
 
         # --- Episode returns ---
@@ -792,10 +850,7 @@ def run(config: dict, env_vec: OvercookedV3, env_eval: OvercookedV3,
         ax.grid(alpha=0.3)
 
         plt.tight_layout()
-        plot_path = os.path.join(
-            ckpt_dir if ckpt_dir else ".",
-            f"is_maddpg_{config['LAYOUT']}_returns.png",
-        )
+        plot_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_returns.png")
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         print(f"\nPlot saved → {plot_path}")
         plt.show()
@@ -818,7 +873,7 @@ def main():
         help="Overcooked layout"
     )
     parser.add_argument(
-        "--total_timesteps", type=int, default=200_000,
+        "--total_timesteps", type=int, default=1_000_000,
         help="Total environment steps"
     )
     parser.add_argument(
@@ -883,7 +938,7 @@ def main():
     # env_vec is vmapped in run() — we just pass the base instance
     # env_eval is used single-threaded for greedy evaluation
     env_vec  = OvercookedV3(layout=args.layout)
-    env_eval = OvercookedV3(layout=args.layout)
+    # env_eval = OvercookedV3(layout=args.layout)
 
     # ── Run ──────────────────────────────────────────────────────────
     class _nullctx:
@@ -892,9 +947,9 @@ def main():
 
     ctx = monitor if monitor is not None else _nullctx()
     with ctx:
-        results = run(config, env_vec, env_eval, monitor=monitor)
+        results = run(config, env_vec, monitor=monitor)
 
-    print(f"\n✅ Training complete.")
+    print(f"\n Training complete.")
     print(f"   Total gradient updates : {results['total_updates']}")
     if results["returns"]:
         print(f"   Last 100-ep mean return: {np.mean(results['returns'][-100:]):.2f}")
