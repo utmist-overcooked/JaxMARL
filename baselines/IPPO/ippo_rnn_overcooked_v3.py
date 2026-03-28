@@ -26,10 +26,15 @@ from flax.linen.initializers import constant, orthogonal
 from typing import Callable, Sequence, NamedTuple, Any, Dict
 from flax.training.train_state import TrainState
 from flax import serialization
+
+if not hasattr(jax.interpreters.xla, "pytype_aval_mappings"):
+    jax.interpreters.xla.pytype_aval_mappings = jax.core.pytype_aval_mappings
+
 import distrax
 import jaxmarl
 from jaxmarl.wrappers.baselines import LogWrapper
 import hydra
+from hydra.utils import to_absolute_path
 from omegaconf import OmegaConf
 import wandb
 
@@ -40,6 +45,15 @@ def _save_model_params(params, save_path):
     with open(model_path, "wb") as f:
         f.write(serialization.to_bytes({"params": params}))
     return model_path
+
+
+def _restore_model_params(checkpoint_path, template_params=None):
+    with open(checkpoint_path, "rb") as f:
+        restored = serialization.msgpack_restore(f.read())
+    params = restored["params"] if isinstance(restored, dict) and "params" in restored else restored
+    if template_params is None:
+        return params
+    return serialization.from_state_dict(template_params, params)
 
 
 # ── Network Architecture ───────────────────────────────────────────────
@@ -246,6 +260,9 @@ def make_train(config):
         )
         init_hstate = jnp.zeros((config["NUM_ENVS"], hidden_dim))
         network_params = network.init(_rng, init_hstate, init_x)
+        pretrained_checkpoint = config.get("PRETRAINED_CHECKPOINT")
+        if pretrained_checkpoint:
+            network_params = _restore_model_params(pretrained_checkpoint, network_params)
 
         if config.get("ANNEAL_LR", True):
             tx = optax.chain(
@@ -641,6 +658,8 @@ def run_wandb_sweep(base_config):
 def main(config):
     """Main training entry point."""
     config = OmegaConf.to_container(config, resolve=True)
+    if config.get("PRETRAINED_CHECKPOINT"):
+        config["PRETRAINED_CHECKPOINT"] = to_absolute_path(config["PRETRAINED_CHECKPOINT"])
 
     if config.get("WANDB_SWEEP", False):
         run_wandb_sweep(config)
@@ -656,6 +675,9 @@ def main(config):
         mode=config.get("WANDB_MODE", "disabled"),
         name=f"ippo_rnn_overcooked_v3_{layout_name}",
     )
+
+    if config.get("PRETRAINED_CHECKPOINT"):
+        print(f"Warm-starting IPPO from checkpoint: {config['PRETRAINED_CHECKPOINT']}")
 
     rng = jax.random.PRNGKey(config.get("SEED", 42))
     train_jit = jax.jit(make_train(config))

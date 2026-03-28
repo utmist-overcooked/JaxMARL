@@ -1,0 +1,20 @@
+ENV_NAME: "overcooked_v3"
+ENV_KWARGS:
+  layout: "cramped_room"
+  max_steps: 400
+
+DEMO_GLOB: "demos/overcooked_v3/*.npz"
+VAL_FRACTION: 0.1
+INIT_CHECKPOINT: null
+
+GRU_HIDDEN_DIM: 128
+FC_DIM_SIZE: 128
+ACTIVATION: "relu"
+
+NUM_EPOCHS: 30
+BATCH_SIZE_EPISODES: 8
+LR: 0.0003
+MAX_GRAD_NORM: 0.5
+
+SAVE_PATH: "checkpoints/behavior_clone_overcooked_v3"
+SEED: 42

@@ -136,6 +136,30 @@ The built container can then be run:
 make run
 ```
 
+### Overcooked V3 Behavior Cloning Warm Start
+
+For human demonstration bootstrapping on Overcooked V3, you can now:
+
+1. Record solo play episodes from the keyboard player:
+    ```bash
+    python play_scripts/play_overcooked_v3.py --layout cramped_room --record-dir demos/overcooked_v3
+    ```
+2. Train the recurrent IPPO policy with supervised action cloning over those recordings:
+    ```bash
+    python baselines/IPPO/behavior_clone_overcooked_v3.py --config-name=behavior_clone_overcooked_v3 DEMO_GLOB='demos/overcooked_v3/*.npz'
+    ```
+3. Warm-start RL from the cloned checkpoint:
+    ```bash
+    python baselines/IPPO/ippo_rnn_overcooked_v3.py --config-name=ippo_rnn_overcooked_v3 PRETRAINED_CHECKPOINT=checkpoints/behavior_clone_overcooked_v3/best/model.msgpack
+    ```
+
+4. Evaluate the cloned checkpoint on hold-out demos and live roll-outs before warm-starting RL:
+    ```bash
+    python scripts/evaluate_bc_overcooked_v3.py --checkpoint checkpoints/behavior_clone_overcooked_v3/best/model.msgpack --demo-glob 'demos/overcooked_v3_holdout/*.npz' --layout cramped_room --episodes 20
+    ```
+
+There is also an end-to-end helper script at `scripts/ippo_overcooked_v3_bc_warmstart.sh` that runs behavior cloning first and then launches IPPO with that checkpoint.
+
 ## Contributing 🔨
 Please contribute! Please take a look at our [contributing guide](https://github.com/FLAIROx/JaxMARL/blob/main/CONTRIBUTING.md) for how to add an environment/algorithm or submit a bug report. If you're looking for a project, we also have a few suggestions listed under the roadmap :) 
 

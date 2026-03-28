@@ -42,6 +42,7 @@ WANDB_MODE: "disabled"
 WANDB_PROJECT: "jaxmarl-ippo"
 WANDB_NAME: "ippo_rnn_overcooked_v3_cramped_room"
 SAVE_PATH: "checkpoints/ippo_overcooked_v3_cramped_room"
+PRETRAINED_CHECKPOINT: null
 LOG_EVERY: 100
 CHECKPOINT_EVERY: 5000
 
