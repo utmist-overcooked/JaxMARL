@@ -14,6 +14,7 @@ DEFAULT_MAX_ORDERS = 5
 
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
+    "PLACEMENT_IN_POT": 0.0,    # Optional dense shaping for useful ingredient placement
     "POT_START_COOKING": 0.3,     # Pot fills and starts cooking (milestone)
 }
 

@@ -40,6 +40,24 @@ from omegaconf import OmegaConf
 import wandb
 
 
+def _resolve_overcooked_v3_shaped_rewards(config):
+    env_kwargs = config.get("ENV_KWARGS", {})
+    return {
+        "PLACEMENT_IN_POT": float(
+            env_kwargs.get(
+                "placement_in_pot_reward",
+                SHAPED_REWARDS.get("PLACEMENT_IN_POT", 0.0),
+            )
+        ),
+        "POT_START_COOKING": float(
+            env_kwargs.get(
+                "pot_start_cooking_reward",
+                SHAPED_REWARDS["POT_START_COOKING"],
+            )
+        ),
+    }
+
+
 def _save_model_params(params, save_path):
     os.makedirs(save_path, exist_ok=True)
     model_path = os.path.join(save_path, "model.msgpack")
@@ -703,8 +721,10 @@ def main(config):
     layout_name = config.get("ENV_KWARGS", {}).get("layout", "unknown")
 
     # Log shaped rewards config alongside hyperparams
-    config["SHAPED_REWARDS"] = SHAPED_REWARDS
-    config["DELIVERY_REWARD"] = DELIVERY_REWARD
+    config["SHAPED_REWARDS"] = _resolve_overcooked_v3_shaped_rewards(config)
+    config["DELIVERY_REWARD"] = float(
+        config.get("ENV_KWARGS", {}).get("delivery_reward", DELIVERY_REWARD)
+    )
 
     wandb.init(
         entity=config.get("ENTITY", ""),
@@ -712,7 +732,7 @@ def main(config):
         tags=["IPPO", "RNN", "OvercookedV3"],
         config=config,
         mode=config.get("WANDB_MODE", "disabled"),
-        name=f"ippo_rnn_overcooked_v3_{layout_name}",
+        name=config.get("WANDB_NAME") or f"ippo_rnn_overcooked_v3_{layout_name}",
     )
 
     if config.get("PRETRAINED_CHECKPOINT"):

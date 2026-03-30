@@ -150,6 +150,8 @@ class OvercookedV3(MultiAgentEnv):
         # Reward settings
         delivery_reward: float = DELIVERY_REWARD,
         shaped_rewards: bool = True,
+        placement_in_pot_reward: float = SHAPED_REWARDS.get("PLACEMENT_IN_POT", 0.0),
+        pot_start_cooking_reward: float = SHAPED_REWARDS["POT_START_COOKING"],
         # Random initialization
         random_reset: bool = False,
         random_agent_positions: bool = False,
@@ -171,6 +173,8 @@ class OvercookedV3(MultiAgentEnv):
             enable_player_conveyors: Whether player conveyors push agents
             delivery_reward: Reward for correct delivery
             shaped_rewards: Whether to use shaped intermediate rewards
+            placement_in_pot_reward: Reward for useful ingredient placement into an idle pot
+            pot_start_cooking_reward: Reward when a pot becomes full and starts cooking
             random_reset: Randomize state on reset
             random_agent_positions: Randomize agent positions only
         """
@@ -221,6 +225,8 @@ class OvercookedV3(MultiAgentEnv):
         # Reward settings
         self.delivery_reward = delivery_reward
         self.shaped_rewards_enabled = shaped_rewards
+        self.placement_in_pot_reward = placement_in_pot_reward
+        self.pot_start_cooking_reward = pot_start_cooking_reward
 
         # Random reset
         self.random_reset = random_reset
@@ -686,6 +692,13 @@ class OvercookedV3(MultiAgentEnv):
             recipe & ingredient_selector
         )
 
+        if self.shaped_rewards_enabled:
+            shaped_reward += (
+                successful_pot_placement
+                * is_pot_placement_useful
+                * self.placement_in_pot_reward
+            )
+
 
         # Drop on counter/conveyor
         successful_drop = (
@@ -716,7 +729,7 @@ class OvercookedV3(MultiAgentEnv):
             shaped_reward += (
                 auto_cook
                 * is_pot_placement_useful
-                * SHAPED_REWARDS["POT_START_COOKING"]
+                * self.pot_start_cooking_reward
             )
 
         # Update pot timer

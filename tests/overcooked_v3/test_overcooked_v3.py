@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jaxmarl import make
+from jaxmarl.environments.overcooked_v3.common import Agent, Direction, DynamicObject, Position
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
 from jaxmarl.environments.multi_agent_env import MultiAgentEnv
 
@@ -148,6 +149,70 @@ class TestOvercookedV3Layouts:
 
 class TestOvercookedV3PotMechanics:
     """Test pot cooking and burning mechanics."""
+
+    def _agent_facing_pot_with_ingredient(self, state):
+        pot_y, pot_x = state.pot_positions[0]
+        return Agent(
+            pos=Position(x=pot_x - 1, y=pot_y),
+            dir=jnp.asarray(Direction.RIGHT),
+            inventory=jnp.asarray(DynamicObject.ingredient(0)),
+        )
+
+    def test_useful_pot_placement_default_has_no_shaped_reward(self):
+        env = OvercookedV3(layout="single_file")
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        agent = self._agent_facing_pot_with_ingredient(state)
+        all_inventories = jnp.zeros((env.num_agents,), dtype=jnp.int32)
+        (
+            _,
+            _,
+            _,
+            _,
+            shaped_reward,
+            _,
+            events,
+        ) = env.process_interact(
+            state.grid,
+            agent,
+            all_inventories,
+            state.recipe,
+            state.pot_cooking_timer,
+            state.pot_positions,
+            state.pot_active_mask,
+        )
+
+        assert shaped_reward == pytest.approx(0.0)
+        assert events[1] == pytest.approx(1.0)
+
+    def test_useful_pot_placement_can_emit_shaped_reward(self):
+        env = OvercookedV3(layout="single_file", placement_in_pot_reward=0.05)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        agent = self._agent_facing_pot_with_ingredient(state)
+        all_inventories = jnp.zeros((env.num_agents,), dtype=jnp.int32)
+        (
+            _,
+            _,
+            _,
+            _,
+            shaped_reward,
+            _,
+            events,
+        ) = env.process_interact(
+            state.grid,
+            agent,
+            all_inventories,
+            state.recipe,
+            state.pot_cooking_timer,
+            state.pot_positions,
+            state.pot_active_mask,
+        )
+
+        assert shaped_reward == pytest.approx(0.05)
+        assert events[1] == pytest.approx(1.0)
 
     def test_pot_initial_state(self):
         """Verify pots start empty."""
