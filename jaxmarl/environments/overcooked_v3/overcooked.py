@@ -1,4 +1,4 @@
-"""Overcooked V3 Environment with pot burning, order queue, and conveyor belts."""
+"""Overcooked V3 Environment with order queue and conveyor belts."""
 
 from enum import Enum
 from typing import List, Optional, Union, Tuple, Dict
@@ -24,7 +24,6 @@ from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts, La
 from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
-    POT_BURN_TIME,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
     DEFAULT_ORDER_EXPIRATION_TIME,
@@ -87,7 +86,7 @@ class State:
 
 
 class OvercookedV3(MultiAgentEnv):
-    """Overcooked V3 environment with pot burning, order queue, and conveyors.
+    """Overcooked V3 environment with order queue and conveyors.
 
     Methods:
         reset(key) -> Tuple[Dict[str, Array], State]:
@@ -139,7 +138,7 @@ class OvercookedV3(MultiAgentEnv):
         agent_view_size: Optional[int] = None,
         # Pot settings
         pot_cook_time: int = POT_COOK_TIME,
-        pot_burn_time: int = POT_BURN_TIME,
+        pot_burn_time: int = 0,  # Burn mechanic removed
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
@@ -163,7 +162,7 @@ class OvercookedV3(MultiAgentEnv):
             observation_type: Type of observation (default or featurized)
             agent_view_size: Partial observability window size (None for full)
             pot_cook_time: Steps to cook a full pot (default 90)
-            pot_burn_time: Steps in burning window before pot burns (default 60)
+            pot_burn_time: Deprecated, burn mechanic removed (kept for API compat)
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
@@ -207,6 +206,7 @@ class OvercookedV3(MultiAgentEnv):
         # Pot settings
         self.pot_cook_time = pot_cook_time
         self.pot_burn_time = pot_burn_time
+        self.burn_enabled = pot_burn_time > 0
 
         # Order queue settings
         self.enable_order_queue = enable_order_queue
@@ -429,7 +429,7 @@ class OvercookedV3(MultiAgentEnv):
             indices=jnp.array([actions[f"agent_{i}"] for i in range(self.num_agents)])
         )
 
-        state, reward, shaped_rewards = self.step_agents(key, state, acts)
+        state, reward, shaped_rewards, event_flags = self.step_agents(key, state, acts)
 
         # Process conveyors
         if self.enable_item_conveyors:
@@ -458,6 +458,12 @@ class OvercookedV3(MultiAgentEnv):
             for i, shaped_reward in enumerate(shaped_rewards)
         }
 
+        # Event counters: event_flags shape is (num_agents, 6)
+        # Indices: 0=pickup, 1=pot_placement, 2=pot_start_cooking, 3=dish_pickup, 4=drop, 5=delivery
+        event_names = ["pickup", "pot_placement", "pot_start_cooking", "dish_pickup", "drop", "delivery"]
+        event_totals = event_flags.sum(axis=0)  # sum across agents
+        event_info = {name: event_totals[i] for i, name in enumerate(event_names)}
+
         dones = {f"agent_{i}": done for i in range(self.num_agents)}
         dones["__all__"] = done
 
@@ -466,7 +472,7 @@ class OvercookedV3(MultiAgentEnv):
             lax.stop_gradient(state),
             rewards,
             dones,
-            {"shaped_reward": shaped_rewards_dict},
+            {"shaped_reward": shaped_rewards_dict, **event_info},
         )
 
     def step_agents(
@@ -564,6 +570,7 @@ class OvercookedV3(MultiAgentEnv):
                     interact_reward,
                     shaped_reward,
                     new_pot_timers,
+                    events,
                 ) = self.process_interact(
                     grid, agent, new_agents.inventory, state.recipe, pot_timers, state.pot_positions, state.pot_active_mask
                 )
@@ -574,19 +581,19 @@ class OvercookedV3(MultiAgentEnv):
                     reward + interact_reward,
                     new_pot_timers,
                 )
-                return carry, (new_agent, shaped_reward)
+                return carry, (new_agent, shaped_reward, events)
 
             return jax.lax.cond(
-                is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
+                is_interact, _interact, lambda c, a: (c, (a, 0.0, jnp.zeros(6))), carry, agent
             )
 
         carry = (grid, False, 0.0, state.pot_cooking_timer)
         xs = (new_agents, actions)
-        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards) = (
+        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards, event_flags) = (
             jax.lax.scan(_interact_wrapper, carry, xs)
         )
 
-        # Update pot timers (cooking and burning)
+        # Update pot timers (cooking)
         new_grid, new_pot_timers = self._update_pot_timers(
             new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask
         )
@@ -600,6 +607,7 @@ class OvercookedV3(MultiAgentEnv):
             ),
             reward,
             shaped_rewards,
+            event_flags,
         )
 
     def process_interact(
@@ -649,22 +657,13 @@ class OvercookedV3(MultiAgentEnv):
             (interact_ingredients & DynamicObject.COOKED) != 0
         )
         pot_is_cooking = object_is_pot * (interact_extra > 0) * ~pot_is_cooked
-        pot_is_burned = object_is_pot * ((interact_ingredients & DynamicObject.BURNED) != 0)
-        pot_is_idle = object_is_pot * ~pot_is_cooking * ~pot_is_cooked * ~pot_is_burned
+        pot_is_idle = object_is_pot * ~pot_is_cooking * ~pot_is_cooked
 
-        # Check if pot is ready (in burning window)
-        # In V3: dish_ready when cooking_timer is between 1 and burn_time
         pot_is_ready = pot_is_cooked
 
         # Pickup success conditions
         successful_dish_pickup = pot_is_ready * inventory_is_plate
         is_dish_pickup_useful = merged_ingredients == plated_recipe
-        if self.shaped_rewards_enabled:
-            shaped_reward += (
-                successful_dish_pickup
-                * is_dish_pickup_useful
-                * SHAPED_REWARDS["SOUP_IN_DISH"]
-            )
 
         successful_pickup = (
             object_is_pile * inventory_is_empty
@@ -672,14 +671,6 @@ class OvercookedV3(MultiAgentEnv):
             + object_is_wall * ~object_has_no_ingredients * inventory_is_empty
             + object_is_conveyor * ~object_has_no_ingredients * inventory_is_empty
         )
-
-        # Ingredient pickup reward (picking up ingredient from pile)
-        if self.shaped_rewards_enabled:
-            successful_ingredient_pickup = object_is_ingredient_pile * inventory_is_empty
-            shaped_reward += (
-                successful_ingredient_pickup
-                * SHAPED_REWARDS["INGREDIENT_PICKUP"]
-            )
 
         # Pot placement
         pot_full = DynamicObject.ingredient_count(interact_ingredients) == 3
@@ -694,12 +685,7 @@ class OvercookedV3(MultiAgentEnv):
         is_pot_placement_useful = (interact_ingredients & ingredient_selector) < (
             recipe & ingredient_selector
         )
-        if self.shaped_rewards_enabled:
-            shaped_reward += (
-                successful_pot_placement
-                * is_pot_placement_useful
-                * SHAPED_REWARDS["PLACEMENT_IN_POT"]
-            )
+
 
         # Drop on counter/conveyor
         successful_drop = (
@@ -724,6 +710,14 @@ class OvercookedV3(MultiAgentEnv):
         # Start cooking when pot becomes full
         pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
         auto_cook = pot_is_idle & pot_full_after_drop
+
+        # Shaped reward: pot starts cooking (milestone)
+        if self.shaped_rewards_enabled:
+            shaped_reward += (
+                auto_cook
+                * is_pot_placement_useful
+                * SHAPED_REWARDS["POT_START_COOKING"]
+            )
 
         # Update pot timer
         # Find which pot this is
@@ -766,24 +760,19 @@ class OvercookedV3(MultiAgentEnv):
             * self.delivery_reward
         )
 
-        # Plate pickup reward
-        if self.shaped_rewards_enabled:
-            inventory_is_plate_now = new_inventory == DynamicObject.PLATE
-            successful_plate_pickup = successful_pickup * inventory_is_plate_now
-            num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
-            num_nonempty_pots = jnp.sum(
-                (grid[:, :, 0] == StaticObject.POT) & (grid[:, :, 1] != 0)
-            )
-            is_plate_pickup_useful = num_plates_in_inventory < num_nonempty_pots
-            shaped_reward += (
-                is_plate_pickup_useful
-                * successful_plate_pickup
-                * SHAPED_REWARDS["PLATE_PICKUP"]
-            )
-
         correct_delivery = successful_delivery & is_correct_recipe
 
-        return new_grid, new_agent, correct_delivery, reward, shaped_reward, new_pot_timers
+        # Event flags for logging
+        events = jnp.array([
+            successful_pickup.astype(jnp.float32),
+            successful_pot_placement.astype(jnp.float32),
+            auto_cook.astype(jnp.float32),
+            successful_dish_pickup.astype(jnp.float32),
+            successful_drop.astype(jnp.float32),
+            correct_delivery.astype(jnp.float32),
+        ])
+
+        return new_grid, new_agent, correct_delivery, reward, shaped_reward, new_pot_timers, events
 
     def _update_pot_timers(
         self,
@@ -792,7 +781,7 @@ class OvercookedV3(MultiAgentEnv):
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
     ) -> Tuple[chex.Array, chex.Array]:
-        """Update pot cooking timers and handle burning."""
+        """Update pot cooking timers."""
 
         def _update_single_pot(carry, pot_idx):
             grid, timers = carry
@@ -807,7 +796,6 @@ class OvercookedV3(MultiAgentEnv):
             ingredient_count = DynamicObject.ingredient_count(pot_ingredients)
             pot_is_full = ingredient_count == 3
             pot_is_cooking = (current_timer > 0) & pot_is_full
-            pot_already_cooked = (pot_ingredients & DynamicObject.COOKED) != 0
 
             # Decrement timer if cooking
             new_timer = jax.lax.select(
@@ -816,27 +804,12 @@ class OvercookedV3(MultiAgentEnv):
                 current_timer
             )
 
-            # Check if just finished cooking (entered burning window)
-            just_finished_cooking = pot_is_cooking & (new_timer == self.pot_burn_time)
-            # Mark as cooked when timer reaches burn_time
+            # Cooking completes when the timer reaches 0
+            just_finished_cooking = pot_is_cooking & (new_timer == 0)
             new_ingredients = jax.lax.select(
                 is_active & just_finished_cooking,
                 pot_ingredients | DynamicObject.COOKED,
                 pot_ingredients
-            )
-
-            # Check if pot burned (timer hit 0 while cooking)
-            just_burned = pot_is_cooking & (new_timer == 0)
-            # Reset pot if burned
-            new_ingredients = jax.lax.select(
-                is_active & just_burned,
-                jnp.int32(0),  # Clear pot
-                new_ingredients
-            )
-            new_timer = jax.lax.select(
-                is_active & just_burned,
-                jnp.int32(0),
-                new_timer
             )
 
             # Update grid

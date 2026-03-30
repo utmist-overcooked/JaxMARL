@@ -1,13 +1,10 @@
 """Configuration settings for Overcooked V3."""
 
-# Pot timing (matching v1 cook time of 20 steps)
-# Soup is ready when timer reaches POT_BURN_TIME, so cook time = POT_COOK_TIME - POT_BURN_TIME = 20 steps
-POT_COOK_TIME = 80        # Initial timer value; cooking finishes after 20 steps (at POT_BURN_TIME)
-POT_BURN_TIME = 60        # Steps in burning window before soup burns
+# Pot timing
+POT_COOK_TIME = 80
 
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
-BURN_PENALTY = -5.0       # Penalty when pot burns
 ORDER_EXPIRED_PENALTY = -10.0  # Penalty when order expires
 
 # Order queue defaults
@@ -17,11 +14,7 @@ DEFAULT_MAX_ORDERS = 5
 
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
-    "INGREDIENT_PICKUP": 0.1,     # Picking up an ingredient from a pile
-    "PLACEMENT_IN_POT": 0.2,      # Adding correct ingredient to pot
-    "SOUP_IN_DISH": 0.3,          # Picking up cooked soup with plate
-    "PLATE_PICKUP": 0.1,          # Picking up a plate when useful
-    "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
+    "POT_START_COOKING": 0.3,     # Pot fills and starts cooking (milestone)
 }
 
 # Maximum number of pots to track (for fixed array sizes)

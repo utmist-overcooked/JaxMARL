@@ -33,6 +33,7 @@ if not hasattr(jax.interpreters.xla, "pytype_aval_mappings"):
 import distrax
 import jaxmarl
 from jaxmarl.wrappers.baselines import LogWrapper
+from jaxmarl.environments.overcooked_v3.settings import SHAPED_REWARDS, DELIVERY_REWARD
 import hydra
 from hydra.utils import to_absolute_path
 from omegaconf import OmegaConf
@@ -201,6 +202,17 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
+def flatten_info_leaf(x, num_envs, num_agents, num_actors):
+    x = jnp.asarray(x)
+    if x.size == num_actors:
+        return x.reshape((num_actors,))
+    if x.size == num_envs:
+        return jnp.repeat(x.reshape((num_envs,)), num_agents, axis=0)
+    if x.size == 1:
+        return jnp.broadcast_to(x.reshape(()), (num_actors,))
+    return x.reshape((num_actors,))
+
+
 # ── Training ───────────────────────────────────────────────────────────
 
 
@@ -339,7 +351,13 @@ def make_train(config):
                 info["anneal_factor"] = jnp.full_like(shaped_reward_arr, anneal_factor)
 
                 info = jax.tree.map(
-                    lambda x: x.reshape((config["NUM_ACTORS"])), info
+                    lambda x: flatten_info_leaf(
+                        x,
+                        config["NUM_ENVS"],
+                        num_agents,
+                        config["NUM_ACTORS"],
+                    ),
+                    info,
                 )
                 done_batch = jnp.stack(
                     [done[a] for a in env.agents]
@@ -559,10 +577,27 @@ def make_train(config):
             metric["env_step"] = (
                 update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
             )
-            # Add per-step reward stats (combined reward includes shaping)
+            metric["base_reward_per_step"] = traj_batch.info["original_reward"].mean()
+            metric["shaped_reward_per_step"] = traj_batch.info["shaped_reward"].mean()
+            metric["combined_reward_per_step"] = traj_batch.info["combined_reward"].mean()
+            metric["delivery_rate_per_step"] = jnp.stack(
+                [metric["delivery_count"][agent] for agent in env.agents]
+            ).mean()
             metric["mean_reward"] = traj_batch.reward.mean()
             metric["max_reward"] = traj_batch.reward.max()
             metric["reward_sum"] = traj_batch.reward.sum()
+
+            # Event counters (per-step rates across rollout)
+            for event_name in ["pickup", "pot_placement", "pot_start_cooking",
+                               "dish_pickup", "drop", "delivery"]:
+                metric[f"event/{event_name}"] = traj_batch.info[event_name].mean()
+
+            # Loss components from last epoch
+            metric["loss/total"] = loss_info[0].mean()
+            metric["loss/value"] = loss_info[1][0].mean()
+            metric["loss/actor"] = loss_info[1][1].mean()
+            metric["loss/entropy"] = loss_info[1][2].mean()
+
             jax.debug.callback(callback, metric)
 
             runner_state = (
@@ -666,6 +701,10 @@ def main(config):
         return
 
     layout_name = config.get("ENV_KWARGS", {}).get("layout", "unknown")
+
+    # Log shaped rewards config alongside hyperparams
+    config["SHAPED_REWARDS"] = SHAPED_REWARDS
+    config["DELIVERY_REWARD"] = DELIVERY_REWARD
 
     wandb.init(
         entity=config.get("ENTITY", ""),

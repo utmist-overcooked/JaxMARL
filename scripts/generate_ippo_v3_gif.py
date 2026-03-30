@@ -11,6 +11,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
+
+if not hasattr(jax.interpreters.xla, "pytype_aval_mappings"):
+    jax.interpreters.xla.pytype_aval_mappings = jax.core.pytype_aval_mappings
+
 import distrax
 from flax.linen.initializers import constant, orthogonal
 from flax import serialization
@@ -199,9 +203,20 @@ def run_episode(
 
     variables = {"params": params_for_apply}
 
+    # JIT-compile the core functions for speed
+    @jax.jit
+    def policy_step(variables, hidden, obs_batch, done_vec, action_key):
+        hidden, pi, _ = network.apply(variables, hidden, (obs_batch[jnp.newaxis, :], done_vec[jnp.newaxis, :]))
+        action = pi.sample(seed=action_key).squeeze(0)
+        greedy_action = pi.mode().squeeze(0)
+        return hidden, action, greedy_action
+
+    jit_step = jax.jit(env.step)
+    jit_reset = jax.jit(env.reset)
+
     key = jax.random.PRNGKey(seed)
     key, reset_key = jax.random.split(key)
-    obs, state = env.reset(reset_key)
+    obs, state = jit_reset(reset_key)
 
     num_agents = env.num_agents
     hidden = jnp.zeros((num_agents, config["GRU_HIDDEN_DIM"]))
@@ -215,23 +230,21 @@ def run_episode(
             num_agents, *env.observation_space(env.agents[0]).shape
         )
 
-        hidden, pi, _ = network.apply(variables, hidden, (obs_batch[jnp.newaxis, :], done_vec[jnp.newaxis, :]))
-        if sample_actions:
-            key, action_key = jax.random.split(key)
-            action = pi.sample(seed=action_key).squeeze(0)
-        else:
-            action = pi.mode().squeeze(0)
+        key, action_key = jax.random.split(key)
+        hidden, action, greedy_action = policy_step(variables, hidden, obs_batch, done_vec, action_key)
+        if not sample_actions:
+            action = greedy_action
 
         actions = {agent: action[idx] for idx, agent in enumerate(env.agents)}
 
         key, step_key = jax.random.split(key)
-        obs, state, reward, done, info = env.step(step_key, state, actions)
+        obs, state, reward, done, info = jit_step(step_key, state, actions)
         state_seq.append(state)
 
         done_vec = jnp.array([done[a] for a in env.agents], dtype=bool)
         if bool(done["__all__"]):
             key, reset_key = jax.random.split(key)
-            obs, state = env.reset(reset_key)
+            obs, state = jit_reset(reset_key)
             hidden = jnp.zeros((num_agents, config["GRU_HIDDEN_DIM"]))
             done_vec = jnp.zeros((num_agents,), dtype=bool)
             state_seq.append(state)
@@ -265,6 +278,8 @@ def main():
         sample_actions=not args.greedy,
     )
 
+    mode = "greedy" if args.greedy else "stochastic"
+    print(f"Inference mode: {mode} (seed={args.seed})")
     print(f"Saved GIF with {steps} frames: {out_path.resolve()}")
 
 

@@ -14,7 +14,7 @@ except ImportError:
 from jaxmarl.viz.window import Window
 import jaxmarl.viz.grid_rendering_v2 as rendering
 from jaxmarl.environments.overcooked_v3.common import StaticObject, DynamicObject
-from jaxmarl.environments.overcooked_v3.settings import POT_COOK_TIME, POT_BURN_TIME
+from jaxmarl.environments.overcooked_v3.settings import POT_COOK_TIME
 
 TILE_PIXELS = 32
 
@@ -74,7 +74,7 @@ class OvercookedV3Visualizer:
         self.tile_size = tile_size
         self.subdivs = subdivs
         self.pot_cook_time = getattr(env, 'pot_cook_time', POT_COOK_TIME)
-        self.pot_burn_time = getattr(env, 'pot_burn_time', POT_BURN_TIME)
+        self.pot_burn_time = getattr(env, 'pot_burn_time', 0)
 
     def _lazy_init_window(self):
         if self.window is None:
@@ -275,7 +275,7 @@ class OvercookedV3Visualizer:
         return img
 
     @staticmethod
-    def _render_cell(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=POT_BURN_TIME):
+    def _render_cell(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=0):
         static_object = cell[0]
 
         def _render_empty(cell, img):
@@ -466,12 +466,16 @@ class OvercookedV3Visualizer:
         )
 
     @staticmethod
-    def _render_pot(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=POT_BURN_TIME):
+    def _render_pot(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=0):
         ingredients = cell[1]
         time_left = cell[2]
+        burn_enabled = pot_burn_time > 0
+        cook_complete_timer = pot_burn_time if burn_enabled else 0
+        cook_duration = (pot_cook_time - pot_burn_time) if burn_enabled else pot_cook_time
+        cook_duration = max(cook_duration, 1)
 
-        is_cooking = time_left > pot_burn_time
-        is_burning = (time_left > 0) & (time_left <= pot_burn_time)
+        is_cooking = time_left > cook_complete_timer
+        is_burning = burn_enabled & (time_left > 0) & (time_left <= pot_burn_time)
         is_cooked = (ingredients & DynamicObject.COOKED) != 0
         is_burned = (ingredients & DynamicObject.BURNED) != 0
         is_idle = ~is_cooking & ~is_burning & ~is_cooked & ~is_burned
@@ -511,9 +515,13 @@ class OvercookedV3Visualizer:
 
         img = jax.lax.select(pot_open, img_open, img_closed)
 
-        # Render progress bar (green for cooking, orange for burning window)
-        cooking_progress = (pot_cook_time - time_left) / (pot_cook_time - pot_burn_time)
-        burning_progress = (pot_burn_time - time_left) / pot_burn_time
+        # Render progress bar. In no-burn mode the bar fills green and stays full when cooked.
+        cooking_progress = (pot_cook_time - time_left) / cook_duration
+        burning_progress = jnp.where(
+            burn_enabled,
+            (pot_burn_time - time_left) / jnp.maximum(pot_burn_time, 1),
+            0.0,
+        )
 
         progress_fn_cooking = rendering.point_in_rect(
             0.1, 0.1 + 0.8 * jnp.clip(cooking_progress, 0, 1), 0.83, 0.88
@@ -525,9 +533,11 @@ class OvercookedV3Visualizer:
         img_cooking = rendering.fill_coords(img, progress_fn_cooking, COLORS["green"])
         img_burning = rendering.fill_coords(img, progress_fn_burning, COLORS["orange"])
 
-        # Show green bar when cooking, orange when in burning window
+        # Show green bar when cooking, and keep it full once cooked if burning is disabled.
         img = jax.lax.select(is_cooking, img_cooking, img)
-        img = jax.lax.select(is_burning | is_cooked, img_burning, img)
+        img = jax.lax.select(is_burning, img_burning, img)
+        img = jax.lax.select(is_cooked & ~burn_enabled, img_cooking, img)
+        img = jax.lax.select(is_cooked & burn_enabled, img_burning, img)
 
         return img
 
