@@ -1,12 +1,12 @@
 """Configuration settings for Overcooked V3."""
 
 # Pot timing (matching CoGrid defaults)
-POT_COOK_TIME = 90        # Steps to cook (CoGrid: cooking_time=90)
-POT_BURN_TIME = 60        # Steps in burning window before burned (CoGrid: burning_time=60)
+POT_COOK_TIME = 20        # Steps to cook (CoGrid: cooking_time=90)
+POT_BURN_TIME = 10        # Steps in burning window before burned (CoGrid: burning_time=60)
 
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
-BURN_PENALTY = -5.0       # Penalty when pot burns
+# BURN_PENALTY = -5.0       # Penalty when pot burns
 ORDER_EXPIRED_PENALTY = -10.0  # Penalty when order expires
 
 # Order queue defaults
@@ -16,10 +16,10 @@ DEFAULT_MAX_ORDERS = 5
 
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
-    "PLACEMENT_IN_POT": 0.1,      # Adding correct ingredient to pot
-    "SOUP_IN_DISH": 0.3,          # Picking up cooked soup with plate
-    "PLATE_PICKUP": 0.1,          # Picking up a plate when useful
-    "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
+    "PLACEMENT_IN_POT": 3,      # Adding correct ingredient to pot # divide all by 20 except for placement in plot (divide by 30)
+    "SOUP_IN_DISH": 6,          # Picking up cooked soup with plate
+    "PLATE_PICKUP": 2,          # Picking up a plate when useful
+    # "POT_START_COOKING": 4,     # Starting to cook a correct recipe
 }
 
 # Maximum number of pots to track (for fixed array sizes)
