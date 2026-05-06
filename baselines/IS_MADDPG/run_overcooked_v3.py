@@ -107,9 +107,9 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         "ACT_DIM":    env_info["act_dim"],
 
         # ── IS-MADDPG hyperparameters ────────────────────────────────────
-        # msg_dim=3: lightweight intention signal (pot state, target cell)
+        # msg_dim=32: lightweight intention signal
         # horizon_H=5: ~one pick-up+place cycle in Overcooked timing
-        "MSG_DIM":          3,
+        "MSG_DIM":          16,
         "HORIZON_H":        5,
         "HIDDEN_DIM":       128,
         "ACTOR_LR":         1e-4,
@@ -536,14 +536,31 @@ def run(config: dict, env_vec: OvercookedV3,
     # ------------------------------------------------------------------
     ep_returns   = np.zeros((num_envs, num_agents), dtype=np.float32)
     all_returns  = []
+    all_deliveries = []
+    ep_deliveries  = np.zeros((num_envs,), dtype=np.float32)
     last_metrics = None
     total_updates = 0
     total_steps_target = config["TOTAL_TIMESTEPS"] // num_envs
+
     # TEST_INTERVAL is a fraction of total_timesteps e.g. 0.05 = every 5%.
     test_interval_steps  = max(1, int(config["TOTAL_TIMESTEPS"] * config["TEST_INTERVAL"]))
+    
     # Convert to loop iterations (how many for-loop steps between evals)
     test_interval = max(1, test_interval_steps // num_envs)    
     t_start = time.time()
+
+    reward_type_counts = {
+    "placement_in_pot": 0,   # shaped reward = 3
+    # "pot_start_cooking": 0,  # shaped reward = 4
+    "soup_in_dish":      0,  # shaped reward = 6
+    "plate_pickup":      0,  # shaped reward = 2
+    "delivery":          0,  # raw reward = 20
+    # "burn_penalty":      0,  # raw reward = -5
+    }
+
+    # Track rewards
+    reward_type_history = {k: [] for k in reward_type_counts}  # per-episode counts
+    ep_reward_types = {k: np.zeros(num_envs) for k in reward_type_counts}
 
     print(f"\n[IS-MADDPG] Starting training on OvercookedV3 / {config['LAYOUT']}")
     print(f"  total_timesteps : {config['TOTAL_TIMESTEPS']:,}")
@@ -615,6 +632,7 @@ def run(config: dict, env_vec: OvercookedV3,
                 for aid in agent_ids
             }
             rewards_all = rewards_dict_to_array(combined_rewards, agent_ids, num_envs)
+            ep_deliveries += (rewards_all > 0).any(axis=1).astype(np.float32)
         else:
             rewards_all = rewards_dict_to_array(rewards_dict, agent_ids, num_envs)            
 
@@ -632,12 +650,41 @@ def run(config: dict, env_vec: OvercookedV3,
                 done=          bool(dones_all[e]),
             )
 
+        # ── Reward type tracking ──────────────────────────────────────
+        if "shaped_reward" in info:
+            shaped = info["shaped_reward"]
+            for e in range(num_envs):
+                for aid in agent_ids:
+                    sv = float(jnp.array(shaped[aid])[e])
+                    rv = float(jnp.array(rewards_dict[aid])[e])
+
+                    # Infer reward type from value
+                    if sv == 6.0:
+                        ep_reward_types["soup_in_dish"][e] += 1
+                    # elif sv == 4.0:
+                    #     ep_reward_types["pot_start_cooking"][e] += 1
+                    elif sv == 3.0:
+                        ep_reward_types["placement_in_pot"][e] += 1
+                    elif sv == 2.0:
+                        ep_reward_types["plate_pickup"][e] += 1
+
+                    if rv == 20.0:
+                        ep_reward_types["delivery"][e] += 1
+                    # elif rv == -5.0:
+                    #     ep_reward_types["burn_penalty"][e] += 1            
+
         # ── Episode tracking ─────────────────────────────────────────
         ep_returns += rewards_all
         for e in range(num_envs):
             if dones_all[e]:
                 all_returns.append(float(ep_returns[e].sum()))
-                ep_returns[e] = 0.0
+                all_deliveries.append(float(ep_deliveries[e]))  # deliveries this episode
+                ep_returns[e]   = 0.0
+                ep_deliveries[e] = 0.0
+                for k in reward_type_counts:
+                    reward_type_history[k].append(float(ep_reward_types[k][e]))
+                    reward_type_counts[k] += ep_reward_types[k][e]
+                    ep_reward_types[k][e] = 0.0
 
         # ── Auto-reset done envs ──────────────────────────────────────
         # JaxMARL does NOT auto-reset — when an env is done it stays
@@ -733,6 +780,7 @@ def run(config: dict, env_vec: OvercookedV3,
         # ── Logging every log_every steps ────────────────────────────
         if t % log_every == 0 and first_update_done:
             recent = all_returns[-100:] if all_returns else [0.0]
+            recent_deliveries = all_deliveries[-100:] if all_deliveries else [0.0]
             sps    = global_step / max(1.0, time.time() - t_start)
 
             metrics_log = {
@@ -756,6 +804,7 @@ def run(config: dict, env_vec: OvercookedV3,
                     f"upd={total_updates:>5d} "
                     f"episodes={len(all_returns):>4d} "
                     f"ret={metrics_log['return_mean']:>7.2f}±{metrics_log['return_std']:.2f} "
+                    f"deliveries={np.mean(recent_deliveries):.2f} "  # avg deliveries per episode
                     f"c_loss={metrics_log['critic_loss']:>7.4f} "
                     f"a_loss={metrics_log['actor_loss']:>7.4f} "
                     f"pred={metrics_log['pred_loss']:>7.4f} "
@@ -854,6 +903,90 @@ def run(config: dict, env_vec: OvercookedV3,
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         print(f"\nPlot saved → {plot_path}")
         plt.show()
+    
+    # ---------------------------------------------------------------------------
+    # Reward type histograms
+    # ---------------------------------------------------------------------------
+    if any(len(v) > 0 for v in reward_type_history.values()):
+        fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+        axes = axes.flatten()
+
+        reward_labels = {
+            "delivery":          f"Delivery (+20)",
+            # "placement_in_pot":  f"Placement in Pot (+3)",
+            "plate_pickup":      f"Plate Pickup (+2)",
+            "pot_start_cooking": f"Pot Start Cooking (+4)",
+            "soup_in_dish":      f"Soup in Dish (+6)",
+            # "burn_penalty":      f"Burn Penalty (-5)",
+        }
+        colors = {
+            "delivery":          "green",
+            # "placement_in_pot":  "steelblue",
+            "plate_pickup":      "yellow",
+            "pot_start_cooking": "orange",
+            "soup_in_dish":      "purple",
+            # "burn_penalty":      "red",
+        }
+
+        for idx, (key, label) in enumerate(reward_labels.items()):
+            ax = axes[idx]
+            data = reward_type_history[key]
+            if data:
+                ax.hist(data, bins=20, color=colors[key], alpha=0.7, edgecolor="white")
+                ax.set_title(label)
+                ax.set_xlabel("Count per episode")
+                ax.set_ylabel("Episodes")
+                ax.grid(alpha=0.3)
+                ax.axvline(np.mean(data), color="black", linestyle="--",
+                           linewidth=1.5, label=f"mean={np.mean(data):.2f}")
+                ax.legend(fontsize=8)
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                        transform=ax.transAxes)
+                ax.set_title(label)
+
+        # Summary bar chart
+        summary_idx = len(reward_labels)
+        ax = axes[summary_idx]
+
+        # turn off any remaining unused axes
+        for i in range(summary_idx + 1, len(axes)):
+            axes[i].axis("off")
+            
+        keys   = list(reward_labels.keys())
+        totals = [reward_type_counts[k] for k in keys]
+        bars   = ax.bar(range(len(keys)), totals,
+                        color=[colors[k] for k in keys], alpha=0.7, edgecolor="white")
+        ax.set_xticks(range(len(keys)))
+        ax.set_xticklabels([k.replace("_", "\n") for k in keys], fontsize=7)
+        ax.set_title("Total reward events (all episodes)")
+        ax.set_ylabel("Count")
+        ax.grid(alpha=0.3, axis="y")
+        for bar, total in zip(bars, totals):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                    f"{int(total)}", ha="center", va="bottom", fontsize=8)
+
+        plt.suptitle(f"IS-MADDPG Reward Breakdown — {config['LAYOUT']}", fontsize=13)
+        plt.tight_layout()
+
+        hist_path = os.path.join(
+            ckpt_dir if ckpt_dir else ".",
+            f"is_maddpg_{config['LAYOUT']}_reward_breakdown.png",
+        )
+        os.makedirs(os.path.dirname(hist_path) if os.path.dirname(hist_path) else ".", exist_ok=True)
+        plt.savefig(hist_path, dpi=150, bbox_inches="tight")
+        print(f"Reward breakdown plot saved → {hist_path}")
+        plt.show()
+
+    # Print summary table
+    print("\nReward event totals across all episodes:")
+    print(f"  {'Event':<25} {'Total':>8}  {'Per Episode':>12}")
+    print("  " + "-" * 48)
+    n_eps = max(1, len(all_returns))
+    for k, label in reward_labels.items():
+        total = reward_type_counts[k]
+        per_ep = total / n_eps
+        print(f"  {label:<25} {int(total):>8}  {per_ep:>11.2f}")
 
     return {
         "train_state":   train_state,
@@ -873,20 +1006,20 @@ def main():
         help="Overcooked layout"
     )
     parser.add_argument(
-        "--total_timesteps", type=int, default=1_000_000,
+        "--total_timesteps", type=int, default=500_000,
         help="Total environment steps"
     )
     parser.add_argument(
-        "--num_envs", type=int, default=8,
+        "--num_envs", type=int, default=6,
         help="Number of parallel environments"
     )
     parser.add_argument(
-        "--seed", type=int, default=0,
+        "--seed", type=int, default=4,
         help="Random seed"
     )
     parser.add_argument(
-        "--save_path", type=str, default="checkpoints",
-        help="Checkpoint directory (None to disable)"
+        "--save_path", type=str, default="results",
+        help="Results directory (None to disable)"
     )
     parser.add_argument(
         "--wandb", action="store_true",
