@@ -47,7 +47,7 @@ def main():
     print("=" * 50)
 
     # Create environment
-    env = make('overcooked_v3', layout='player_conveyor_loop', pot_cook_time=20, pot_burn_time=10, enable_player_conveyors=True)
+    env = make('overcooked_v3', layout='around_the_island', pot_cook_time=20, pot_burn_time=10, enable_player_conveyors=True)
     viz = OvercookedV3Visualizer(env, tile_size=48)  # Larger tiles for visibility
 
     # Initialize pygame
