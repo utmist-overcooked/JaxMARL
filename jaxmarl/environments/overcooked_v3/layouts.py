@@ -20,6 +20,38 @@ W   W
 WBWXW
 """
 
+asymm_advantages_recipes_center = """
+WWWWWWWWW
+0 WXR01 X
+1   P   W
+W A PA  W
+WWWBWBWWW
+"""
+
+asymm_advantages_recipes_right = """
+WWWWWWWWW
+0 WXW01 X
+1   P   R
+W A PA  W
+WWWBWBWWW
+"""
+
+asymm_advantages_recipes_left = """
+WWWWWWWWW
+0 WXW01 X
+1   P   R
+R A PA  W
+WWWBWBWWW
+"""
+
+two_rooms = """
+WWWWWB10W
+W   W   R
+P A W A W
+W   W   X
+WWWWWWWWW
+"""
+
 around_the_island = """
 WW0W0WWWWW
 B        W
@@ -602,6 +634,16 @@ overcooked_v3_layouts = {
 
     # V2-style layouts with recipe indicators
     "cramped_room_v2": Layout.from_string(cramped_room_v2),
+    "asymm_advantages_recipes_center": Layout.from_string(
+        asymm_advantages_recipes_center
+    ),
+    "asymm_advantages_recipes_right": Layout.from_string(
+        asymm_advantages_recipes_right
+    ),
+    "asymm_advantages_recipes_left": Layout.from_string(
+        asymm_advantages_recipes_left
+    ),
+    "two_rooms": Layout.from_string(two_rooms),
 
     # Demo layouts with conveyors
     "conveyor_demo": Layout.from_string(
