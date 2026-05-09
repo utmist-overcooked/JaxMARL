@@ -8,9 +8,7 @@
 # The search centers come from the YAML defaults (e.g. LR: 0.00025),
 # and any Hydra overrides below take precedence.
 #
-# Results are saved to $SCRATCH/jaxmarl/carbs_sweep/<layout>/<timestamp>/
-# including: carbs_results.pkl, best model .safetensors, rollout .gif,
-# and offline wandb logs (sync with: wandb sync <dir>).
+# WHEN RUNNING THIS MAKE SURE TO CHECK WHERE RESULTS ARE SAVED TO.
 
 cd "$(dirname "$0")/.."
 source venv/bin/activate
