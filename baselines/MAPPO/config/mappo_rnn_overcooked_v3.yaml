@@ -1,0 +1,97 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+"ENV_KWARGS":
+  "layout": "cramped_room"
+  "agent_view_size": 2
+  "shaped_rewards": True
+  "random_agent_positions": True
+  "max_steps": 400
+
+"LR": 0.00025
+"ANNEAL_LR": True
+"LR_WARMUP": 0.05
+
+"NUM_ENVS": 256
+"NUM_STEPS": 256
+"UPDATE_EPOCHS": 4
+"NUM_MINIBATCHES": 64
+
+"TOTAL_TIMESTEPS": 3e7
+"REW_SHAPING_HORIZON": 1.5e7
+"SHAPED_REWARD_SCALE": 1.0
+
+"FC_DIM_SIZE": 64
+"GRU_HIDDEN_DIM": 128
+
+"CLIP_EPS": 0.2
+"ENT_COEF": 0.04
+"GAMMA": 0.99
+"GAE_LAMBDA": 0.95
+"VF_COEF": 0.5
+"MAX_GRAD_NORM": 0.5
+"ACTIVATION": "relu"
+"SEED": 0
+"NUM_SEEDS": 1
+
+"ENTITY": ""
+"PROJECT": ""
+"WANDB_MODE": "disabled"
+"WANDB_RUN_NAME": ""
+"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3"
+"USE_RICH_MONITOR": True
+"SAVE_REWARD_EVENT_HISTOGRAMS": True
+
+# CARBS sweep
+"TUNE": False
+"CARBS_NUM_TRIALS": 20
+
+"CARBS_SWEEP":
+  "LR":
+    space: "log"
+    scale: 0.5
+    min: 1.0e-4
+    max: 1.0e-2
+  # "NUM_ENVS":
+  #   space: "log"
+  #   scale: 0.5
+  #   min: 256
+  #   max: 1024
+  #   is_integer: true
+  #   round_pow2: true
+  # "NUM_STEPS":
+  #   space: "log"
+  #   scale: 0.5
+  #   min: 512
+  #   max: 2048
+  #   is_integer: true
+  #   round_pow2: true
+  # "UPDATE_EPOCHS":
+  #   space: "linear"
+  #   scale: 4
+  #   min: 1
+  #   max: 16
+  #   is_integer: true
+  # "NUM_MINIBATCHES":
+  #   space: "log"
+  #   scale: 0.5
+  #   min: 2
+  #   max: 64
+  #   is_integer: true
+  #   round_pow2: true
+  "CLIP_EPS":
+    space: "linear"
+    scale: 0.1
+    min: 0.05
+    max: 0.5
+  "ENT_COEF":
+    space: "log"
+    scale: 0.5
+    min: 1.0e-5
+    max: 0.1
+  "GAE_LAMBDA":
+    space: "linear"
+    scale: 0.05
+    min: 0.8
+    max: 1.0
