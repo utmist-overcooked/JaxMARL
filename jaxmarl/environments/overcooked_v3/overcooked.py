@@ -607,11 +607,12 @@ class OvercookedV3(MultiAgentEnv):
         new_grid, new_pot_timers, pot_burned_count = self._update_pot_timers(
             new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask
         )
-        reward_events["pot_burned"] = jnp.full(
-            (self.num_agents,),
-            pot_burned_count / self.num_agents,
-            dtype=jnp.float32,
+        pot_burned_event = (
+            jnp.zeros((self.num_agents,), dtype=jnp.float32)
+            .at[0]
+            .set(pot_burned_count)
         )
+        reward_events = {**reward_events, "pot_burned": pot_burned_event}
 
         return (
             state.replace(

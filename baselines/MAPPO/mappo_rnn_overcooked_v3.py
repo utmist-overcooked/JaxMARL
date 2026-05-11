@@ -266,8 +266,10 @@ def save_reward_event_history(metrics, config, layout_name):
     updates = np.arange(1, num_updates + 1)
 
     for seed_idx in range(num_seeds):
-        seed = int(config["SEED"]) + seed_idx
-        stem = f"mappo_rnn_overcooked_v3_{layout_name}_seed{seed}_reward_events_by_update"
+        stem = (
+            f"mappo_rnn_overcooked_v3_{layout_name}_seed{config['SEED']}"
+            f"_vmap{seed_idx}_reward_events_by_update"
+        )
         csv_path = os.path.join(output_dir, f"{stem}.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["update", *available])
@@ -791,7 +793,7 @@ def make_train(config, monitor=None):
             }
             rng = update_state[-1]
 
-            def callback(metric, original_seed, actor_params, critic_params):
+            def log_callback(metric, original_seed):
                 step = int(metric["env_step"])
                 updates = int(metric["update_step"])
                 num_updates = int(config["NUM_UPDATES"])
@@ -819,23 +821,23 @@ def make_train(config, monitor=None):
                 if config["WANDB_MODE"] != "disabled":
                     wandb.log(metric)
 
-                # Periodic checkpointing
-                if updates % checkpoint_interval == 0:
-                    run_name = config["WANDB_RUN_NAME"] or (
-                        wandb.run.name if wandb.run else "offline"
-                    )
-                    date_str = datetime.datetime.now().strftime("%Y%m%d")
-                    ckpt_subdir = os.path.join(checkpoint_dir, f"{run_name}_{date_str}")
-                    os.makedirs(ckpt_subdir, exist_ok=True)
-                    save_params(
-                        actor_params,
-                        os.path.join(ckpt_subdir, f"{updates}_actor.safetensors"),
-                    )
-                    save_params(
-                        critic_params,
-                        os.path.join(ckpt_subdir, f"{updates}_critic.safetensors"),
-                    )
-                    print(f"Checkpoint saved: {ckpt_subdir}/{updates}_*.safetensors")
+            def checkpoint_callback(metric, actor_params, critic_params):
+                updates = int(metric["update_step"])
+                run_name = config["WANDB_RUN_NAME"] or (
+                    wandb.run.name if wandb.run else "offline"
+                )
+                date_str = datetime.datetime.now().strftime("%Y%m%d")
+                ckpt_subdir = os.path.join(checkpoint_dir, f"{run_name}_{date_str}")
+                os.makedirs(ckpt_subdir, exist_ok=True)
+                save_params(
+                    actor_params,
+                    os.path.join(ckpt_subdir, f"{updates}_actor.safetensors"),
+                )
+                save_params(
+                    critic_params,
+                    os.path.join(ckpt_subdir, f"{updates}_critic.safetensors"),
+                )
+                print(f"Checkpoint saved: {ckpt_subdir}/{updates}_*.safetensors")
 
             update_step = update_step + 1
             loss_info = jax.tree_util.tree_map(lambda x: x.mean(), loss_info)
@@ -850,12 +852,25 @@ def make_train(config, monitor=None):
             metric["clip_frac"] = loss_info["clip_frac"]
             metric["update_step"] = update_step
             metric["env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
-            jax.debug.callback(
-                callback,
-                metric,
-                original_seed,
-                train_states[0].params,
-                train_states[1].params,
+            jax.debug.callback(log_callback, metric, original_seed)
+
+            def _checkpoint(_):
+                jax.debug.callback(
+                    checkpoint_callback,
+                    metric,
+                    train_states[0].params,
+                    train_states[1].params,
+                )
+                return jnp.array(0)
+
+            def _skip_checkpoint(_):
+                return jnp.array(0)
+
+            _ = jax.lax.cond(
+                update_step % checkpoint_interval == 0,
+                _checkpoint,
+                _skip_checkpoint,
+                operand=jnp.array(0),
             )
 
             runner_state = (
