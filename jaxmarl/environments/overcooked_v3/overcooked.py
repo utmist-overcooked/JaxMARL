@@ -96,12 +96,12 @@ class OvercookedV3(MultiAgentEnv):
         step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]:
             Perform a single timestep: process actions, conveyors, orders, and check termination.
 
-        step_agents(key, state, actions) -> Tuple[State, float, Array]:
+        step_agents(key, state, actions) -> Tuple[State, float, Array, Dict]:
             Process agent movement (with collision resolution) and interact actions.
 
         process_interact(grid, agent, all_inventories, recipe, pot_timers,
             pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery,
-            reward, shaped_reward, pot_timers]:
+            reward, shaped_reward, pot_timers, reward_events]:
             Handle a single agent's interact action (pickup, drop, cook, deliver).
 
         is_terminal(state) -> bool:
@@ -429,7 +429,7 @@ class OvercookedV3(MultiAgentEnv):
             indices=jnp.array([actions[f"agent_{i}"] for i in range(self.num_agents)])
         )
 
-        state, reward, shaped_rewards = self.step_agents(key, state, acts)
+        state, reward, shaped_rewards, reward_events = self.step_agents(key, state, acts)
 
         # Process conveyors
         if self.enable_item_conveyors:
@@ -466,7 +466,7 @@ class OvercookedV3(MultiAgentEnv):
             lax.stop_gradient(state),
             rewards,
             dones,
-            {"shaped_reward": shaped_rewards_dict},
+            {"shaped_reward": shaped_rewards_dict, "reward_events": reward_events},
         )
 
     def step_agents(
@@ -474,7 +474,7 @@ class OvercookedV3(MultiAgentEnv):
         key: chex.PRNGKey,
         state: State,
         actions: chex.Array,
-    ) -> Tuple[State, float, chex.Array]:
+    ) -> Tuple[State, float, chex.Array, Dict[str, chex.Array]]:
         """Process agent actions and update state."""
         grid = state.grid
 
@@ -550,6 +550,14 @@ class OvercookedV3(MultiAgentEnv):
         new_agents = new_agents.replace(pos=_masked_positions(swap_mask))
 
         # Interaction phase
+        zero_reward_events = {
+            "placement_in_pot": jnp.array(0.0, dtype=jnp.float32),
+            "plate_pickup": jnp.array(0.0, dtype=jnp.float32),
+            "soup_in_dish": jnp.array(0.0, dtype=jnp.float32),
+            "delivery": jnp.array(0.0, dtype=jnp.float32),
+            "pot_burned": jnp.array(0.0, dtype=jnp.float32),
+        }
+
         def _interact_wrapper(carry, x):
             agent, action = x
             is_interact = action == Actions.interact
@@ -564,6 +572,7 @@ class OvercookedV3(MultiAgentEnv):
                     interact_reward,
                     shaped_reward,
                     new_pot_timers,
+                    reward_events,
                 ) = self.process_interact(
                     grid, agent, new_agents.inventory, state.recipe, pot_timers, state.pot_positions, state.pot_active_mask
                 )
@@ -574,22 +583,36 @@ class OvercookedV3(MultiAgentEnv):
                     reward + interact_reward,
                     new_pot_timers,
                 )
-                return carry, (new_agent, shaped_reward)
+                return carry, (new_agent, shaped_reward, reward_events)
 
             return jax.lax.cond(
-                is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
+                is_interact,
+                _interact,
+                lambda c, a: (c, (a, 0.0, zero_reward_events)),
+                carry,
+                agent,
             )
 
         carry = (grid, False, 0.0, state.pot_cooking_timer)
         xs = (new_agents, actions)
-        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards) = (
+        (new_grid, new_correct_delivery, reward, new_pot_timers), (
+            new_agents,
+            shaped_rewards,
+            reward_events,
+        ) = (
             jax.lax.scan(_interact_wrapper, carry, xs)
         )
 
         # Update pot timers (cooking and burning)
-        new_grid, new_pot_timers = self._update_pot_timers(
+        new_grid, new_pot_timers, pot_burned_count = self._update_pot_timers(
             new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask
         )
+        pot_burned_event = (
+            jnp.zeros((self.num_agents,), dtype=jnp.float32)
+            .at[0]
+            .set(pot_burned_count)
+        )
+        reward_events = {**reward_events, "pot_burned": pot_burned_event}
 
         return (
             state.replace(
@@ -600,6 +623,7 @@ class OvercookedV3(MultiAgentEnv):
             ),
             reward,
             shaped_rewards,
+            reward_events,
         )
 
     def process_interact(
@@ -759,14 +783,14 @@ class OvercookedV3(MultiAgentEnv):
         )
 
         # Plate pickup reward
+        inventory_is_plate_now = new_inventory == DynamicObject.PLATE
+        successful_plate_pickup = successful_pickup * inventory_is_plate_now
+        num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
+        num_nonempty_pots = jnp.sum(
+            (grid[:, :, 0] == StaticObject.POT) & (grid[:, :, 1] != 0)
+        )
+        is_plate_pickup_useful = num_plates_in_inventory < num_nonempty_pots
         if self.shaped_rewards_enabled:
-            inventory_is_plate_now = new_inventory == DynamicObject.PLATE
-            successful_plate_pickup = successful_pickup * inventory_is_plate_now
-            num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
-            num_nonempty_pots = jnp.sum(
-                (grid[:, :, 0] == StaticObject.POT) & (grid[:, :, 1] != 0)
-            )
-            is_plate_pickup_useful = num_plates_in_inventory < num_nonempty_pots
             shaped_reward += (
                 is_plate_pickup_useful
                 * successful_plate_pickup
@@ -774,8 +798,32 @@ class OvercookedV3(MultiAgentEnv):
             )
 
         correct_delivery = successful_delivery & is_correct_recipe
+        reward_events = {
+            "placement_in_pot": jnp.asarray(
+                successful_pot_placement * is_pot_placement_useful,
+                dtype=jnp.float32,
+            ),
+            "plate_pickup": jnp.asarray(
+                is_plate_pickup_useful * successful_plate_pickup,
+                dtype=jnp.float32,
+            ),
+            "soup_in_dish": jnp.asarray(
+                successful_dish_pickup * is_dish_pickup_useful,
+                dtype=jnp.float32,
+            ),
+            "delivery": jnp.asarray(correct_delivery, dtype=jnp.float32),
+            "pot_burned": jnp.array(0.0, dtype=jnp.float32),
+        }
 
-        return new_grid, new_agent, correct_delivery, reward, shaped_reward, new_pot_timers
+        return (
+            new_grid,
+            new_agent,
+            correct_delivery,
+            reward,
+            shaped_reward,
+            new_pot_timers,
+            reward_events,
+        )
 
     def _update_pot_timers(
         self,
@@ -783,7 +831,7 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
-    ) -> Tuple[chex.Array, chex.Array]:
+    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
         """Update pot cooking timers and handle burning."""
 
         def _update_single_pot(carry, pot_idx):
@@ -838,15 +886,17 @@ class OvercookedV3(MultiAgentEnv):
             # Update timers
             new_timers = timers.at[pot_idx].set(new_timer)
 
-            return (new_grid, new_timers), None
+            burn_event = jnp.asarray(is_active & just_burned, dtype=jnp.float32)
 
-        (new_grid, new_timers), _ = jax.lax.scan(
+            return (new_grid, new_timers), burn_event
+
+        (new_grid, new_timers), burn_events = jax.lax.scan(
             _update_single_pot,
             (grid, pot_timers),
             jnp.arange(MAX_POTS)
         )
 
-        return new_grid, new_timers
+        return new_grid, new_timers, burn_events.sum()
 
     def _process_item_conveyors(self, state: State) -> State:
         """Move items on item conveyor belts."""
