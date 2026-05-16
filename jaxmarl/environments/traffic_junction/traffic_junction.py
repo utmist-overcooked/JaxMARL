@@ -14,11 +14,12 @@ class State:
     path_idx: chex.Array  # [max_agents] (0: Pre-junction, 1: Post-junction) -> used for turn logic
     active: chex.Array  # [max_agents] (1 if active, 0 if finished)
     path_type: chex.Array  # [max_agents] (0: straight, 1: left, 2: right)
+    time_on_grid: chex.Array
     step: int
 
 
 class TrafficJunction(MultiAgentEnv):
-    def __init__(self, max_agents=10, spawn_prob=0.1, max_steps=100, view_size=3, collision_penalty=-10.0, time_penalty=-0.01, **kwargs):
+    def __init__(self, max_agents=10, spawn_prob=0.1, max_steps=100, view_size=3, collision_penalty=-10.0, time_penalty=-0.1, finish_reward=10.0, **kwargs):
         self.num_agents = max_agents
         self.spawn_prob = spawn_prob
         self.max_steps = max_steps
@@ -27,7 +28,7 @@ class TrafficJunction(MultiAgentEnv):
 
         self.collision_penalty = collision_penalty
         self.time_penalty = time_penalty
-
+        self.finish_reward = finish_reward
         self.agents = [f"car_{i}" for i in range(max_agents)]
         self.agent_range = jnp.arange(max_agents)
 
@@ -52,7 +53,7 @@ class TrafficJunction(MultiAgentEnv):
         ])
 
         self.action_spaces = {agent: Discrete(2) for agent in self.agents}
-        self.observation_spaces = {agent: Box(low=-1, high=1, shape=(view_size * view_size,)) for agent in self.agents}
+        self.observation_spaces = {agent: Box(low=-1, high=1, shape=(view_size * view_size + 2,)) for agent in self.agents}
 
     @partial(jax.jit, static_argnums=[0])
     def reset(self, key=None):
@@ -62,6 +63,7 @@ class TrafficJunction(MultiAgentEnv):
             path_idx=jnp.zeros((self.num_agents,), dtype=jnp.int32),
             active=jnp.zeros((self.num_agents,), dtype=bool),
             path_type=jnp.zeros((self.num_agents,), dtype=jnp.int32),
+            time_on_grid=jnp.zeros((self.num_agents,), dtype=jnp.int32),
             step=0
         )
         return self.get_obs(state), state
@@ -129,7 +131,15 @@ class TrafficJunction(MultiAgentEnv):
             safe_x = jnp.where(pos_on_grid, actual_pos[1], 0)
             val_to_add = jnp.where(pos_on_grid, 1, 0)
             
-            new_occupied = occupied_grid.at[safe_y, safe_x].add(val_to_add)
+            old_y, old_x = state.p_pos[i, 0], state.p_pos[i, 1]
+            old_on_grid = (old_y >= 0) & (old_y < self.grid_size) & (old_x >= 0) & (old_x < self.grid_size)
+            
+            safe_old_y = jnp.where(old_on_grid, old_y, 0)
+            safe_old_x = jnp.where(old_on_grid, old_x, 0)
+            
+            # Subtract 1 from the old position, add 1 to the new position
+            temp_occupied = occupied_grid.at[safe_old_y, safe_old_x].add(jnp.where(old_on_grid, -1, 0))
+            new_occupied = temp_occupied.at[safe_y, safe_x].add(val_to_add)
             
             # Collision: You collided if you wanted to move, target was IN BOUNDS, but blocked.
             had_collision = gas_intent[i] & ~can_move & in_bounds
@@ -173,23 +183,29 @@ class TrafficJunction(MultiAgentEnv):
 
         def attempt_spawn(i, current_state):
             pos = spawn_locs[i]
-            # Check for stacking: is there an active car EXACTLY at this off-grid pos?
             clear = ~jnp.any((current_state.active == 1) & jnp.all(current_state.p_pos == pos, axis=-1))
             slot = jnp.argmin(current_state.active)
             can_fill = spawn_rolls[i] & clear & (current_state.active[slot] == 0)
             return current_state.replace(
-                active=current_state.active.at[slot].set(jnp.where(can_fill, 1, current_state.active[slot])),
+                active=current_state.active.at[slot].set(jnp.where(can_fill, True, current_state.active[slot])),
                 p_pos=current_state.p_pos.at[slot].set(jnp.where(can_fill, pos, current_state.p_pos[slot])),
                 p_dir=current_state.p_dir.at[slot].set(jnp.where(can_fill, self.spawn_directions[i], current_state.p_dir[slot])),
                 path_type=current_state.path_type.at[slot].set(jnp.where(can_fill, path_types[i], current_state.path_type[slot])),
-                path_idx=current_state.path_idx.at[slot].set(jnp.where(can_fill, 0, current_state.path_idx[slot]))
+                path_idx=current_state.path_idx.at[slot].set(jnp.where(can_fill, 0, current_state.path_idx[slot])),
+                time_on_grid=current_state.time_on_grid.at[slot].set(jnp.where(can_fill, 0, current_state.time_on_grid[slot]))
             )
 
         final_state = jax.lax.fori_loop(0, 4, attempt_spawn, current_state)
         
-        reward_per_agent = (collision_mask * self.collision_penalty) + (final_state.active * self.time_penalty)
+        # Add a finish_reward of +10.0 (or whatever value you choose)
+        reward_per_agent = (collision_mask * self.collision_penalty) + \
+                        (final_state.active * self.time_penalty) + \
+                        (has_exited * self.finish_reward)
         info = {agent: collision_mask[i].astype(jnp.int32) for i, agent in enumerate(self.agents)}
-        final_state = final_state.replace(step=final_state.step + 1)
+        final_state = final_state.replace(
+            step=final_state.step + 1,
+            time_on_grid=final_state.time_on_grid + final_state.active # Adds 1 if active, 0 if inactive
+        )        
         done = final_state.step >= self.max_steps
         dones = {agent: ~final_state.active[i] | done for i, agent in enumerate(self.agents)}
         dones['__all__'] = done
@@ -215,7 +231,12 @@ class TrafficJunction(MultiAgentEnv):
         def _observation(i):
             y, x = state.p_pos[i, 0], state.p_pos[i, 1]
             crop = jax.lax.dynamic_slice(padded_grid, (y, x), (self.view_size, self.view_size))
-            return jnp.where(state.active[i], crop.flatten(), jnp.zeros(self.view_size * self.view_size, dtype=jnp.int32))
+            
+            # Flatten the grid and append the agent's direction and goal
+            base_obs = jnp.where(state.active[i], crop.flatten(), jnp.zeros(self.view_size * self.view_size, dtype=jnp.int32))
+            internal_state = jnp.array([state.p_dir[i], state.path_type[i]], dtype=jnp.int32)
+            
+            return jnp.concatenate([base_obs, internal_state])
         
         obs_array = _observation(self.agent_range)
         return {agent: obs_array[i] for i, agent in enumerate(self.agents)}

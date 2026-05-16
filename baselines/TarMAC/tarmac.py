@@ -48,48 +48,39 @@ class TarMACCell(nn.Module):
         self, 
         carry: Tuple[chex.Array, chex.Array],
         inputs: Tuple[chex.Array, chex.Array]
-    ) -> Tuple[Tuple[chex.Array, chex.Array], chex.Array]:
-        """
-        Forward pass for one timestep.
-
-        Args:
-            carry: (hidden_states, prev_messages)
-                hidden_states: [batch, num_agents, hidden_dim]
-                prev_messages: [batch, num_agents, msg_dim]
-            inputs: (obs, dones)
-                obs: [batch, num_agents, obs_dim]
-                dones: [batch, num_agents] OR [batch, num_agents, 1] indicating reset
-
-        Returns:
-            new_carry: (new_hidden_states, new_messages)
-                new_hidden_states: [batch, num_agents, hidden_dim]
-                new_messages: [batch, num_agents, msg_dim]
-            outputs: (logits, weights)
-                logits: [batch, num_agents, action_dim]
-                weights: [batch, num_agents, msg_dim] (aggregated incoming message)
-        """
+    ) -> Tuple[Tuple[chex.Array, chex.Array], Tuple[chex.Array, chex.Array, chex.Array]]:
+        
         hidden_state, prev_msgs = carry
         obs, dones = inputs
 
         # Dimensions: B=batch, N=num_agents, D=obs_dim
-        B, N, _ = obs.shape
+        sh = obs.shape
+        B, N = sh[0], sh[1]
 
         # Ensure dones is broadcastable [B, N, 1]
         if dones.ndim == 2:
             dones = jnp.expand_dims(dones, axis=-1)
 
-        # Encode observation
-        # Project observations into hidden_dim
-        # Dense layers broadcast over [batch, num_agents], no need for flattening yet
-        enc_obs = nn.Dense(self.config.hidden_dim, name="obs_encoder_1")(obs)
-        enc_obs = nn.relu(enc_obs)
-        enc_obs = nn.Dense(self.config.hidden_dim, name="obs_encoder_2")(enc_obs)
-        enc_obs = nn.relu(enc_obs)
-
-        # GRU update (pre-communication)
-        # Reset hidden state and messages for done agents to prevent them from influencing others
+        # Mask out hidden states for agents that just finished/reset
         hidden_state = jnp.where(dones, 0.0, hidden_state)
         prev_msgs = jnp.where(dones, 0.0, prev_msgs)
+
+        if obs.ndim > 3:
+            # Overcooked Grid Processing [B, N, H, W, C]
+            flat_obs = obs.reshape(B * N, *sh[2:])
+            x = nn.Conv(features=32, kernel_size=(3, 3), name="enc_conv1")(flat_obs)
+            x = nn.relu(x)
+            x = nn.Conv(features=32, kernel_size=(3, 3), name="enc_conv2")(x)
+            x = nn.relu(x)
+            x = x.reshape((B * N, -1)) 
+            enc_obs = nn.Dense(self.config.hidden_dim, name="obs_dense")(x)
+            enc_obs = enc_obs.reshape(B, N, -1)
+        else:
+            # Standard Vector Processing [B, N, D]
+            enc_obs = nn.Dense(self.config.hidden_dim, name="obs_encoder_1")(obs)
+            enc_obs = nn.relu(enc_obs)
+            enc_obs = nn.Dense(self.config.hidden_dim, name="obs_encoder_2")(enc_obs)
+            enc_obs = nn.relu(enc_obs)
 
         # GRU updates agent internal state based on its own obs and previous message
         gru_input = jnp.concatenate([enc_obs, prev_msgs], axis=-1)
@@ -107,53 +98,53 @@ class TarMACCell(nn.Module):
         final_msgs = prev_msgs
 
         # Communication (Attention Mechanism)
-        # Agents query messages from others to update their message/state
         Q_layer = nn.Dense(self.config.key_dim, name="query")
         K_layer = nn.Dense(self.config.key_dim, name="key")
         V_layer = nn.Dense(self.config.msg_dim, name="value")
+
+        # shared projection layer
+        proj_layer = nn.Dense(self.config.hidden_dim, name="inter_round_proj")
+
+        # masks for dead agents
+        sender_mask = (1.0 - dones).reshape(B, 1, N)
+        receiver_mask = (1.0 - dones).reshape(B, N, 1)
         
-        comm_gru = nn.GRUCell(self.config.hidden_dim, name="comm_gru") if self.config.num_rounds > 1 else None
         for r in range(self.config.num_rounds):
             Q = Q_layer(h_round)
             K = K_layer(h_round)
             V = V_layer(h_round)
 
             # scores: [B, N, N] - attention scores between agents
-            # scores[b, i, j] = how much agent i (receiver) cares about agent j (sender)
             scores = jnp.einsum('bik,bjk->bij', Q, K)
             scores = scores / jnp.sqrt(self.config.key_dim)
 
             # mask out 'done' agents so they don't send messages
-            # mask shape [B, 1, N] to broadcast over receivers
-            mask = (1.0 - dones).reshape(B, 1, N)
-            scores = jnp.where(mask > 0, scores, -1e9)
+            scores = jnp.where(sender_mask > 0, scores, -1e9)
 
             # Softmax over Senders to get attention weights
             weights = nn.softmax(scores, axis=-1)
             messages = jnp.einsum('bij,bjm->bim', weights, V)
-            final_msgs = messages
-            
-            # inter round state update
-            if r < self.config.num_rounds - 1:
-                flat_h_round = h_round.reshape(B * N, -1)
-                flat_msgs = messages.reshape(B * N, -1)
-                
-                flat_h_round, _ = comm_gru(flat_h_round, flat_msgs)
-                h_round = flat_h_round.reshape(B, N, self.config.hidden_dim)
+            final_msgs = messages * receiver_mask
+
+            concat_h_msg = jnp.concatenate([final_msgs, h_round], axis=-1)
+            h_round = proj_layer(concat_h_msg)
+            h_round = nn.tanh(h_round)
+            h_round = h_round * receiver_mask
         
         # Action Head
-        # Predict action based on updated hidden state and aggregated message
-        out_input = jnp.concatenate([h_round, final_msgs], axis=-1)
-        logits = nn.Dense(self.action_dim, name="action_head")(out_input)
-        new_carry = (h, final_msgs) # for next timestep
+        # Predict action based solely on the updated hidden state
+        logits = nn.Dense(self.action_dim, name="action_head")(h_round)
+        
+        new_carry = (h_round, final_msgs)
 
-        return new_carry, (logits, final_msgs, h)
-    
+        return new_carry, (logits, final_msgs, h_round)
 
     @staticmethod
-    def initialize_carry(hidden_dim, batch_size):
-        """Initialize the GRU carry (hidden state) to zeros."""
-        return jnp.zeros((batch_size, hidden_dim))
+    def initialize_carry(hidden_dim, msg_dim, batch_size, num_agents):
+        """Initialize the GRU carry (hidden state and messages) to zeros."""
+        hidden_state = jnp.zeros((batch_size, num_agents, hidden_dim))
+        prev_msgs = jnp.zeros((batch_size, num_agents, msg_dim))
+        return (hidden_state, prev_msgs)
     
 
 class CentralizedCritic(nn.Module):
