@@ -40,7 +40,6 @@ class AgentState(TrainState):
     critic_net: CentralizedCritic = struct.field(pytree_node=False)
 
 def make_train(args):
-    # Overcooked environment options passed via command line kwargs
     env_kwargs = {
         "layout": args.layout,
         "max_steps": args.max_steps,
@@ -109,7 +108,6 @@ def make_train(args):
 
             raw_rewards = jnp.stack([rewards[a] for a in env.agents], axis=1)
             
-            # Extract shaped updates safely if active in your wrapper layers
             # 5. --- Reward Shaping Implementation ---
             shaped_info = info.get("shaped_reward", {})
             if isinstance(shaped_info, dict) and len(shaped_info) > 0:
@@ -118,11 +116,13 @@ def make_train(args):
                     shaped_rews = jnp.expand_dims(shaped_rews, axis=-1)
                 total_rewards = raw_rewards + (shaped_rews * args.shaping_coef)
             else:
-                shaped_rews = jnp.zeros((args.num_envs, num_agents)) # Match shape [Batch, Agents]
+                shaped_rews = jnp.zeros((args.num_envs, num_agents)) 
                 total_rewards = raw_rewards
 
             # 6. Prepare Transition
             next_dones_tensor = jnp.stack([next_dones[a] for a in env.agents], axis=1).astype(jnp.float32)[..., None]
+            
+            
             
             trans = Transition(
                 obs=obs_tensor,
@@ -134,10 +134,9 @@ def make_train(args):
                 next_hidden_states=new_rnn[0] * (1.0 - next_dones_tensor),
                 done_episode=done_episode,
                 episode_returns=ep_returns,
-                shaped_rewards=shaped_rews # 💥 NEW: Store it here
+                shaped_rewards=shaped_rews,
             )
             
-            # CRITICAL: Return next_dones_carry here to match input pytree structure
             return (next_env_st, next_obs, next_dones_carry, new_rnn, rng_key), trans
 
         rollout_init = (env_state, last_obs, last_dones, rnn_carry, rng)
@@ -151,7 +150,6 @@ def make_train(args):
             
             hidden_batch = traj.hidden_states
             act_batch = traj.actions
-            # rew_batch contains the total rewards collected during the step_fn execution
             rew_batch = traj.rewards
             done_batch = traj.dones
             
@@ -164,10 +162,8 @@ def make_train(args):
             def get_q(h, a): 
                 return state.critic_net.apply(critic_params, h, a)
             
-            # q_values shape: [Time, Batch]
             q_values = jax.vmap(get_q)(hidden_batch, act_onehot).squeeze(-1) 
 
-            # Value baseline targets calculated via central kitchen metrics
             team_rewards = rew_batch.sum(axis=-1)
             team_dones = done_batch.all(axis=-1).reshape(args.update_timestep, args.num_envs)
 
@@ -192,7 +188,6 @@ def make_train(args):
                                              0.5 * td_errors ** 2, 
                                              jnp.abs(td_errors) - 0.5))
 
-            # Normalize joint values over training updates to secure communication scales
             q_mean = jnp.mean(q_values)
             q_std = jnp.std(q_values)
             normalized_q = (q_values - q_mean) / (q_std + 1e-8)
@@ -206,11 +201,8 @@ def make_train(args):
 
             total_loss = pg_loss + args.value_loss_coef * critic_loss - args.entropy_coef * entropy
 
-            # --- CLEAN METRICS TRACKING VIA NAMEDTUPLE ATOMIC LOADING ---
-            # traj.shaped_rewards shape: [Time, Batch, Agents]
             scaled_shaped_rews = traj.shaped_rewards * args.shaping_coef
             
-            # Raw rewards are total collected rewards minus the dense shaping addition
             raw_rewards = rew_batch - scaled_shaped_rews
             avg_raw_reward = raw_rewards.sum(axis=-1).mean()
             avg_shaped_reward = scaled_shaped_rews.sum(axis=-1).mean()
@@ -226,14 +218,9 @@ def make_train(args):
                 0.0 
             )
             
-            # --- Action Mapping Definition ---
             action_names = {
-                0: "move_right",
-                1: "move_down",
-                2: "move_left",
-                3: "move_up",
-                4: "stay",
-                5: "interact"
+                0: "move_right", 1: "move_down", 2: "move_left",
+                3: "move_up", 4: "stay", 5: "interact"
             }
             
             total_actions_executed = act_batch.size
@@ -242,6 +229,7 @@ def make_train(args):
                 for i in range(6)
             }
             
+ 
             metrics_out = {
                 'loss': total_loss, 
                 'pg_loss': pg_loss, 
@@ -266,17 +254,16 @@ def make_train(args):
     return train_step
 
 def generate_validation_video(state, params, env_kwargs, max_steps, actor_module, num_envs):
-    """Executes parallel validation steps to preserve Flax dense layer shapes while logging frame 0."""
+    """Executes parallel validation steps using STOCHASTIC SAMPLING to prevent argmax freezing."""
     from jaxmarl import make as jaxmarl_make
     
     val_env = jaxmarl_make("overcooked_v3", **env_kwargs)
     viz = OvercookedV3Visualizer(val_env)
     
-    # Setup batched tracks matching training metrics exactly
     vmap_reset = jax.vmap(val_env.reset, in_axes=(0,))
     vmap_step = jax.vmap(val_env.step, in_axes=(0, 0, 0))
     
-    rng = jax.random.PRNGKey(0)
+    rng = jax.random.PRNGKey(42)
     rng, rng_reset = jax.random.split(rng)
     obs, env_state = vmap_reset(jax.random.split(rng_reset, num_envs))
     
@@ -287,14 +274,12 @@ def generate_validation_video(state, params, env_kwargs, max_steps, actor_module
     frames = []
     
     for _ in range(max_steps):
-        # Unbatch the state of environment 0 to generate clean RGB frame matrices
-        single_state = jax.tree_util.tree_map(lambda x: x[0], env_state)
-        frame = viz.render_state(single_state)
+        display_state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], env_state))
+        frame = viz.render_state(display_state)
         frames.append(frame)
         
-        # Build tensor alignments matching standard training shapes [B, N, ...]
-        obs_tensor = jnp.stack([obs[a] for a in val_env.agents], axis=1) # [B, N, H, W, C]
-        dones_tensor = jnp.stack([dones[a] for a in val_env.agents], axis=1)[..., None] # [B, N, 1]
+        obs_tensor = jnp.stack([obs[a] for a in val_env.agents], axis=1) 
+        dones_tensor = jnp.stack([dones[a] for a in val_env.agents], axis=1)[..., None] 
         
         obs_seq = obs_tensor[None, ...]     
         dones_seq = dones_tensor[None, ...] 
@@ -303,14 +288,13 @@ def generate_validation_video(state, params, env_kwargs, max_steps, actor_module
         rnn_masked = (jnp.where(dones_tensor > 0, 0.0, h_in), 
                       jnp.where(dones_tensor > 0, 0.0, msg_in))
         
-        # Forward pass down the compiled sequence network paths
         _, (logits_seq, _, _) = actor_module.apply(
             params['actor'], rnn_masked, obs_seq, dones_seq
         )
-        logits = logits_seq[0] # [B, N, ActDim]
+        logits = logits_seq[0] 
         
-        # Extract greedy action selections across the entire environment batch
-        actions = jnp.argmax(logits, axis=-1)
+        rng, rng_act = jax.random.split(rng)
+        actions = jax.random.categorical(rng_act, logits, axis=-1)
         actions_dict = {a: actions[:, i] for i, a in enumerate(val_env.agents)}
         
         rng, rng_step = jax.random.split(rng)
@@ -318,11 +302,13 @@ def generate_validation_video(state, params, env_kwargs, max_steps, actor_module
             jax.random.split(rng_step, num_envs), env_state, actions_dict
         )
         
+        env_state = jax.block_until_ready(env_state) 
+        
         dones = {a: next_dones[a] for a in val_env.agents}
         if next_dones["__all__"].all():
             break
             
-    return frames # Clean list of un-transposed arrays
+    return frames
 
 
 def main():
@@ -330,17 +316,17 @@ def main():
     parser.add_argument("--env", type=str, default="overcooked_v3")
     parser.add_argument("--layout", type=str, default="cramped_room")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num_envs", type=int, default=128)
-    parser.add_argument("--update_timestep", type=int, default=32) 
+    parser.add_argument("--num_envs", type=int, default=32)
+    parser.add_argument("--update_timestep", type=int, default=16) 
     parser.add_argument("--total_timesteps", type=int, default=20_000_000)
     
-    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--lr", type=float, default=1.5e-5)
     parser.add_argument("--alpha", type=float, default=0.99)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--max_grad_norm", type=float, default=0.5)
+    parser.add_argument("--max_grad_norm", type=float, default=0.05)
     parser.add_argument("--value_loss_coef", type=float, default=0.5)
-    parser.add_argument("--entropy_coef", type=float, default=0.02)
-    parser.add_argument("--shaping_coef", type=float, default=1.0)
+    parser.add_argument("--entropy_coef", type=float, default=0.50)
+    parser.add_argument("--shaping_coef", type=float, default=8.0)
     parser.add_argument("--max_steps", type=int, default=400)
     parser.add_argument("--use_shaped_rewards", action="store_true", default=True)
     
@@ -383,13 +369,11 @@ def main():
         apply_fn=actor.apply,
         params={'actor': actor_params, 'critic': critic_params},
         tx=optax.chain(
-            # Switch from global norm to absolute element-wise clipping 
-            # to prevent single massive logit updates from dominating
-            optax.clip(0.1), 
+            optax.clip_by_global_norm(args.max_grad_norm), 
             optax.rmsprop(
                 learning_rate=lr_schedule, 
                 decay=args.alpha,
-                eps=1e-5  # Prevents division by near-zero variance
+                eps=1e-5 
             ) 
         ),
         critic_net=critic
@@ -421,7 +405,18 @@ def main():
         if update % 10 == 0:
             elapsed = time.time() - start_time
             sps = (args.num_envs * args.update_timestep * 10) / elapsed
-            print(f"Update {update}/{total_updates} | SPS: {sps:.0f} | Total Rew: {metrics['rew/total_step_reward']:.3f}")
+            
+            # 💥 FIXED: Extract semantic event scores to display directly in stdout logs
+            potted = float(metrics.get('events/put_in_pot', 0.0)) * (args.update_timestep * args.num_envs)
+            served = float(metrics.get('events/delivery', 0.0)) * (args.update_timestep * args.num_envs)
+            burnt  = float(metrics.get('events/burn_pot', 0.0)) * (args.update_timestep * args.num_envs)
+            
+            # Expanded diagnostic string layout
+            print(
+                f"Update {update:5d}/{total_updates} | SPS: {sps:4.0f} | "
+                f"Total Rew: {metrics['rew/total_step_reward']:6.3f} | "
+                f"Potted: {potted:3.0f} | Served: {served:2.0f} | Burnt: {burnt:2.0f}"
+            )
             
             wandb_metrics = {
                 "train/loss": metrics['loss'],
@@ -435,16 +430,13 @@ def main():
                 "global_step": update * args.num_envs * args.update_timestep
             }
             
-            action_names = ["move_right", "move_down", "move_left", "move_up", "stay", "interact"]
-            for name in action_names:
-                key = f"actions/{name}"
-                if key in metrics:
-                    wandb_metrics[f"actions/{name}_percentage"] = metrics[key]
+            for key, val in metrics.items():
+                if key.startswith("actions/") or key.startswith("events/"):
+                    wandb_metrics[key] = val
 
             wandb.log(wandb_metrics)
             start_time = time.time()
             
-        # Drop an atomic weights checkpoint every 5000 updates
         if update % 5000 == 0:
             import os
             import pickle
@@ -454,31 +446,27 @@ def main():
                 pickle.dump(jax.device_get(train_state.params), f)
             print(f"💾 Checkpoint safely backed up to {checkpoint_path}")
 
-        # 🎥 Fast GIF compilation file path trigger every 500 updates
-        # if update % 500 == 0:
-        #     print(f"🎬 Compiling visual rollout GIF at update {update}...")
-        #     import imageio
+        if update % 1000 == 0:
+            print(f"🎬 Compiling visual rollout GIF at update {update}...")
+            import imageio
             
-        #     gif_frames = generate_validation_video(
-        #         state=train_state,
-        #         params=train_state.params,
-        #         env_kwargs=env_kwargs,
-        #         max_steps=args.max_steps,
-        #         actor_module=actor,
-        #         num_envs=args.num_envs
-        #     )
+            gif_frames = generate_validation_video(
+                state=train_state,
+                params=train_state.params,
+                env_kwargs=env_kwargs,
+                max_steps=args.max_steps,
+                actor_module=actor,
+                num_envs=args.num_envs
+            )
             
-        #     # Compress list of arrays into a standard local file on disk
-        #     local_gif_path = "current_kitchen_rollout.gif"
-        #     imageio.mimsave(local_gif_path, gif_frames, fps=8)
+            local_gif_path = "current_kitchen_rollout.gif"
+            imageio.mimsave(local_gif_path, gif_frames, fps=8)
             
-        #     # HARDENED FIX: Use wandb.Image to reference the local filepath string.
-        #     # This completely avoids moviepy checks and displays perfectly on your workspace dashboard.
-        #     wandb.log({
-        #         "media/kitchen_coordination_loop": wandb.Image(local_gif_path),
-        #         "global_step": update * args.num_envs * args.update_timestep
-        #     })
-        #     print("Visual kitchen loop successfully synced to dashboard media pane.")
+            wandb.log({
+                "media/kitchen_coordination_loop": wandb.Video(local_gif_path, format="gif"),
+                "global_step": update * args.num_envs * args.update_timestep
+            })
+            print("Visual kitchen loop successfully synced to dashboard media pane.")
 
 if __name__ == "__main__":
     main()
