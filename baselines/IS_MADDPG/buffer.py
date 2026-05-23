@@ -227,7 +227,7 @@ def buffer_sample_prioritized(
     Transitions with any non-zero reward (shaped or sparse) are upweighted
     by priority_reward_weight relative to zero-reward transitions. This
     addresses the sparse reward problem where a uniformly sampled batch
-    contains <1% non-zero reward transitions, causing the critic to
+    contains very few non-zero reward transitions, causing the critic to
     converge to Q≈0.
 
     Args:

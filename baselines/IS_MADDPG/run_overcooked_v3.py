@@ -755,7 +755,8 @@ def run(config: dict, env_vec: OvercookedV3,
                     compile_start = time.time()
                 
                 t0 = time.time()
-                batch, rng = buffer_sample_prioritized(buffer_state, batch_size, rng, priority_reward_weight=10.0)
+                # batch, rng = buffer_sample_prioritized(buffer_state, batch_size, rng, priority_reward_weight=10.0)
+                batch, rng = buffer_sample(buffer_state, batch_size, rng)
                 train_state, last_metrics = jit_train_step(train_state, batch)
                 # jax.block_until_ready(train_state.actor_params)  # force sync
                 t_train += time.time() - t0
