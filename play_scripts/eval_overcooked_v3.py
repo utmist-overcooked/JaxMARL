@@ -14,6 +14,8 @@ import sys
 import jax
 import jax.numpy as jnp
 import numpy as np
+import imageio
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -65,6 +67,26 @@ def rollout(params, env, network, config, rng):
     return stacked_states, total_reward, step + 1
 
 
+def annotate_frames(frames):
+    annotated = []
+    for idx, frame in enumerate(frames):
+        image = Image.fromarray(np.asarray(frame))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((4, 4, 82, 20), fill=(0, 0, 0))
+        draw.text((8, 7), f"step {idx:03d}", fill=(255, 255, 255))
+        annotated.append(np.asarray(image))
+    return np.stack(annotated)
+
+
+def save_gif(env, states, output_path, fps, tile_size, annotate):
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    viz = OvercookedV3Visualizer(env, tile_size=tile_size)
+    frames = np.asarray(viz.render_sequence(states))
+    if annotate:
+        frames = annotate_frames(frames)
+    imageio.mimsave(output_path, frames, format="GIF", duration=1.0 / fps)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate a trained IPPO-RNN model on Overcooked V3"
@@ -81,6 +103,9 @@ def main():
     parser.add_argument("--gru-hidden-dim", type=int, default=128)
     parser.add_argument("--fc-dim-size", type=int, default=128)
     parser.add_argument("--activation", default="relu", choices=["relu", "tanh"])
+    parser.add_argument("--fps", type=int, default=8)
+    parser.add_argument("--tile-size", type=int, default=48)
+    parser.add_argument("--no-annotate", action="store_true", help="Do not overlay frame numbers")
     args = parser.parse_args()
 
     # Load model
@@ -127,8 +152,14 @@ def main():
 
     # Save GIF
     if args.save_gif and last_states is not None:
-        viz = OvercookedV3Visualizer(env)
-        viz.animate(last_states, filename=args.save_gif)
+        save_gif(
+            env,
+            last_states,
+            args.save_gif,
+            fps=args.fps,
+            tile_size=args.tile_size,
+            annotate=not args.no_annotate,
+        )
         print(f"Saved GIF to {args.save_gif}")
 
 
