@@ -1,12 +1,12 @@
 hydra:
   run:
-    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/ippo_rnn_overcooked_v3/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_full_obs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 "ENV_KWARGS":
   "layout": "cramped_room"
-  "agent_view_size": 2
+  "agent_view_size": null
   "shaped_rewards": True
-  "random_agent_positions": False
+  "random_agent_positions": True
   "max_steps": 400
 
 "LR": 0.00025
@@ -30,7 +30,6 @@ hydra:
 "GAMMA": 0.99
 "GAE_LAMBDA": 0.95
 "VF_COEF": 0.5
-"SCALE_CLIP_EPS": False
 "MAX_GRAD_NORM": 0.5
 "ACTIVATION": "relu"
 "SEED": 0
@@ -40,7 +39,7 @@ hydra:
 "PROJECT": ""
 "WANDB_MODE": "disabled"
 "WANDB_RUN_NAME": ""
-"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/ippo_overcooked_v3"
+"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
 "USE_RICH_MONITOR": True
 
 # CARBS sweep
@@ -95,4 +94,3 @@ hydra:
     scale: 0.05
     min: 0.8
     max: 1.0
-

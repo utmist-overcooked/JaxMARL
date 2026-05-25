@@ -674,6 +674,18 @@ overcooked_v3_layouts = {
         around_the_island_nerfed, possible_recipes=[[0, 0, 0]],
     ),
 
+    "race_against_the_clock": Layout.from_string(
+        race_against_the_clock, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "maze_conveyor_hell": Layout.from_string(
+        maze_conveyor_hell, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "coordinated_temporal_conveyor": Layout.from_string(
+        coordinated_temporal_conveyor, possible_recipes=[[0, 0, 0]],
+    ),
+
     "single_file": Layout.from_string(
         single_file, possible_recipes=[[0, 0, 0]],
     ),
