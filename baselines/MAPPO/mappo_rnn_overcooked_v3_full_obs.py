@@ -234,11 +234,17 @@ class ActorRNN(nn.Module):
         else:
             activation = nn.tanh
 
-        embed_model = CNN(
+        embed_model = nn.vmap(
+            CNN,
+            variable_axes={"params": None},
+            split_rngs={"params": False},
+            in_axes=0,
+            out_axes=0,
+        )(
             output_size=self.config["GRU_HIDDEN_DIM"],
             activation=activation,
         )
-        embedding = jax.vmap(embed_model)(obs)
+        embedding = embed_model(obs)
 
         embedding = nn.LayerNorm()(embedding)
 
@@ -272,11 +278,17 @@ class CriticRNN(nn.Module):
         else:
             activation = nn.tanh
 
-        embed_model = CNN(
+        embed_model = nn.vmap(
+            CNN,
+            variable_axes={"params": None},
+            split_rngs={"params": False},
+            in_axes=0,
+            out_axes=0,
+        )(
             output_size=self.config["GRU_HIDDEN_DIM"],
             activation=activation,
         )
-        embedding = jax.vmap(embed_model)(obs)
+        embedding = embed_model(obs)
 
         embedding = nn.LayerNorm()(embedding)
 
@@ -813,13 +825,18 @@ def make_train(config, monitor=None):
             metric["clip_frac"] = loss_info["clip_frac"]
             metric["update_step"] = update_step
             metric["env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
-            jax.debug.callback(
-                callback,
-                metric,
-                original_seed,
-                train_states[0].params,
-                train_states[1].params,
-            )
+            if (
+                monitor is not None
+                or config["WANDB_MODE"] != "disabled"
+                or not config.get("DISABLE_CHECKPOINTS", False)
+            ):
+                jax.debug.callback(
+                    callback,
+                    metric,
+                    original_seed,
+                    train_states[0].params,
+                    train_states[1].params,
+                )
 
             runner_state = (
                 train_states,
@@ -890,15 +907,14 @@ def single_run(config):
             title=f"MAPPO-RNN Full Obs - OvercookedV3 ({layout_name})",
         )
 
-    with jax.disable_jit(False):
-        rng = jax.random.PRNGKey(config["SEED"])
-        rngs = jax.random.split(rng, num_seeds)
-        train_jit = jax.jit(make_train(config, monitor=monitor))
-        if monitor is not None:
-            with monitor:
-                out = jax.block_until_ready(jax.vmap(train_jit)(rngs))
-        else:
-            out = jax.vmap(train_jit)(rngs)
+    rng = jax.random.PRNGKey(config["SEED"])
+    rngs = jax.random.split(rng, num_seeds)
+    train_jit = jax.jit(make_train(config, monitor=monitor))
+    if monitor is not None:
+        with monitor:
+            out = jax.block_until_ready(jax.vmap(train_jit)(rngs))
+    else:
+        out = jax.block_until_ready(jax.vmap(train_jit)(rngs))
 
     # Save final model params
     save_dir = os.path.join(wandb_dir, "models")
