@@ -17,7 +17,7 @@ DEFAULT_MAX_ORDERS = 5
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
     "PLACEMENT_IN_POT": 0.1,      # Adding correct ingredient to pot
-    "SOUP_IN_DISH": 0.3,          # Picking up cooked soup with plate
+    "SOUP_IN_DISH": 5.0,          # Picking up cooked soup with plate
     "PLATE_PICKUP": 0.1,          # Picking up a plate when useful
     "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
 }
