@@ -167,7 +167,7 @@ coordinated_temporal_conveyor = """
 >>>>>>vW   X
       vW  A 
      WvW    
-     Wv    B
+     Wv   PB
   A  WvWWWWW
 01   Wv>>>>>
 """
