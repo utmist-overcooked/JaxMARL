@@ -680,7 +680,7 @@ def make_train(config: dict, env_vec, env_eval, monitor=None):
             #         f"_step{global_step}.pkl"
             #     )
             #     save_checkpoint(train_state, ckpt_path, config)
-            CKPT_INTERVAL = 10_000
+            CKPT_INTERVAL = 100_000
             if (ckpt_dir is not None
                     and global_step > 0
                     and global_step % CKPT_INTERVAL == 0):
