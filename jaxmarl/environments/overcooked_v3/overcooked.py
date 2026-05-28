@@ -782,10 +782,16 @@ class OvercookedV3(MultiAgentEnv):
             inventory_is_plate_now = new_inventory == DynamicObject.PLATE
             successful_plate_pickup = successful_pickup * inventory_is_plate_now
             num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
-            num_nonempty_pots = jnp.sum(
-                (grid[:, :, 0] == StaticObject.POT) & (grid[:, :, 1] != 0)
+            pot_ingredient_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
+                grid[:, :, 1]
             )
-            is_plate_pickup_useful = num_plates_in_inventory < num_nonempty_pots
+            full_unburned_pots = (
+                (grid[:, :, 0] == StaticObject.POT)
+                & (pot_ingredient_counts == 3)
+                & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
+            )
+            num_useful_pots = jnp.sum(full_unburned_pots)
+            is_plate_pickup_useful = num_plates_in_inventory < num_useful_pots
             shaped_reward += (
                 is_plate_pickup_useful
                 * successful_plate_pickup

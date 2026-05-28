@@ -348,6 +348,70 @@ class TestOvercookedV3PotMechanics:
         assert new_state.pot_cooking_timer[0] == 0
 
 
+class TestOvercookedV3RewardShaping:
+    """Test shaped rewards for plate interactions."""
+
+    def _make_env_and_state(self):
+        layout = Layout.from_string(
+            """
+WWWWWW
+WAB XW
+W P0 W
+W    W
+WWWWWW
+""",
+            possible_recipes=[[0, 0, 0]],
+        )
+        env = OvercookedV3(layout=layout, pot_cook_time=10, pot_burn_time=5)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+        state = state.replace(
+            agents=state.agents.replace(
+                dir=jnp.array([Direction.RIGHT], dtype=jnp.int32),
+            )
+        )
+        return env, state
+
+    def _set_pot(self, state, contents, timer=0):
+        pot_y, pot_x = state.pot_positions[0]
+        grid = state.grid.at[pot_y, pot_x, 1].set(jnp.int32(contents))
+        timers = state.pot_cooking_timer.at[0].set(jnp.int32(timer))
+        return state.replace(grid=grid, pot_cooking_timer=timers)
+
+    def _pickup_plate_reward(self, env, state):
+        actions = {"agent_0": int(Actions.interact)}
+        _, _, _, _, info = env.step(jax.random.PRNGKey(1), state, actions)
+        return float(info["shaped_reward"]["agent_0"])
+
+    @pytest.mark.parametrize("ingredient_count", [1, 2])
+    def test_plate_pickup_not_rewarded_for_partial_pot(self, ingredient_count):
+        env, state = self._make_env_and_state()
+        pot_contents = DynamicObject.ingredient(0) * ingredient_count
+        state = self._set_pot(state, pot_contents)
+
+        shaped_reward = self._pickup_plate_reward(env, state)
+
+        assert shaped_reward == pytest.approx(0.0)
+
+    def test_plate_pickup_rewarded_for_full_unburned_pot(self):
+        env, state = self._make_env_and_state()
+        pot_contents = DynamicObject.ingredient(0) * 3
+        state = self._set_pot(state, pot_contents, timer=10)
+
+        shaped_reward = self._pickup_plate_reward(env, state)
+
+        assert shaped_reward == pytest.approx(0.1)
+
+    def test_plate_pickup_not_rewarded_for_burned_pot(self):
+        env, state = self._make_env_and_state()
+        pot_contents = (DynamicObject.ingredient(0) * 3) | DynamicObject.BURNED
+        state = self._set_pot(state, pot_contents)
+
+        shaped_reward = self._pickup_plate_reward(env, state)
+
+        assert shaped_reward == pytest.approx(0.0)
+
+
 class TestOvercookedV3OrderQueue:
     """Test order queue system."""
 
