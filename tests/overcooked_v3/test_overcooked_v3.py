@@ -5,7 +5,13 @@ import jax.numpy as jnp
 import pytest
 from jaxmarl import make
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
-from jaxmarl.environments.overcooked_v3.common import Actions, Position, StaticObject
+from jaxmarl.environments.overcooked_v3.common import (
+    Actions,
+    Direction,
+    DynamicObject,
+    Position,
+    StaticObject,
+)
 from jaxmarl.environments.overcooked_v3.layouts import (
     Layout,
     coordinated_temporal_conveyor,
@@ -151,6 +157,44 @@ class TestOvercookedV3Layouts:
             assert state is not None
 
 
+class TestOvercookedV3Interactions:
+    """Test interaction edge cases."""
+
+    def test_interact_left_edge_does_not_wrap_to_right_edge(self):
+        layout = Layout.from_string(
+            """
+A BP 0
+W   XW
+WWWWWW
+""",
+            possible_recipes=[[0, 0, 0]],
+        )
+        env = OvercookedV3(layout=layout, random_agent_positions=False)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        right_col = env.width - 1
+        assert StaticObject.is_ingredient_pile(state.grid[0, right_col, 0])
+
+        state = state.replace(
+            agents=state.agents.replace(
+                pos=state.agents.pos.replace(
+                    x=state.agents.pos.x.at[0].set(0),
+                    y=state.agents.pos.y.at[0].set(0),
+                ),
+                dir=state.agents.dir.at[0].set(Direction.LEFT),
+                inventory=state.agents.inventory.at[0].set(0),
+            )
+        )
+
+        actions = {"agent_0": int(Actions.interact)}
+        obs, new_state, rewards, dones, info = env.step(
+            jax.random.PRNGKey(1), state, actions
+        )
+
+        assert new_state.agents.inventory[0] == 0
+
+
 class TestOvercookedV3PotMechanics:
     """Test pot cooking and burning mechanics."""
 
@@ -262,7 +306,7 @@ class TestOvercookedV3PotMechanics:
         pot_y, pot_x = state.pot_positions[0]
 
         # Step through cooking phase (timer 10 -> 6, not yet cooked)
-        for expected_timer in range(9, 6, -1):
+        for expected_timer in range(9, 5, -1):
             state, key = self._step_noop(env, state, key)
             assert state.pot_cooking_timer[0] == expected_timer
             pot_ingredients = state.grid[pot_y, pot_x, 1]
@@ -343,6 +387,60 @@ class TestOvercookedV3Conveyors:
         # Should have some item conveyors
         assert jnp.any(state.item_conveyor_active_mask)
 
+    def test_item_conveyor_drops_items_pushed_past_map_border(self):
+        """Items pushed out of bounds by an item conveyor should disappear."""
+        layout = Layout.from_string(
+            """
+WWWWWW
+WA X W
+W0BP >
+WWWWWW
+""",
+            possible_recipes=[[0, 0, 0]],
+        )
+        env = OvercookedV3(layout=layout, enable_item_conveyors=True)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        item = jnp.int32(DynamicObject.PLATE)
+        state = state.replace(grid=state.grid.at[2, 5, 1].set(item))
+        assert state.grid[2, 5, 0] == StaticObject.ITEM_CONVEYOR
+
+        actions = {"agent_0": int(Actions.stay)}
+        obs, new_state, rewards, dones, info = env.step(
+            jax.random.PRNGKey(1), state, actions
+        )
+
+        assert new_state.grid[2, 5, 1] == 0
+
+    def test_item_conveyor_keeps_items_pushed_onto_normal_wall(self):
+        """In-bounds walls are counters, not border sinks."""
+        layout = Layout.from_string(
+            """
+WWWWWWW
+WA X  W
+W0BP >W
+WWWWWWW
+""",
+            possible_recipes=[[0, 0, 0]],
+        )
+        env = OvercookedV3(layout=layout, enable_item_conveyors=True)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        item = jnp.int32(DynamicObject.PLATE)
+        state = state.replace(grid=state.grid.at[2, 5, 1].set(item))
+        assert state.grid[2, 5, 0] == StaticObject.ITEM_CONVEYOR
+        assert state.grid[2, 6, 0] == StaticObject.WALL
+
+        actions = {"agent_0": int(Actions.stay)}
+        obs, new_state, rewards, dones, info = env.step(
+            jax.random.PRNGKey(1), state, actions
+        )
+
+        assert new_state.grid[2, 5, 1] == 0
+        assert new_state.grid[2, 6, 1] == item
+
     def test_agents_cannot_move_onto_item_conveyors(self):
         """Agents should not be able to occupy item conveyor cells."""
         layout = Layout.from_string(
@@ -379,10 +477,10 @@ class TestOvercookedV3Conveyors:
         """Agents should still be able to occupy player conveyor cells."""
         layout = Layout.from_string(
             """
-WWWWW
-WA]XW
-W0BPW
-WWWWW
+WWWWWW
+WA]X W
+W0BP W
+WWWWWW
 """,
             possible_recipes=[[0, 0, 0]],
         )
@@ -403,10 +501,10 @@ WWWWW
         """Player conveyors should not push agents onto item conveyors."""
         layout = Layout.from_string(
             """
-WWWWW
-WA]>X
-W0BPW
-WWWWW
+WWWWWW
+WA]>XW
+W0BP W
+WWWWWW
 """,
             possible_recipes=[[0, 0, 0]],
         )
