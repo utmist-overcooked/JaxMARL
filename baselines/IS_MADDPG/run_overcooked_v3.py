@@ -22,7 +22,7 @@ from networks import ISAgentNet, ISCriticNet
 from buffer import buffer_init, buffer_add, buffer_is_ready, buffer_sample, buffer_sample_prioritized
 from update import TrainState, UpdateMetrics, init_train_state, train_step
 from loss import received_messages
-from train import save_checkpoint, DEFAULT_CONFIG
+from train import save_checkpoint, save_checkpoint_zip, DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +586,14 @@ def run(config: dict, env_vec: OvercookedV3,
     t_step   = 0.0  # env stepping
     t_buffer = 0.0  # buffer adds
     t_train  = 0.0  # gradient updates
-    t_other  = 0.0  # everything else      
+    t_other  = 0.0  # everything else
+
+    CKPT_INTERVAL = 10_000
+    if ckpt_dir is not None:
+        os.makedirs(ckpt_dir, exist_ok=True)
+        print(f"  Checkpoints will be saved to: {ckpt_dir}/", flush=True)
+    else:
+        print("  [WARNING] No save_path set — checkpoints will NOT be saved.", flush=True)      
 
     for t in range(1, total_steps_target + 1):
         t_loop_start = time.time()
@@ -635,6 +642,9 @@ def run(config: dict, env_vec: OvercookedV3,
         next_obs_all = obs_dict_to_array(next_obs_dict, agent_ids, num_envs, obs_dim)
         dones_all = dones_dict_to_array(dones_dict, agent_ids, num_envs)
 
+        # Raw rewards always needed for delivery tracking
+        raw_rewards = rewards_dict_to_array(rewards_dict, agent_ids, num_envs)        
+
         # Use shaped rewards for training signal, sparse for logging
         if config.get("USE_SHAPED_REWARDS", True) and "shaped_reward" in info:
             shaped = info["shaped_reward"]
@@ -644,9 +654,11 @@ def run(config: dict, env_vec: OvercookedV3,
                 for aid in agent_ids
             }
             rewards_all = rewards_dict_to_array(combined_rewards, agent_ids, num_envs)
-            ep_deliveries += (rewards_all > 0).any(axis=1).astype(np.float32)
         else:
-            rewards_all = rewards_dict_to_array(rewards_dict, agent_ids, num_envs)            
+            rewards_all = raw_rewards
+
+        # Track deliveries from raw rewards
+        ep_deliveries += (raw_rewards >= 20.0).any(axis=1).astype(np.float32)          
 
         # ── Buffer ───────────────────────────────────────────────────
         t0 = time.time()
@@ -668,24 +680,27 @@ def run(config: dict, env_vec: OvercookedV3,
         if "shaped_reward" in info:
             shaped = info["shaped_reward"]
             for e in range(num_envs):
-                for aid in agent_ids:
-                    sv = float(jnp.array(shaped[aid])[e])
-                    rv = float(jnp.array(rewards_dict[aid])[e])
+                aid0 = agent_ids[0]
+                sv = float(jnp.array(shaped[aid0])[e])
 
-                    # Infer reward type from value
-                    if sv == 12.0:
-                        ep_reward_types["soup_in_dish"][e] += 1
-                    # elif sv == 4.0:
-                    #     ep_reward_types["pot_start_cooking"][e] += 1
-                    elif sv == 6.0:
-                        ep_reward_types["placement_in_pot"][e] += 1
-                    elif sv == 4.0:
-                        ep_reward_types["plate_pickup"][e] += 1
+                sv = float(jnp.array(shaped[aid0])[e])
+                rv = float(jnp.array(rewards_dict[aid0])[e])
 
-                    if rv == 20.0:
-                        ep_reward_types["delivery"][e] += 1
-                    # elif rv == -5.0:
-                    #     ep_reward_types["burn_penalty"][e] += 1            
+                # Infer reward type from value
+                if sv == 12.0:
+                    ep_reward_types["soup_in_dish"][e] += 1
+                # elif sv == 4.0:
+                #     ep_reward_types["pot_start_cooking"][e] += 1
+                elif sv == 6.0:
+                    ep_reward_types["placement_in_pot"][e] += 1
+                elif sv == 4.0:
+                    ep_reward_types["plate_pickup"][e] += 1
+                # elif rv == -5.0:
+                #     ep_reward_types["burn_penalty"][e] += 1  
+
+                rv = float(jnp.array(rewards_dict[aid0])[e])
+                if rv >= 20.0:
+                    ep_reward_types["delivery"][e] += 1                          
 
         # ── Episode tracking ─────────────────────────────────────────
         ep_returns += rewards_all
@@ -871,6 +886,17 @@ def run(config: dict, env_vec: OvercookedV3,
         #     )
         #     save_checkpoint(train_state, ckpt_path, config)
 
+        # ── Checkpoint every CKPT_INTERVAL loop iterations ────────────
+        if (ckpt_dir is not None
+                and t > 0
+                and t % CKPT_INTERVAL == 0):
+            ckpt_path = os.path.join(
+                ckpt_dir,
+                f"is_maddpg_{config['LAYOUT']}_step{t:08d}.zip"
+            )
+            save_checkpoint_zip(train_state, ckpt_path, config, t)
+            print(f"\nCheckpoint saved → {ckpt_path}", flush=True)        
+
     
     # ── Post-training summary + plots ───────────────────────────────────────────────
     import matplotlib.pyplot as plt
@@ -1037,7 +1063,7 @@ def main():
         help="Total environment steps"
     )
     parser.add_argument(
-        "--num_envs", type=int, default=6,
+        "--num_envs", type=int, default=4,
         help="Number of parallel environments"
     )
     parser.add_argument(
