@@ -14,6 +14,7 @@ from networks import ISAgentNet, ISCriticNet
 from buffer import BufferState, Batch, buffer_init, buffer_add, buffer_sample, buffer_is_ready, buffer_sample_prioritized
 from update import TrainState, UpdateMetrics, init_train_state, train_step, polyak_update
 from loss import received_messages
+import zipfile
 
 try:
     from utils.monitor import TrainingMonitor
@@ -114,6 +115,64 @@ def load_checkpoint(path: str) -> dict:
     """
     with open(path, "rb") as f:
         return pickle.load(f)
+    
+
+
+def save_checkpoint_zip(
+    train_state: TrainState,
+    path: str,
+    config: dict,
+    step: int,
+) -> None:
+    """Save actor/critic params to a zip file containing pickle payloads.
+
+    Saves both actor and critic params separately so eval only needs
+    to load actor_params without carrying optimizer/critic state.
+
+    Args:
+        train_state: current TrainState
+        path:        path ending in .zip
+        config:      experiment config dict
+        step:        current global step (stored in metadata)
+    """
+    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+
+    # Serialise each component separately
+    actor_bytes  = pickle.dumps(train_state.actor_params)
+    critic_bytes = pickle.dumps(train_state.critic_params)
+    meta_bytes   = pickle.dumps({
+        "step":   step,
+        "config": config,
+        "layout": config.get("LAYOUT", "unknown"),
+    })
+
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("actor_params.pkl",  actor_bytes)
+        zf.writestr("critic_params.pkl", critic_bytes)
+        zf.writestr("metadata.pkl",      meta_bytes)
+
+    size_mb = os.path.getsize(path) / 1e6
+    print(f"  [checkpoint] Saved → {path}  ({size_mb:.1f} MB)", flush=True)
+
+
+def load_checkpoint_zip(path: str) -> dict:
+    """Load a checkpoint saved by save_checkpoint_zip.
+
+    Returns:
+        dict with keys: actor_params, critic_params, step, config, layout
+    """
+    with zipfile.ZipFile(path, "r") as zf:
+        actor_params  = pickle.loads(zf.read("actor_params.pkl"))
+        critic_params = pickle.loads(zf.read("critic_params.pkl"))
+        meta          = pickle.loads(zf.read("metadata.pkl"))
+
+    return {
+        "actor_params":  actor_params,
+        "critic_params": critic_params,
+        "step":          meta["step"],
+        "config":        meta["config"],
+        "layout":        meta["layout"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -612,19 +671,28 @@ def make_train(config: dict, env_vec, env_eval, monitor=None):
                 )
 
             # --- Checkpoint ---
+            # if (ckpt_dir is not None
+            #         and total_updates > 0
+            #         and total_updates % max(1, num_updates_target // 5) == 0):
+            #     ckpt_path = os.path.join(
+            #         ckpt_dir,
+            #         f"{config['ALG_NAME']}_{config['ENV_NAME']}"
+            #         f"_step{global_step}.pkl"
+            #     )
+            #     save_checkpoint(train_state, ckpt_path, config)
+            CKPT_INTERVAL = 10_000
             if (ckpt_dir is not None
-                    and total_updates > 0
-                    and total_updates % max(1, num_updates_target // 5) == 0):
+                    and global_step > 0
+                    and global_step % CKPT_INTERVAL == 0):
                 ckpt_path = os.path.join(
                     ckpt_dir,
-                    f"{config['ALG_NAME']}_{config['ENV_NAME']}"
-                    f"_step{global_step}.pkl"
+                    f"is_maddpg_{config['LAYOUT']}_step{global_step:08d}.zip"
                 )
-                save_checkpoint(train_state, ckpt_path, config)
+                save_checkpoint_zip(train_state, ckpt_path, config, global_step)            
 
         # Final checkpoint
         if ckpt_dir is not None:
-            save_checkpoint(
+            save_checkpoint_zip(
                 train_state,
                 os.path.join(ckpt_dir, f"{config['ALG_NAME']}_{config['ENV_NAME']}_final.pkl"),
                 config,
