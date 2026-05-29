@@ -588,7 +588,7 @@ def run(config: dict, env_vec: OvercookedV3,
     t_train  = 0.0  # gradient updates
     t_other  = 0.0  # everything else
 
-    CKPT_INTERVAL = 100_000
+    CKPT_INTERVAL = 1500
     if ckpt_dir is not None:
         os.makedirs(ckpt_dir, exist_ok=True)
         print(f"  Checkpoints will be saved to: {ckpt_dir}/", flush=True)
