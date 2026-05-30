@@ -125,7 +125,7 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         "TOTAL_TIMESTEPS":  args.total_timesteps,
         "NUM_ENVS":         args.num_envs,
         "BATCH_SIZE":       128,
-        "BUFFER_SIZE":      300_000,
+        "BUFFER_SIZE":      2_000_000,
         "LEARNING_STARTS":  5_000,
         "UPDATE_EVERY":     1,
         "UPDATES_PER_STEP": 1,
