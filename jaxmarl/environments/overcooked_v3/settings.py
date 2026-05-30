@@ -14,13 +14,13 @@ DEFAULT_ORDER_GENERATION_RATE = 0.1
 DEFAULT_ORDER_EXPIRATION_TIME = 200
 DEFAULT_MAX_ORDERS = 5
 
-# Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
+    "INGREDIENT_PICKUP": 3,     # Picking up an ingredient from a pile
     "PLACEMENT_IN_POT": 6,      # Adding correct ingredient to pot
     "SOUP_IN_DISH": 12,          # Picking up cooked soup with plate
     "PLATE_PICKUP": 4,          # Picking up a plate when useful
-    # "POT_START_COOKING": 4,     # Starting to cook a correct recipe
 }
+
 
 # Maximum number of pots to track (for fixed array sizes)
 MAX_POTS = 4
