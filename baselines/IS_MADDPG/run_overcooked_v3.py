@@ -136,7 +136,7 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         # reward so the policy picks up signal quickly
         "EPSILON_START":    1.0,
         "EPSILON_END":      0.1, # higher minimum epsilon — don't go fully greedy
-        "EPSILON_DECAY":    int(args.total_timesteps * 0.7),
+        "EPSILON_DECAY":    int(args.total_timesteps * 0.75),
 
         # ── Logging / saving ─────────────────────────────────────────────
         "SEED":             args.seed,
@@ -550,10 +550,10 @@ def run(config: dict, env_vec: OvercookedV3,
     t_start = time.time()
 
     reward_type_counts = {
-    "placement_in_pot": 0,   # shaped reward = 3
-    # "pot_start_cooking": 0,  # shaped reward = 4
-    "soup_in_dish":      0,  # shaped reward = 6
-    "plate_pickup":      0,  # shaped reward = 2
+    "placement_in_pot": 0,   # shaped reward = 6
+    "ingredient_pickup": 0,  # shaped reward = 3
+    "soup_in_dish":      0,  # shaped reward = 12
+    "plate_pickup":      0,  # shaped reward = 4
     "delivery":          0,  # raw reward = 20
     # "burn_penalty":      0,  # raw reward = -5
     }
@@ -689,8 +689,8 @@ def run(config: dict, env_vec: OvercookedV3,
                 # Infer reward type from value
                 if sv == 12.0:
                     ep_reward_types["soup_in_dish"][e] += 1
-                # elif sv == 4.0:
-                #     ep_reward_types["pot_start_cooking"][e] += 1
+                elif sv == 3.0:
+                    ep_reward_types["ingredient_pickup"][e] += 1
                 elif sv == 6.0:
                     ep_reward_types["placement_in_pot"][e] += 1
                 elif sv == 4.0:
