@@ -21,6 +21,7 @@ from jaxmarl.wrappers.baselines import LogWrapper
 from tarmac import TarMAC, TarMACConfig, CentralizedCritic
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 import wandb
+from jaxmarl.environments.overcooked_v3.common import DynamicObject
 
 # --- Data Structures ---
 
@@ -35,6 +36,7 @@ class Transition(NamedTuple):
     done_episode: chex.Array # [Batch]
     episode_returns: chex.Array # [Batch]
     shaped_rewards: chex.Array
+    sub_tasks: Dict[str, chex.Array]
 
 class AgentState(TrainState):
     critic_net: CentralizedCritic = struct.field(pytree_node=False)
@@ -122,7 +124,20 @@ def make_train(args):
             # 6. Prepare Transition
             next_dones_tensor = jnp.stack([next_dones[a] for a in env.agents], axis=1).astype(jnp.float32)[..., None]
             
+            # --- 💥 NEW: DIRECT METRICS EXTRACTION ---
+            # No more piercing wrappers or manual physics calculations!
+            # The environment step directly passes these to us through 'info'
             
+            sub_task_events = {
+                "get_onion": info["get_onion"],         # Already shape [Batch, Agents]
+                "get_plate": info["get_plate"],         # Already shape [Batch, Agents]
+                "drop_item": info["drop_item"],         # Already shape [Batch, Agents]
+                
+                # Global kitchen events are scalars [Batch], so we just copy them across agents
+                "put_in_pot": jnp.repeat(info["put_in_pot"][..., None], num_agents, axis=-1),
+                "delivery": jnp.repeat(info["delivery"][..., None], num_agents, axis=-1),
+                "burn_pot": jnp.repeat(info["burn_pot"][..., None], num_agents, axis=-1)
+            }
             
             trans = Transition(
                 obs=obs_tensor,
@@ -135,6 +150,7 @@ def make_train(args):
                 done_episode=done_episode,
                 episode_returns=ep_returns,
                 shaped_rewards=shaped_rews,
+                sub_tasks=sub_task_events  # 💥 ADD THIS BACK
             )
             
             return (next_env_st, next_obs, next_dones_carry, new_rnn, rng_key), trans
@@ -229,6 +245,10 @@ def make_train(args):
                 for i in range(6)
             }
             
+            sub_task_metrics = {
+                f"events/{task}": jnp.sum(traj.sub_tasks[task]) / (args.update_timestep * args.num_envs)
+                for task in traj.sub_tasks.keys()
+            }
  
             metrics_out = {
                 'loss': total_loss, 
@@ -243,6 +263,7 @@ def make_train(args):
             }
             
             metrics_out.update(act_counts)
+            metrics_out.update(sub_task_metrics)  # 💥 MAKE SURE THIS GETS ADDED TO THE DICTIONARY
             return total_loss, metrics_out
 
         grads, metrics = jax.grad(loss_fn, has_aux=True)(state.params)
@@ -294,7 +315,8 @@ def generate_validation_video(state, params, env_kwargs, max_steps, actor_module
         logits = logits_seq[0] 
         
         rng, rng_act = jax.random.split(rng)
-        actions = jax.random.categorical(rng_act, logits, axis=-1)
+        # actions = jax.random.categorical(rng_act, logits, axis=-1)
+        actions = jnp.argmax(logits, axis=-1)
         actions_dict = {a: actions[:, i] for i, a in enumerate(val_env.agents)}
         
         rng, rng_step = jax.random.split(rng)
@@ -406,7 +428,7 @@ def main():
             elapsed = time.time() - start_time
             sps = (args.num_envs * args.update_timestep * 10) / elapsed
             
-            # 💥 FIXED: Extract semantic event scores to display directly in stdout logs
+            onions = float(metrics.get('events/get_onion', 0.0)) * (args.update_timestep * args.num_envs)
             potted = float(metrics.get('events/put_in_pot', 0.0)) * (args.update_timestep * args.num_envs)
             served = float(metrics.get('events/delivery', 0.0)) * (args.update_timestep * args.num_envs)
             burnt  = float(metrics.get('events/burn_pot', 0.0)) * (args.update_timestep * args.num_envs)
@@ -415,7 +437,7 @@ def main():
             print(
                 f"Update {update:5d}/{total_updates} | SPS: {sps:4.0f} | "
                 f"Total Rew: {metrics['rew/total_step_reward']:6.3f} | "
-                f"Potted: {potted:3.0f} | Served: {served:2.0f} | Burnt: {burnt:2.0f}"
+                f"Onions: {onions:4.0f} | Potted: {potted:3.0f} | Served: {served:2.0f} | Burnt: {burnt:2.0f}"
             )
             
             wandb_metrics = {
@@ -446,7 +468,7 @@ def main():
                 pickle.dump(jax.device_get(train_state.params), f)
             print(f"💾 Checkpoint safely backed up to {checkpoint_path}")
 
-        if update % 1000 == 0:
+        if update % 10000 == 0:
             print(f"🎬 Compiling visual rollout GIF at update {update}...")
             import imageio
             
