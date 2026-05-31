@@ -186,6 +186,13 @@ class OvercookedV3(MultiAgentEnv):
         elif not isinstance(layout, Layout):
             raise ValueError("Invalid layout, must be a Layout object or a string key")
 
+        is_playable, validation_messages = layout.validate_playable()
+        if not is_playable:
+            formatted_messages = "\n".join(
+                f"- {message}" for message in validation_messages
+            )
+            raise ValueError(f"Invalid OvercookedV3 layout:\n{formatted_messages}")
+
         num_agents = len(layout.agent_positions)
         super().__init__(num_agents=num_agents)
 
