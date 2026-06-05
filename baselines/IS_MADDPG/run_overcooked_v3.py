@@ -960,26 +960,26 @@ def run(config: dict, env_vec: OvercookedV3,
     # ---------------------------------------------------------------------------
     # Reward type histograms
     # ---------------------------------------------------------------------------
+    reward_labels = {
+        "delivery":          f"Delivery (+20)",
+        "placement_in_pot":  f"Placement in Pot (+6)",
+        "plate_pickup":      f"Plate Pickup (+4)",
+        # "pot_start_cooking": f"Pot Start Cooking (+4)",
+        "soup_in_dish":      f"Soup in Dish (+12)",
+        # "burn_penalty":      f"Burn Penalty (-5)",
+    }
+    colors = {
+        "delivery":          "green",
+        "placement_in_pot":  "steelblue",
+        "plate_pickup":      "yellow",
+        # "pot_start_cooking": "orange",
+        "soup_in_dish":      "purple",
+        # "burn_penalty":      "red",
+    }
+
     if any(len(v) > 0 for v in reward_type_history.values()):
         fig, axes = plt.subplots(2, 3, figsize=(15, 8))
         axes = axes.flatten()
-
-        reward_labels = {
-            "delivery":          f"Delivery (+20)",
-            "placement_in_pot":  f"Placement in Pot (+6)",
-            "plate_pickup":      f"Plate Pickup (+4)",
-            # "pot_start_cooking": f"Pot Start Cooking (+4)",
-            "soup_in_dish":      f"Soup in Dish (+12)",
-            # "burn_penalty":      f"Burn Penalty (-5)",
-        }
-        colors = {
-            "delivery":          "green",
-            "placement_in_pot":  "steelblue",
-            "plate_pickup":      "yellow",
-            # "pot_start_cooking": "orange",
-            "soup_in_dish":      "purple",
-            # "burn_penalty":      "red",
-        }
 
         for idx, (key, label) in enumerate(reward_labels.items()):
             ax = axes[idx]
