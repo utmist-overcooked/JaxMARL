@@ -1,4 +1,4 @@
-"""Overcooked V3 Environment with pot burning, order queue, and conveyor belts."""
+"""Overcooked V3 Environment with pot cooking, order queue, and conveyor belts."""
 
 from enum import Enum
 from typing import List, Optional, Union, Tuple, Dict
@@ -15,6 +15,7 @@ from jaxmarl.environments.overcooked_v3.common import (
     Actions,
     StaticObject,
     DynamicObject,
+    SoupType,
     Direction,
     DIR_TO_VEC,
     Position,
@@ -25,6 +26,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
     POT_BURN_TIME,
+    BURN_PENALTY,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
     DEFAULT_ORDER_EXPIRATION_TIME,
@@ -87,7 +89,7 @@ class State:
 
 
 class OvercookedV3(MultiAgentEnv):
-    """Overcooked V3 environment with pot burning, order queue, and conveyors.
+    """Overcooked V3 environment with pot cooking, order queue, and conveyors.
 
     Methods:
         reset(key) -> Tuple[Dict[str, Array], State]:
@@ -101,7 +103,7 @@ class OvercookedV3(MultiAgentEnv):
 
         process_interact(grid, agent, all_inventories, recipe, pot_timers,
             pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery,
-            reward, shaped_reward, pot_timers]:
+            reward, shaped_reward, event_metrics, pot_timers]:
             Handle a single agent's interact action (pickup, drop, cook, deliver).
 
         is_terminal(state) -> bool:
@@ -129,6 +131,17 @@ class OvercookedV3(MultiAgentEnv):
             Return the box observation space.
     """
 
+    EVENT_NAMES = (
+        "pot_start_cooking",
+        "pot_placement",
+        "pickup",
+        "drop",
+        "dish_pickup",
+        "dish_to_goal_progress",
+        "delivery",
+        "pot_burn",
+    )
+
     def __init__(
         self,
         layout: Union[str, Layout] = "cramped_room",
@@ -145,6 +158,7 @@ class OvercookedV3(MultiAgentEnv):
         max_orders: int = DEFAULT_MAX_ORDERS,
         order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
         order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
+        order_queue_mode: str = "random",
         # Conveyor belt settings
         enable_item_conveyors: bool = False,
         enable_player_conveyors: bool = False,
@@ -162,12 +176,14 @@ class OvercookedV3(MultiAgentEnv):
             max_steps: Maximum steps per episode
             observation_type: Type of observation (default or featurized)
             agent_view_size: Partial observability window size (None for full)
-            pot_cook_time: Steps to cook a full pot (default 90)
-            pot_burn_time: Steps in burning window before pot burns (default 60)
+            pot_cook_time: Steps before a full pot becomes cooked (default 20)
+            pot_burn_time: Steps cooked soup remains ready before burning
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
             order_expiration_time: Steps before order expires
+            order_queue_mode: "random" or "alternating"; alternating produces
+                onion, tomato, onion, tomato orders
             enable_item_conveyors: Whether item conveyors move items
             enable_player_conveyors: Whether player conveyors push agents
             delivery_reward: Reward for correct delivery
@@ -183,6 +199,13 @@ class OvercookedV3(MultiAgentEnv):
             layout = overcooked_v3_layouts[layout]
         elif not isinstance(layout, Layout):
             raise ValueError("Invalid layout, must be a Layout object or a string key")
+
+        is_playable, validation_messages = layout.validate_playable()
+        if not is_playable:
+            formatted_messages = "\n".join(
+                f"- {message}" for message in validation_messages
+            )
+            raise ValueError(f"Invalid OvercookedV3 layout:\n{formatted_messages}")
 
         num_agents = len(layout.agent_positions)
         super().__init__(num_agents=num_agents)
@@ -213,6 +236,19 @@ class OvercookedV3(MultiAgentEnv):
         self.max_orders = max_orders
         self.order_generation_rate = order_generation_rate
         self.order_expiration_time = order_expiration_time
+        if order_queue_mode not in ("random", "alternating"):
+            raise ValueError("order_queue_mode must be 'random' or 'alternating'")
+        if order_queue_mode == "alternating" and layout.num_ingredients < 2:
+            raise ValueError("alternating order queue requires onion and tomato piles")
+        self.order_queue_mode = order_queue_mode
+        self._order_recipe_encodings = jnp.array(
+            [
+                0,
+                DynamicObject.get_recipe_encoding(jnp.array([0, 0, 0])),
+                DynamicObject.get_recipe_encoding(jnp.array([1, 1, 1])),
+            ],
+            dtype=jnp.int32,
+        )
 
         # Conveyor settings
         self.enable_item_conveyors = enable_item_conveyors
@@ -246,6 +282,12 @@ class OvercookedV3(MultiAgentEnv):
         for i, (y, x) in enumerate(pot_indices[:MAX_POTS]):
             self._pot_positions[i] = [y, x]
             self._pot_active_mask[i] = True
+
+        # Goal positions are fixed by layout and used for post-plating distance
+        # shaping. Keep them as a static array so JIT-compiled steps can compute
+        # nearest-goal Euclidean distance without scanning the grid dynamically.
+        goal_indices = np.argwhere(layout.static_objects == StaticObject.GOAL)
+        self._goal_positions = goal_indices.astype(np.int32)
 
         # Extract conveyor info from layout
         self._item_conveyor_positions = np.zeros((MAX_ITEM_CONVEYORS, 2), dtype=np.int32)
@@ -333,9 +375,20 @@ class OvercookedV3(MultiAgentEnv):
             inventory=jnp.zeros((num_agents,), dtype=jnp.int32),
         )
 
-        # Sample recipe
+        # Sample recipe. When the alternating order queue is enabled, seed the
+        # queue with onion first and expose that order through the recipe
+        # indicator immediately.
         key, subkey = jax.random.split(key)
         recipe = self._sample_recipe(subkey)
+        order_types = jnp.zeros(self.max_orders, dtype=jnp.int32)
+        order_expirations = jnp.zeros(self.max_orders, dtype=jnp.int32)
+        order_active_mask = jnp.zeros(self.max_orders, dtype=jnp.bool_)
+        if self.enable_order_queue and self.order_queue_mode == "alternating":
+            first_order_type = jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32)
+            order_types = order_types.at[0].set(first_order_type)
+            order_expirations = order_expirations.at[0].set(self.order_expiration_time)
+            order_active_mask = order_active_mask.at[0].set(True)
+            recipe = self._order_type_to_recipe(first_order_type)
 
         # Initialize state
         state = State(
@@ -344,9 +397,9 @@ class OvercookedV3(MultiAgentEnv):
             pot_positions=jnp.array(self._pot_positions),
             pot_cooking_timer=jnp.zeros(MAX_POTS, dtype=jnp.int32),
             pot_active_mask=jnp.array(self._pot_active_mask),
-            order_types=jnp.zeros(self.max_orders, dtype=jnp.int32),
-            order_expirations=jnp.zeros(self.max_orders, dtype=jnp.int32),
-            order_active_mask=jnp.zeros(self.max_orders, dtype=jnp.bool_),
+            order_types=order_types,
+            order_expirations=order_expirations,
+            order_active_mask=order_active_mask,
             item_conveyor_positions=jnp.array(self._item_conveyor_positions),
             item_conveyor_directions=jnp.array(self._item_conveyor_directions),
             item_conveyor_active_mask=jnp.array(self._item_conveyor_active_mask),
@@ -375,6 +428,66 @@ class OvercookedV3(MultiAgentEnv):
         recipe_idx = jax.random.randint(key, (), 0, self.possible_recipes.shape[0])
         recipe = self.possible_recipes[recipe_idx]
         return DynamicObject.get_recipe_encoding(recipe)
+
+    def _order_type_to_recipe(self, order_type: chex.Array) -> chex.Array:
+        """Map order type IDs to the recipe encoding shown to the agents."""
+        safe_order_type = jnp.clip(order_type, 0, self._order_recipe_encodings.shape[0] - 1)
+        return self._order_recipe_encodings[safe_order_type]
+
+    def _alternating_order_type(self, order_index: chex.Array) -> chex.Array:
+        """Return onion for even generated order slots, tomato for odd slots."""
+        return jnp.where(
+            (order_index % 2) == 0,
+            jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
+            jnp.array(SoupType.TOMATO_SOUP, dtype=jnp.int32),
+        )
+
+    def _front_order_type(
+        self,
+        order_types: chex.Array,
+        order_active_mask: chex.Array,
+    ) -> chex.Array:
+        """Return the oldest active order type, or NONE if the queue is empty."""
+        first_active_idx = jnp.argmax(order_active_mask)
+        has_active_order = jnp.any(order_active_mask)
+        return jnp.where(
+            has_active_order,
+            order_types[first_active_idx],
+            jnp.array(SoupType.NONE, dtype=jnp.int32),
+        )
+
+    def _compact_order_queue(
+        self,
+        order_types: chex.Array,
+        order_expirations: chex.Array,
+        order_active_mask: chex.Array,
+    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
+        """Pack active orders toward the front while preserving slot order."""
+        slot_order = jnp.where(
+            order_active_mask,
+            jnp.arange(self.max_orders),
+            self.max_orders + jnp.arange(self.max_orders),
+        )
+        compact_indices = jnp.argsort(slot_order)
+        num_active = jnp.sum(order_active_mask)
+        compact_active_mask = jnp.arange(self.max_orders) < num_active
+        compact_types = jnp.where(
+            compact_active_mask,
+            order_types[compact_indices],
+            0,
+        )
+        compact_expirations = jnp.where(
+            compact_active_mask,
+            order_expirations[compact_indices],
+            0,
+        )
+        return compact_types, compact_expirations, compact_active_mask
+
+    @staticmethod
+    def _is_agent_walkable(static_object):
+        return (static_object == StaticObject.EMPTY) | (
+            static_object == StaticObject.PLAYER_CONVEYOR
+        )
 
     def _randomize_agent_positions(self, state: State, key: chex.PRNGKey) -> State:
         """Randomize agent positions within their rooms."""
@@ -429,7 +542,8 @@ class OvercookedV3(MultiAgentEnv):
             indices=jnp.array([actions[f"agent_{i}"] for i in range(self.num_agents)])
         )
 
-        state, reward, shaped_rewards = self.step_agents(key, state, acts)
+        state, reward, shaped_rewards, event_metrics = self.step_agents(key, state, acts)
+        order_events = jnp.zeros((2,), dtype=jnp.float32)
 
         # Process conveyors
         if self.enable_item_conveyors:
@@ -440,7 +554,7 @@ class OvercookedV3(MultiAgentEnv):
         # Process order queue
         if self.enable_order_queue:
             key, subkey = jax.random.split(key)
-            state, order_reward = self._process_order_queue(state, subkey)
+            state, order_reward, order_events = self._process_order_queue(state, subkey)
             reward = reward + order_reward
 
         # Update time
@@ -461,12 +575,31 @@ class OvercookedV3(MultiAgentEnv):
         dones = {f"agent_{i}": done for i in range(self.num_agents)}
         dones["__all__"] = done
 
+        info = {"shaped_reward": shaped_rewards_dict}
+        for event_idx, event_name in enumerate(self.EVENT_NAMES):
+            info[f"event/{event_name}"] = event_metrics[:, event_idx]
+        info["delivery"] = event_metrics[:, self.EVENT_NAMES.index("delivery")]
+        info["event/order_expired"] = (
+            jnp.zeros((self.num_agents,), dtype=jnp.float32).at[0].set(order_events[0])
+        )
+        info["event/order_added"] = (
+            jnp.zeros((self.num_agents,), dtype=jnp.float32).at[0].set(order_events[1])
+        )
+        info["order/active_count"] = jnp.full(
+            (self.num_agents,),
+            jnp.sum(state.order_active_mask).astype(jnp.float32),
+        )
+        info["order/front_type"] = jnp.full(
+            (self.num_agents,),
+            self._front_order_type(state.order_types, state.order_active_mask).astype(jnp.float32),
+        )
+
         return (
             lax.stop_gradient(obs),
             lax.stop_gradient(state),
             rewards,
             dones,
-            {"shaped_reward": shaped_rewards_dict},
+            info,
         )
 
     def step_agents(
@@ -474,7 +607,7 @@ class OvercookedV3(MultiAgentEnv):
         key: chex.PRNGKey,
         state: State,
         actions: chex.Array,
-    ) -> Tuple[State, float, chex.Array]:
+    ) -> Tuple[State, float, chex.Array, chex.Array]:
         """Process agent actions and update state."""
         grid = state.grid
 
@@ -488,9 +621,7 @@ class OvercookedV3(MultiAgentEnv):
 
                 # Check if new position is walkable
                 new_cell_static = grid[new_pos.y, new_pos.x, 0]
-                is_walkable = (new_cell_static == StaticObject.EMPTY) | \
-                              (new_cell_static == StaticObject.ITEM_CONVEYOR) | \
-                              (new_cell_static == StaticObject.PLAYER_CONVEYOR)
+                is_walkable = self._is_agent_walkable(new_cell_static)
 
                 new_pos = tree_select(is_walkable, new_pos, pos)
                 return agent.replace(pos=new_pos, dir=direction)
@@ -563,6 +694,7 @@ class OvercookedV3(MultiAgentEnv):
                     new_correct_delivery,
                     interact_reward,
                     shaped_reward,
+                    event_metrics,
                     new_pot_timers,
                 ) = self.process_interact(
                     grid, agent, new_agents.inventory, state.recipe, pot_timers, state.pot_positions, state.pot_active_mask
@@ -574,22 +706,65 @@ class OvercookedV3(MultiAgentEnv):
                     reward + interact_reward,
                     new_pot_timers,
                 )
-                return carry, (new_agent, shaped_reward)
+                return carry, (new_agent, shaped_reward, event_metrics)
 
             return jax.lax.cond(
-                is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
+                is_interact,
+                _interact,
+                lambda c, a: (
+                    c,
+                    (a, 0.0, jnp.zeros((len(self.EVENT_NAMES),), dtype=jnp.float32)),
+                ),
+                carry,
+                agent,
             )
 
         carry = (grid, False, 0.0, state.pot_cooking_timer)
         xs = (new_agents, actions)
-        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards) = (
+        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards, event_metrics) = (
             jax.lax.scan(_interact_wrapper, carry, xs)
         )
 
-        # Update pot timers (cooking and burning)
-        new_grid, new_pot_timers = self._update_pot_timers(
+        # Once an agent is carrying plated soup, shape by signed Euclidean
+        # progress toward the nearest delivery zone. The sign is important:
+        # positive-only progress lets the agent move toward delivery, move away
+        # for free, and repeat forever without actually delivering.
+        goal_positions = jnp.asarray(self._goal_positions, dtype=jnp.float32)
+
+        def _nearest_goal_distance(pos):
+            dx = goal_positions[:, 1] - pos.x.astype(jnp.float32)
+            dy = goal_positions[:, 0] - pos.y.astype(jnp.float32)
+            return jnp.min(jnp.sqrt(dx * dx + dy * dy))
+
+        old_goal_distance = jax.vmap(_nearest_goal_distance)(state.agents.pos)
+        new_goal_distance = jax.vmap(_nearest_goal_distance)(new_agents.pos)
+        carrying_dish_before = (state.agents.inventory & DynamicObject.COOKED) != 0
+        carrying_dish_after = (new_agents.inventory & DynamicObject.COOKED) != 0
+        dish_to_goal_progress = (
+            carrying_dish_before
+            & carrying_dish_after
+            & self.shaped_rewards_enabled
+        ) * (old_goal_distance - new_goal_distance)
+        dish_to_goal_reward = (
+            dish_to_goal_progress * SHAPED_REWARDS["DISH_TO_GOAL_PROGRESS"]
+        )
+        shaped_rewards = shaped_rewards + dish_to_goal_reward
+        event_metrics = event_metrics.at[
+            :, self.EVENT_NAMES.index("dish_to_goal_progress")
+        ].set(dish_to_goal_progress)
+
+        # Update pot timers. A full pot cooks for pot_cook_time steps, then
+        # stays ready for pot_burn_time steps before expiring/burning.
+        new_grid, new_pot_timers, burn_count = self._update_pot_timers(
             new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask
         )
+        reward = reward + burn_count * BURN_PENALTY
+        burn_events = jnp.zeros((self.num_agents,), dtype=jnp.float32).at[0].set(
+            burn_count
+        )
+        event_metrics = event_metrics.at[
+            :, self.EVENT_NAMES.index("pot_burn")
+        ].set(burn_events)
 
         return (
             state.replace(
@@ -600,6 +775,7 @@ class OvercookedV3(MultiAgentEnv):
             ),
             reward,
             shaped_rewards,
+            event_metrics,
         )
 
     def process_interact(
@@ -614,7 +790,9 @@ class OvercookedV3(MultiAgentEnv):
     ):
         """Process an interact action for an agent."""
         inventory = agent.inventory
-        fwd_pos = agent.get_fwd_pos()
+        fwd_pos, fwd_pos_in_bounds = agent.pos.checked_move(
+            agent.dir, self.width, self.height
+        )
 
         shaped_reward = jnp.array(0.0, dtype=float)
 
@@ -626,14 +804,20 @@ class OvercookedV3(MultiAgentEnv):
         plated_recipe = recipe | DynamicObject.PLATE | DynamicObject.COOKED
 
         # What is the object?
-        object_is_plate_pile = interact_item == StaticObject.PLATE_PILE
-        object_is_ingredient_pile = StaticObject.is_ingredient_pile(interact_item)
+        object_is_plate_pile = fwd_pos_in_bounds & (
+            interact_item == StaticObject.PLATE_PILE
+        )
+        object_is_ingredient_pile = (
+            fwd_pos_in_bounds & StaticObject.is_ingredient_pile(interact_item)
+        )
         object_is_pile = object_is_plate_pile | object_is_ingredient_pile
-        object_is_pot = interact_item == StaticObject.POT
-        object_is_goal = interact_item == StaticObject.GOAL
-        object_is_wall = interact_item == StaticObject.WALL
-        object_is_conveyor = (interact_item == StaticObject.ITEM_CONVEYOR) | \
-                             (interact_item == StaticObject.PLAYER_CONVEYOR)
+        object_is_pot = fwd_pos_in_bounds & (interact_item == StaticObject.POT)
+        object_is_goal = fwd_pos_in_bounds & (interact_item == StaticObject.GOAL)
+        object_is_wall = fwd_pos_in_bounds & (interact_item == StaticObject.WALL)
+        object_is_conveyor = fwd_pos_in_bounds & (
+            (interact_item == StaticObject.ITEM_CONVEYOR)
+            | (interact_item == StaticObject.PLAYER_CONVEYOR)
+        )
         object_has_no_ingredients = interact_ingredients == 0
 
         # What is in inventory?
@@ -644,16 +828,21 @@ class OvercookedV3(MultiAgentEnv):
 
         merged_ingredients = interact_ingredients + inventory
 
-        # Pot state
+        # Pot state. Timers live in State, not the grid's extra channel.
+        def _timer_for_pot(pot_idx):
+            pot_y, pot_x = pot_positions[pot_idx]
+            is_this_pot = (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
+            return jax.lax.select(is_this_pot, pot_timers[pot_idx], 0)
+
+        current_pot_timer = jnp.max(jax.vmap(_timer_for_pot)(jnp.arange(MAX_POTS)))
         pot_is_cooked = object_is_pot * (
             (interact_ingredients & DynamicObject.COOKED) != 0
         )
-        pot_is_cooking = object_is_pot * (interact_extra > 0) * ~pot_is_cooked
-        pot_is_burned = object_is_pot * ((interact_ingredients & DynamicObject.BURNED) != 0)
-        pot_is_idle = object_is_pot * ~pot_is_cooking * ~pot_is_cooked * ~pot_is_burned
+        pot_is_cooking = object_is_pot * (current_pot_timer > 0) * ~pot_is_cooked
+        pot_is_idle = object_is_pot * (current_pot_timer == 0) * ~pot_is_cooked
+        any_pot_cooking = jnp.any(pot_timers > self.pot_burn_time)
 
-        # Check if pot is ready (in burning window)
-        # In V3: dish_ready when cooking_timer is between 1 and burn_time
+        # Check if pot is ready.
         pot_is_ready = pot_is_cooked
 
         # Pickup success conditions
@@ -694,10 +883,12 @@ class OvercookedV3(MultiAgentEnv):
             )
 
         # Drop on counter/conveyor
-        successful_drop = (
-            (object_is_wall | object_is_conveyor) * object_has_no_ingredients * ~inventory_is_empty
-            + successful_pot_placement
+        successful_counter_drop = (
+            (object_is_wall | object_is_conveyor)
+            * object_has_no_ingredients
+            * ~inventory_is_empty
         )
+        successful_drop = successful_counter_drop | successful_pot_placement
 
         # Delivery
         successful_delivery = object_is_goal * inventory_is_dish
@@ -709,13 +900,38 @@ class OvercookedV3(MultiAgentEnv):
             + object_is_ingredient_pile * StaticObject.get_ingredient(interact_item)
         )
 
+        # Ingredient pickup reward. Infinite ingredient piles are easy to farm
+        # by repeatedly picking up and dropping ingredients, so only pay for a
+        # pile pickup while the current recipe still needs that ingredient in
+        # play. Ingredients already on counters, in pots, or in inventories count
+        # toward the recipe demand.
+        successful_ingredient_pickup = object_is_ingredient_pile * inventory_is_empty
+        ingredient_selector = pile_ingredient | (pile_ingredient << 1)
+        safe_pile_ingredient = jnp.maximum(pile_ingredient, 1)
+        ingredients_in_grid = jnp.sum(
+            (grid[:, :, 1] & ingredient_selector) // safe_pile_ingredient
+        )
+        ingredients_in_inventories = jnp.sum(
+            (all_inventories & ingredient_selector) // safe_pile_ingredient
+        )
+        ingredients_needed = (recipe & ingredient_selector) // safe_pile_ingredient
+        is_ingredient_pickup_useful = (
+            ingredients_in_grid + ingredients_in_inventories
+        ) < ingredients_needed
+        if self.shaped_rewards_enabled:
+            shaped_reward += (
+                successful_ingredient_pickup
+                * is_ingredient_pickup_useful
+                * SHAPED_REWARDS["INGREDIENT_PICKUP"]
+            )
+
         new_ingredients = (
             successful_drop * merged_ingredients + no_effect * interact_ingredients
         )
 
-        # Start cooking when pot becomes full
+        # Start cooking only when the final ingredient is placed.
         pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
-        auto_cook = pot_is_idle & pot_full_after_drop
+        auto_cook = successful_pot_placement & pot_full_after_drop
 
         # Update pot timer
         # Find which pot this is
@@ -724,7 +940,7 @@ class OvercookedV3(MultiAgentEnv):
             is_this_pot = (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
             new_timer = jax.lax.select(
                 is_this_pot & auto_cook,
-                self.pot_cook_time,
+                self.pot_cook_time + self.pot_burn_time,
                 pot_timers[pot_idx]
             )
             # Reset timer on successful dish pickup
@@ -762,20 +978,61 @@ class OvercookedV3(MultiAgentEnv):
         if self.shaped_rewards_enabled:
             inventory_is_plate_now = new_inventory == DynamicObject.PLATE
             successful_plate_pickup = successful_pickup * inventory_is_plate_now
-            num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
-            num_nonempty_pots = jnp.sum(
-                (grid[:, :, 0] == StaticObject.POT) & (grid[:, :, 1] != 0)
+            # Count plates already committed to the task, whether held or
+            # dropped on counters. The previous gate only counted inventories,
+            # so pickup->drop->pickup from a plate pile could repeatedly earn
+            # PLATE_PICKUP while a full pot existed.
+            num_plates_in_grid = jnp.sum((grid[:, :, 1] & DynamicObject.PLATE) != 0)
+            num_plates_in_inventory = jnp.sum(
+                (all_inventories & DynamicObject.PLATE) != 0
             )
-            is_plate_pickup_useful = num_plates_in_inventory < num_nonempty_pots
+            num_plates_in_play = num_plates_in_grid + num_plates_in_inventory
+            pot_ingredient_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
+                grid[:, :, 1]
+            )
+            full_unburned_pots = (
+                (grid[:, :, 0] == StaticObject.POT)
+                & (pot_ingredient_counts == 3)
+                & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
+            )
+            num_useful_pots = jnp.sum(full_unburned_pots)
+            is_plate_pickup_useful = num_plates_in_play < num_useful_pots
             shaped_reward += (
                 is_plate_pickup_useful
                 * successful_plate_pickup
                 * SHAPED_REWARDS["PLATE_PICKUP"]
             )
+            shaped_reward += (
+                any_pot_cooking
+                * is_plate_pickup_useful
+                * successful_plate_pickup
+                * SHAPED_REWARDS["PLATE_PICKUP_DURING_COOKING"]
+            )
 
         correct_delivery = successful_delivery & is_correct_recipe
+        event_metrics = jnp.array(
+            (
+                auto_cook & successful_pot_placement,
+                successful_pot_placement,
+                successful_pickup,
+                successful_counter_drop,
+                successful_dish_pickup,
+                0.0,  # Filled in after movement with progress toward delivery.
+                correct_delivery,
+                0.0,  # Filled in after pot timers update if a pot burns.
+            ),
+            dtype=jnp.float32,
+        )
 
-        return new_grid, new_agent, correct_delivery, reward, shaped_reward, new_pot_timers
+        return (
+            new_grid,
+            new_agent,
+            correct_delivery,
+            reward,
+            shaped_reward,
+            event_metrics,
+            new_pot_timers,
+        )
 
     def _update_pot_timers(
         self,
@@ -783,11 +1040,19 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
-    ) -> Tuple[chex.Array, chex.Array]:
-        """Update pot cooking timers and handle burning."""
+    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
+        """Update pot cooking timers.
+
+        Timer semantics:
+        - When the final ingredient is placed, the timer starts at
+          pot_cook_time + pot_burn_time.
+        - The pot becomes COOKED when the timer reaches pot_burn_time.
+        - If pot_burn_time > 0, cooked soup burns/clears when the timer hits 0.
+        - If pot_burn_time == 0, cooked soup remains ready indefinitely.
+        """
 
         def _update_single_pot(carry, pot_idx):
-            grid, timers = carry
+            grid, timers, burn_count = carry
             pot_y, pot_x = pot_positions[pot_idx]
             is_active = pot_active_mask[pot_idx]
             current_timer = timers[pot_idx]
@@ -798,38 +1063,43 @@ class OvercookedV3(MultiAgentEnv):
             # Check if pot is full (has 3 ingredients)
             ingredient_count = DynamicObject.ingredient_count(pot_ingredients)
             pot_is_full = ingredient_count == 3
-            pot_is_cooking = (current_timer > 0) & pot_is_full
             pot_already_cooked = (pot_ingredients & DynamicObject.COOKED) != 0
+            pot_has_contents = pot_is_full | pot_already_cooked
+            timer_is_active = (current_timer > 0) & pot_has_contents
 
-            # Decrement timer if cooking
             new_timer = jax.lax.select(
-                is_active & pot_is_cooking,
+                is_active & timer_is_active,
                 current_timer - 1,
                 current_timer
             )
 
-            # Check if just finished cooking (entered burning window)
-            just_finished_cooking = pot_is_cooking & (new_timer == self.pot_burn_time)
-            # Mark as cooked when timer reaches burn_time
-            new_ingredients = jax.lax.select(
-                is_active & just_finished_cooking,
+            burn_enabled = self.pot_burn_time > 0
+            cooked_threshold_reached = (
+                new_timer <= self.pot_burn_time
+                if burn_enabled
+                else new_timer == 0
+            )
+            just_finished_cooking = (
+                is_active
+                & pot_is_full
+                & ~pot_already_cooked
+                & cooked_threshold_reached
+            )
+            cooked_ingredients = jax.lax.select(
+                just_finished_cooking,
                 pot_ingredients | DynamicObject.COOKED,
                 pot_ingredients
             )
-
-            # Check if pot burned (timer hit 0 while cooking)
-            just_burned = pot_is_cooking & (new_timer == 0)
-            # Reset pot if burned
-            new_ingredients = jax.lax.select(
-                is_active & just_burned,
-                jnp.int32(0),  # Clear pot
-                new_ingredients
+            pot_is_cooked_after_update = (cooked_ingredients & DynamicObject.COOKED) != 0
+            just_burned = (
+                is_active
+                & burn_enabled
+                & pot_is_cooked_after_update
+                & timer_is_active
+                & (new_timer == 0)
             )
-            new_timer = jax.lax.select(
-                is_active & just_burned,
-                jnp.int32(0),
-                new_timer
-            )
+            new_ingredients = jax.lax.select(just_burned, 0, cooked_ingredients)
+            new_timer = jax.lax.select(just_burned, 0, new_timer)
 
             # Update grid
             new_cell = jnp.array([pot_cell[0], new_ingredients, pot_cell[2]])
@@ -837,16 +1107,17 @@ class OvercookedV3(MultiAgentEnv):
 
             # Update timers
             new_timers = timers.at[pot_idx].set(new_timer)
+            new_burn_count = burn_count + just_burned.astype(jnp.float32)
 
-            return (new_grid, new_timers), None
+            return (new_grid, new_timers, new_burn_count), None
 
-        (new_grid, new_timers), _ = jax.lax.scan(
+        (new_grid, new_timers, burn_count), _ = jax.lax.scan(
             _update_single_pot,
-            (grid, pot_timers),
+            (grid, pot_timers, jnp.array(0.0, dtype=jnp.float32)),
             jnp.arange(MAX_POTS)
         )
 
-        return new_grid, new_timers
+        return new_grid, new_timers, burn_count
 
     def _process_item_conveyors(self, state: State) -> State:
         """Move items on item conveyor belts."""
@@ -867,27 +1138,43 @@ class OvercookedV3(MultiAgentEnv):
             # Calculate destination
             dir_vec = DIR_TO_VEC[direction]
 
-            dest_x = jnp.clip(x + dir_vec[0], 0, self.width - 1)
-            dest_y = jnp.clip(y + dir_vec[1], 0, self.height - 1)
+            raw_dest_x = x + dir_vec[0]
+            raw_dest_y = y + dir_vec[1]
+            dest_in_bounds = (
+                (raw_dest_x >= 0)
+                & (raw_dest_x < self.width)
+                & (raw_dest_y >= 0)
+                & (raw_dest_y < self.height)
+            )
+            dest_x = jnp.clip(raw_dest_x, 0, self.width - 1)
+            dest_y = jnp.clip(raw_dest_y, 0, self.height - 1)
 
             # Check if destination can receive item
             dest_static = grid[dest_y, dest_x, 0]
             dest_item = grid[dest_y, dest_x, 1]
             dest_can_receive = (
-                ((dest_static == StaticObject.WALL) |
-                 (dest_static == StaticObject.ITEM_CONVEYOR) |
-                 (dest_static == StaticObject.PLAYER_CONVEYOR) |
-                 (dest_static == StaticObject.GOAL))
+                dest_in_bounds
+                & (
+                    (dest_static == StaticObject.WALL)
+                    | (dest_static == StaticObject.ITEM_CONVEYOR)
+                    | (dest_static == StaticObject.PLAYER_CONVEYOR)
+                    | (dest_static == StaticObject.GOAL)
+                )
                 & (dest_item == 0)
             )
 
             should_move = is_active & has_item & dest_can_receive
+            should_disappear = is_active & has_item & ~dest_in_bounds
 
             # Move item
             new_grid = jax.lax.select(
-                should_move,
-                grid.at[y, x, 1].set(0).at[dest_y, dest_x, 1].set(current_item),
-                grid
+                should_disappear,
+                grid.at[y, x, 1].set(0),
+                jax.lax.select(
+                    should_move,
+                    grid.at[y, x, 1].set(0).at[dest_y, dest_x, 1].set(current_item),
+                    grid,
+                )
             )
 
             return new_grid, None
@@ -931,9 +1218,7 @@ class OvercookedV3(MultiAgentEnv):
 
             # Check if destination is walkable
             dest_static = grid[new_pos.y, new_pos.x, 0]
-            dest_walkable = (dest_static == StaticObject.EMPTY) | \
-                           (dest_static == StaticObject.ITEM_CONVEYOR) | \
-                           (dest_static == StaticObject.PLAYER_CONVEYOR)
+            dest_walkable = self._is_agent_walkable(dest_static)
 
             should_push = is_on & dest_walkable
 
@@ -946,25 +1231,62 @@ class OvercookedV3(MultiAgentEnv):
 
     def _process_order_queue(
         self, state: State, key: chex.PRNGKey
-    ) -> Tuple[State, float]:
+    ) -> Tuple[State, float, chex.Array]:
         """Process order queue: generate new orders, check expirations."""
         if not self.enable_order_queue:
-            return state, 0.0
+            return state, 0.0, jnp.zeros((2,), dtype=jnp.float32)
 
         order_types = state.order_types
         order_expirations = state.order_expirations
         order_active_mask = state.order_active_mask
 
-        # Decrement expirations
-        new_expirations = jnp.where(order_active_mask, order_expirations - 1, order_expirations)
+        # A successful delivery fulfills the oldest active order. The queue is
+        # compacted afterward so the recipe indicator always points at the
+        # current front order.
+        front_idx = jnp.argmax(order_active_mask)
+        has_front_order = jnp.any(order_active_mask)
+        should_clear_front = state.new_correct_delivery & has_front_order
+        order_types = jax.lax.select(
+            should_clear_front,
+            order_types.at[front_idx].set(0),
+            order_types,
+        )
+        order_expirations = jax.lax.select(
+            should_clear_front,
+            order_expirations.at[front_idx].set(0),
+            order_expirations,
+        )
+        order_active_mask = jax.lax.select(
+            should_clear_front,
+            order_active_mask.at[front_idx].set(False),
+            order_active_mask,
+        )
+
+        order_expiration_enabled = self.order_expiration_time > 0
+
+        # Decrement expirations. An expiration time <= 0 means orders stay in
+        # the queue until delivered; this lets us train the queue/recipe logic
+        # without an unavoidable dense penalty before deliveries are learned.
+        new_expirations = jnp.where(
+            order_expiration_enabled & order_active_mask,
+            order_expirations - 1,
+            order_expirations,
+        )
 
         # Check for expired orders
-        expired_mask = order_active_mask & (new_expirations <= 0)
+        expired_mask = (
+            order_expiration_enabled & order_active_mask & (new_expirations <= 0)
+        )
         num_expired = jnp.sum(expired_mask)
         reward = num_expired * ORDER_EXPIRED_PENALTY
 
         # Deactivate expired orders
         new_active_mask = order_active_mask & ~expired_mask
+        new_order_types = jnp.where(new_active_mask, order_types, 0)
+        new_expirations = jnp.where(new_active_mask, new_expirations, 0)
+        new_order_types, new_expirations, new_active_mask = self._compact_order_queue(
+            new_order_types, new_expirations, new_active_mask
+        )
 
         # Maybe generate new order
         key, subkey = jax.random.split(key)
@@ -975,17 +1297,36 @@ class OvercookedV3(MultiAgentEnv):
         first_empty_idx = jnp.argmax(empty_slots)
         has_empty_slot = jnp.any(empty_slots)
 
-        # Generate random order type (1 = onion soup, 2 = tomato soup if num_ingredients > 1)
+        # Generate either a random order or a deterministic onion/tomato
+        # alternation. For the alternating mode, alternate from the current
+        # newest visible order so the queue reads onion, tomato, onion, tomato
+        # even after deliveries or expirations compact the front.
         key, subkey = jax.random.split(key)
-        new_order_type = jax.random.randint(
-            subkey, (), 1, min(self.layout.num_ingredients + 1, 3)
-        )
+        if self.order_queue_mode == "alternating":
+            num_active_orders = jnp.sum(new_active_mask)
+            newest_order_idx = jnp.maximum(num_active_orders - 1, 0)
+            newest_order_type = new_order_types[newest_order_idx]
+            has_active_order = num_active_orders > 0
+            next_after_newest = jnp.where(
+                newest_order_type == SoupType.ONION_SOUP,
+                jnp.array(SoupType.TOMATO_SOUP, dtype=jnp.int32),
+                jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
+            )
+            new_order_type = jnp.where(
+                has_active_order,
+                next_after_newest,
+                jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
+            )
+        else:
+            new_order_type = jax.random.randint(
+                subkey, (), 1, min(self.layout.num_ingredients + 1, 3)
+            )
 
         should_add = should_generate & has_empty_slot
         new_order_types = jax.lax.select(
             should_add,
-            order_types.at[first_empty_idx].set(new_order_type),
-            order_types
+            new_order_types.at[first_empty_idx].set(new_order_type),
+            new_order_types
         )
         new_expirations = jax.lax.select(
             should_add,
@@ -997,12 +1338,23 @@ class OvercookedV3(MultiAgentEnv):
             new_active_mask.at[first_empty_idx].set(True),
             new_active_mask
         )
+        front_order_type = self._front_order_type(new_order_types, new_active_mask)
+        new_recipe = jnp.where(
+            front_order_type != SoupType.NONE,
+            self._order_type_to_recipe(front_order_type),
+            state.recipe,
+        )
+        order_events = jnp.array(
+            [num_expired.astype(jnp.float32), should_add.astype(jnp.float32)],
+            dtype=jnp.float32,
+        )
 
         return state.replace(
             order_types=new_order_types,
             order_expirations=new_expirations,
             order_active_mask=new_active_mask,
-        ), reward
+            recipe=new_recipe,
+        ), reward, order_events
 
     def is_terminal(self, state: State) -> bool:
         """Check whether state is terminal."""
@@ -1085,7 +1437,15 @@ class OvercookedV3(MultiAgentEnv):
             return layers
 
         recipe_indicator_mask = static_objects == StaticObject.RECIPE_INDICATOR
-        recipe_ingredients = jnp.where(recipe_indicator_mask, state.recipe, 0)
+        has_recipe_indicator = jnp.any(recipe_indicator_mask)
+        # Order queues can change the target recipe mid-episode. Some older
+        # layouts, including around_the_island, have no R tile because they used
+        # a fixed recipe; broadcast the active order in the existing recipe
+        # channels so the policy can observe what should be delivered.
+        recipe_visible_mask = recipe_indicator_mask | (
+            self.enable_order_queue & ~has_recipe_indicator
+        )
+        recipe_ingredients = jnp.where(recipe_visible_mask, state.recipe, 0)
 
         pot_timer_layer = jnp.zeros((height, width), dtype=jnp.int32)
         for i in range(MAX_POTS):
