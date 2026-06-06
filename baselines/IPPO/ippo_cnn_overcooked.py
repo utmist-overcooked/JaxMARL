@@ -21,6 +21,7 @@ from omegaconf import OmegaConf
 import wandb
 import copy
 
+import os
 import matplotlib.pyplot as plt
 
 
@@ -109,7 +110,7 @@ class Transition(NamedTuple):
 def get_rollout(params, config):
     env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
 
-    network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+    network = ActorCritic(env.action_space("agent_0").n, activation=config["ACTIVATION"])
     key = jax.random.PRNGKey(0)
     key, key_r, key_a = jax.random.split(key, 3)
 
@@ -179,7 +180,7 @@ def make_train(config):
     def train(rng):
 
         # INIT NETWORK
-        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+        network = ActorCritic(env.action_space("agent_0").n, activation=config["ACTIVATION"])
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros((1, *env.observation_space("agent_0").shape))
 
@@ -413,11 +414,16 @@ def single_run(config):
 
     print("** Saving Results **")
     filename = f'{config["ENV_NAME"]}_{layout_name}_seed{config["SEED"]}'
+    gif_path = os.path.join(os.getcwd(), f"{filename}.gif")
+    # Allow override via config
+    if config.get("SAVE_GIF_PATH"):
+        gif_path = config["SAVE_GIF_PATH"]
     train_state = jax.tree.map(lambda x: x[0], out["runner_state"][0])
     state_seq = get_rollout(train_state.params, config)
     viz = OvercookedVisualizer()
     # agent_view_size is hardcoded as it determines the padding around the layout.
-    viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
+    viz.animate(state_seq, agent_view_size=5, filename=gif_path)
+    print(f"** GIF saved to: {gif_path} **")
 
 
 def tune(default_config):
