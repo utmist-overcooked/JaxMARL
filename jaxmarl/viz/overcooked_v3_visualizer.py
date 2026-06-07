@@ -110,7 +110,7 @@ class OvercookedV3Visualizer:
         for frame_idx in range(num_frames):
             state = jax.tree_util.tree_map(lambda x: x[frame_idx], state_seq)
             frames.append(np.asarray(jax.device_get(self._render_state(state, agent_view_size))))
-        return frames
+        return np.stack(frames, axis=0)
 
     @classmethod
     def _encode_agent_extras(cls, direction, idx):
