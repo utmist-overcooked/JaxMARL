@@ -110,13 +110,13 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         # msg_dim=32: lightweight intention signal
         # horizon_H=5: ~one pick-up+place cycle in Overcooked timing
         "MSG_DIM":          5,
-        "HORIZON_H":        5,
+        "HORIZON_H":        1,
         "HIDDEN_DIM":       128,
-        "ACTOR_LR":         1e-4,
+        "ACTOR_LR":         5e-5,
         "CRITIC_LR":        1e-4,
         "GAMMA":            0.90, # lower gamma = smaller Bellman targets = more stable
         "TAU":              0.01,
-        "GRAD_CLIP":        0.5, # tight clip
+        "GRAD_CLIP":        0.1, # tight clip
         "GUMBEL_TAU":       1.0,
         "GUMBEL_HARD":      True,
         "PRED_LOSS_COEF":   0.05,

@@ -384,6 +384,8 @@ class ISAgentNet(nn.Module):
             # and produce inf/nan that propagates into the attention output.
             delta_o    = jnp.clip(delta_o, -1.0, 1.0)            
             hat_o_next = hat_o + delta_o                        # residual connection
+            hat_o_next = jnp.clip(hat_o_next, -3.0, 3.0)       # tighter obs clipping
+
 
             # --- Compute own soft action at predicted next obs ---
             # No Gumbel noise here: we want smooth, differentiable probabilities
@@ -407,6 +409,8 @@ class ISAgentNet(nn.Module):
         # relevant to the information it has received — and communicates that.
         # ------------------------------------------------------------------
         message_out, alpha = self.attention(msgs_flat, imagined_trajectory)
+
+        message_out = jnp.clip(message_out, -10.0, 10.0)   # prevent message explosion
 
         return action_logits, action_onehot, message_out, alpha
     
