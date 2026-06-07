@@ -19,7 +19,6 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_BUTTON_TARGETS,
 )
 import numpy as np
-import textwrap
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 import itertools
@@ -207,7 +206,7 @@ WW1W0WW
 """
 
 
-# Moving wall demo - wall moves right, button reverses its direction
+# Moving wall demo - wall moves down, button reverses its direction
 moving_wall_demo = """
 WWWPWWW
 0As   X
@@ -849,7 +848,7 @@ class Layout:
         Legacy:
             O: onion pile - will be interpreted as ingredient 0
         """
-        rows = textwrap.dedent(grid).strip("\n").split("\n")
+        rows = grid.strip("\n").split("\n")
 
         if len(rows[0]) == 0:
             rows = rows[1:]

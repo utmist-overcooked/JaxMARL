@@ -435,6 +435,17 @@ class OvercookedV3(MultiAgentEnv):
             self._button_action_type[i] = action_type
             self._button_active_mask[i] = True
 
+        self._moving_wall_initial_paused = np.zeros(MAX_MOVING_WALLS, dtype=bool)
+        for button_idx in range(MAX_BUTTONS):
+            if (
+                self._button_active_mask[button_idx]
+                and self._button_action_type[button_idx] == ButtonAction.TRIGGER_MOVE
+            ):
+                for target_slot in range(MAX_BUTTON_TARGETS):
+                    if self._button_target_mask[button_idx, target_slot]:
+                        target_idx = self._button_target_idxs[button_idx, target_slot]
+                        self._moving_wall_initial_paused[target_idx] = True
+
         # Extract barrier info from layout
         self._barrier_positions = np.zeros((MAX_BARRIERS, 2), dtype=np.int32)
         self._barrier_initial_active = np.zeros(MAX_BARRIERS, dtype=bool)
@@ -560,7 +571,7 @@ class OvercookedV3(MultiAgentEnv):
             moving_wall_positions=jnp.array(self._moving_wall_positions),
             moving_wall_directions=jnp.array(self._moving_wall_directions),
             moving_wall_active_mask=jnp.array(self._moving_wall_active_mask),
-            moving_wall_paused=jnp.zeros(MAX_MOVING_WALLS, dtype=jnp.bool_),
+            moving_wall_paused=jnp.array(self._moving_wall_initial_paused),
             moving_wall_bounce=jnp.array(self._moving_wall_bounce),
             button_positions=jnp.array(self._button_positions),
             button_target_idxs=jnp.array(self._button_target_idxs),
