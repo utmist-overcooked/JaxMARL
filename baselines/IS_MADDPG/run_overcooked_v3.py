@@ -110,7 +110,7 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         # msg_dim=32: lightweight intention signal
         # horizon_H=5: ~one pick-up+place cycle in Overcooked timing
         "MSG_DIM":          5,
-        "HORIZON_H":        1,
+        "HORIZON_H":        2,
         "HIDDEN_DIM":       128,
         "ACTOR_LR":         5e-5,
         "CRITIC_LR":        1e-4,
