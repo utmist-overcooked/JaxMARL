@@ -205,11 +205,11 @@ WWWBWWW
 
 # Moving wall bounce demo - two walls bouncing back and forth
 moving_wall_bounce_demo = """
-WWWWPWWWW
-0A e   AX
+WWWWPWWWWW
+0A e   AXW
 W        W
 W  e !   W
-WWWWBWWWW
+WWWWBWWWWW
 """
 
 # Barrier demo - togglable barriers that block all directions
@@ -581,31 +581,31 @@ class Layout:
             Annotated string with legend
         """
         legend = """
-Symbol Legend:
-  W = Wall/Counter
-  P = Pot
-  B = Plate (Bowl) Pile
-  X = Delivery Zone (Goal)
-  A = Agent Start Position
-  R = Recipe Indicator (randomized recipes)
-  0-9 = Ingredient Piles (0=onion, 1=tomato, 2=lettuce, etc.)
-  
-  Item Conveyors (move items):
-    > = moves right
-    < = moves left
-    ^ = moves up
-    v = moves down
-  
-  Player Conveyors (push agents):
-    ] = pushes right
-    [ = pushes left
-    { = pushes up
-    } = pushes down
-  
-  [space] = Empty walkable floor
+            Symbol Legend:
+            W = Wall/Counter
+            P = Pot
+            B = Plate (Bowl) Pile
+            X = Delivery Zone (Goal)
+            A = Agent Start Position
+            R = Recipe Indicator (randomized recipes)
+            0-9 = Ingredient Piles (0=onion, 1=tomato, 2=lettuce, etc.)
+            
+            Item Conveyors (move items):
+                > = moves right
+                < = moves left
+                ^ = moves up
+                v = moves down
+            
+            Player Conveyors (push agents):
+                ] = pushes right
+                [ = pushes left
+                { = pushes up
+                } = pushes down
+            
+            [space] = Empty walkable floor
 
-Layout:
-"""
+            Layout:
+        """
         return legend + layout_string
 
     @staticmethod
@@ -914,7 +914,7 @@ overcooked_v3_layouts = {
         moving_wall_bounce_demo,
         possible_recipes=[[0, 0, 0]],
         moving_wall_bounce=[True, True],
-        button_config=[(1, ButtonAction.TOGGLE_PAUSE)],
+        button_config=[(0, ButtonAction.TOGGLE_PAUSE)],
     ),
 
     # Barrier demo
