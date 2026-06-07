@@ -227,6 +227,13 @@ class OvercookedV3(MultiAgentEnv):
         elif not isinstance(layout, Layout):
             raise ValueError("Invalid layout, must be a Layout object or a string key")
 
+        is_playable, validation_messages = layout.validate_playable()
+        if not is_playable:
+            formatted_messages = "\n".join(
+                f"- {message}" for message in validation_messages
+            )
+            raise ValueError(f"Invalid OvercookedV3 layout:\n{formatted_messages}")
+
         num_agents = len(layout.agent_positions)
         super().__init__(num_agents=num_agents)
 
@@ -506,6 +513,32 @@ class OvercookedV3(MultiAgentEnv):
         recipe = self.possible_recipes[recipe_idx]
         return DynamicObject.get_recipe_encoding(recipe)
 
+    @staticmethod
+    def _is_agent_walkable(static_object, pos, state):
+        # Check if destination is a barrier and if it's active
+        is_barrier_tile = static_object == StaticObject.BARRIER
+        barrier_blocks = False
+        # Check all barriers to see if any active barrier is at pos
+
+        at_barrier_pos = (
+            (state.barrier_positions[:, 0] == pos.y)
+            & (state.barrier_positions[:, 1] == pos.x)
+            & state.barrier_active_mask[:]
+        )
+
+        barrier_blocks = jnp.any(at_barrier_pos & state.barrier_active)
+
+        is_walkable = (
+            (static_object == StaticObject.EMPTY)
+            | (static_object == StaticObject.ITEM_CONVEYOR)
+            | (static_object == StaticObject.PLAYER_CONVEYOR)
+            | (
+                is_barrier_tile & ~barrier_blocks
+            )  # Barrier is walkable if inactive
+        )
+
+        return is_walkable
+
     def _randomize_agent_positions(self, state: State, key: chex.PRNGKey) -> State:
         """Randomize agent positions within their rooms."""
         num_agents = self.num_agents
@@ -625,28 +658,8 @@ class OvercookedV3(MultiAgentEnv):
 
                 # Check if new position is walkable
                 new_cell_static = grid[new_pos.y, new_pos.x, 0]
-
-                # Check if destination is a barrier and if it's active
-                is_barrier_tile = new_cell_static == StaticObject.BARRIER
-                barrier_blocks = False
-                # Check all barriers to see if any active barrier is at new_pos
-                for i in range(MAX_BARRIERS):
-                    at_barrier_pos = (
-                        (state.barrier_positions[i, 0] == new_pos.y)
-                        & (state.barrier_positions[i, 1] == new_pos.x)
-                        & state.barrier_active_mask[i]
-                    )
-                    barrier_blocks = barrier_blocks | (
-                        at_barrier_pos & state.barrier_active[i]
-                    )
-
-                is_walkable = (
-                    (new_cell_static == StaticObject.EMPTY)
-                    | (new_cell_static == StaticObject.ITEM_CONVEYOR)
-                    | (new_cell_static == StaticObject.PLAYER_CONVEYOR)
-                    | (
-                        is_barrier_tile & ~barrier_blocks
-                    )  # Barrier is walkable if inactive
+                is_walkable = self._is_agent_walkable(
+                    new_cell_static, new_pos, state
                 )
 
                 new_pos = tree_select(is_walkable, new_pos, pos)
@@ -963,7 +976,9 @@ class OvercookedV3(MultiAgentEnv):
     ):
         """Process an interact action for an agent."""
         inventory = agent.inventory
-        fwd_pos = agent.get_fwd_pos()
+        fwd_pos, fwd_pos_in_bounds = agent.pos.checked_move(
+            agent.dir, self.width, self.height
+        )
 
         shaped_reward = jnp.array(0.0, dtype=float)
 
@@ -975,15 +990,22 @@ class OvercookedV3(MultiAgentEnv):
         plated_recipe = recipe | DynamicObject.PLATE | DynamicObject.COOKED
 
         # What is the object?
-        object_is_plate_pile = interact_item == StaticObject.PLATE_PILE
-        object_is_ingredient_pile = StaticObject.is_ingredient_pile(interact_item)
+        object_is_plate_pile = fwd_pos_in_bounds & (
+            interact_item == StaticObject.PLATE_PILE
+        )
+        object_is_ingredient_pile = (
+            fwd_pos_in_bounds & StaticObject.is_ingredient_pile(interact_item)
+        )
         object_is_pile = object_is_plate_pile | object_is_ingredient_pile
-        object_is_pot = interact_item == StaticObject.POT
-        object_is_goal = interact_item == StaticObject.GOAL
-        object_is_wall = (interact_item == StaticObject.WALL) | (
+
+        object_is_pot = fwd_pos_in_bounds & interact_item == StaticObject.POT
+        object_is_goal = fwd_pos_in_bounds & interact_item == StaticObject.GOAL
+        object_is_wall = fwd_pos_in_bounds & (
+            interact_item == StaticObject.WALL) | (
             interact_item == StaticObject.MOVING_WALL
         )
-        object_is_conveyor = (interact_item == StaticObject.ITEM_CONVEYOR) | (
+        object_is_conveyor = fwd_pos_in_bounds & (
+            interact_item == StaticObject.ITEM_CONVEYOR) | (
             interact_item == StaticObject.PLAYER_CONVEYOR
         )
         object_has_no_ingredients = interact_ingredients == 0
@@ -1118,10 +1140,16 @@ class OvercookedV3(MultiAgentEnv):
             inventory_is_plate_now = new_inventory == DynamicObject.PLATE
             successful_plate_pickup = successful_pickup * inventory_is_plate_now
             num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
-            num_nonempty_pots = jnp.sum(
-                (grid[:, :, 0] == StaticObject.POT) & (grid[:, :, 1] != 0)
+            pot_ingredient_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
+                grid[:, :, 1]
             )
-            is_plate_pickup_useful = num_plates_in_inventory < num_nonempty_pots
+            full_unburned_pots = (
+                (grid[:, :, 0] == StaticObject.POT)
+                & (pot_ingredient_counts == 3)
+                & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
+            )
+            num_useful_pots = jnp.sum(full_unburned_pots)
+            is_plate_pickup_useful = num_plates_in_inventory < num_useful_pots
             shaped_reward += (
                 is_plate_pickup_useful
                 * successful_plate_pickup
@@ -1221,27 +1249,44 @@ class OvercookedV3(MultiAgentEnv):
             # Calculate destination
             dir_vec = DIR_TO_VEC[direction]
 
-            dest_x = jnp.clip(x + dir_vec[0], 0, self.width - 1)
-            dest_y = jnp.clip(y + dir_vec[1], 0, self.height - 1)
+            raw_dest_x = x + dir_vec[0]
+            raw_dest_y = y + dir_vec[1]
+            dest_in_bounds = (
+                (raw_dest_x >= 0)
+                & (raw_dest_x < self.width)
+                & (raw_dest_y >= 0)
+                & (raw_dest_y < self.height)
+            )
+            dest_x = jnp.clip(raw_dest_x, 0, self.width - 1)
+            dest_y = jnp.clip(raw_dest_y, 0, self.height - 1)
 
             # Check if destination can receive item
             dest_static = grid[dest_y, dest_x, 0]
             dest_item = grid[dest_y, dest_x, 1]
             dest_can_receive = (
-                (dest_static == StaticObject.WALL)
-                | (dest_static == StaticObject.MOVING_WALL)
-                | (dest_static == StaticObject.ITEM_CONVEYOR)
-                | (dest_static == StaticObject.PLAYER_CONVEYOR)
-                | (dest_static == StaticObject.GOAL)
-            ) & (dest_item == 0)
+                dest_in_bounds
+                & (
+                    (dest_static == StaticObject.WALL)
+                    | (dest_static == StaticObject.ITEM_CONVEYOR)
+                    | (dest_static == StaticObject.PLAYER_CONVEYOR)
+                    | (dest_static == StaticObject.GOAL)
+                    | (dest_static == StaticObject.MOVING_WALL)
+                )
+                & (dest_item == 0)
+            )
 
             should_move = is_active & has_item & dest_can_receive
+            should_disappear = is_active & has_item & ~dest_in_bounds
 
             # Move item
             new_grid = jax.lax.select(
-                should_move,
-                grid.at[y, x, 1].set(0).at[dest_y, dest_x, 1].set(current_item),
-                grid,
+                should_disappear,
+                grid.at[y, x, 1].set(0),
+                jax.lax.select(
+                    should_move,
+                    grid.at[y, x, 1].set(0).at[dest_y, dest_x, 1].set(current_item),
+                    grid,
+                )
             )
 
             return new_grid, None
@@ -1283,26 +1328,7 @@ class OvercookedV3(MultiAgentEnv):
 
             # Check if destination is walkable
             dest_static = grid[new_pos.y, new_pos.x, 0]
-
-            # Check if destination has an active barrier
-            is_barrier_tile = dest_static == StaticObject.BARRIER
-            barrier_blocks = False
-            for i in range(MAX_BARRIERS):
-                at_barrier_pos = (
-                    (state.barrier_positions[i, 0] == new_pos.y)
-                    & (state.barrier_positions[i, 1] == new_pos.x)
-                    & state.barrier_active_mask[i]
-                )
-                barrier_blocks = barrier_blocks | (
-                    at_barrier_pos & state.barrier_active[i]
-                )
-
-            dest_walkable = (
-                (dest_static == StaticObject.EMPTY)
-                | (dest_static == StaticObject.ITEM_CONVEYOR)
-                | (dest_static == StaticObject.PLAYER_CONVEYOR)
-                | (is_barrier_tile & ~barrier_blocks)
-            )
+            dest_walkable = self._is_agent_walkable(dest_static, new_pos, state)
 
             should_push = is_on & dest_walkable
 
