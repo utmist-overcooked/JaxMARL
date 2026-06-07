@@ -838,7 +838,6 @@ class OvercookedV3(MultiAgentEnv):
             correct_delivery,
             reward,
             shaped_reward,
-            event_metrics,
             new_pot_timers,
         )
     
