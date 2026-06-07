@@ -962,7 +962,7 @@
       { group: "moving", symbol: "s", name: "South", color: PALETTE.moving, text: "#fff", shortcut: "s" },
       { group: "control", symbol: "!", name: "Button", color: PALETTE.button, text: "#1b1608", shortcut: "!" },
       { group: "control", symbol: "#", name: "Barrier", color: PALETTE.barrier, text: "#fff", shortcut: "#" },
-      { group: "control", symbol: " ", name: "Erase", color: PALETTE.erase, text: "#17211d", shortcut: "Delete" }
+      { group: "control", symbol: " ", name: "Erase (Right click)", color: PALETTE.erase, text: "#17211d", shortcut: "Delete" }
     ];
 
     const BUILTIN_LAYOUTS = {
@@ -1272,7 +1272,7 @@ WW1W0WW`
         symbol.className = "tool-symbol";
         symbol.style.background = tool.color;
         symbol.style.color = tool.text;
-        symbol.textContent = tool.symbol === " " ? "E" : tool.symbol;
+        symbol.textContent = tool.symbol === " " ? "RMB" : tool.symbol;
         const name = document.createElement("span");
         name.className = "tool-name";
         name.textContent = tool.name;
