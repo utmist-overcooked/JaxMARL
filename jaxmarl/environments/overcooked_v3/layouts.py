@@ -4,9 +4,22 @@ DESIGN NOTES:
 - don't make item conveyor belts / player conveyor belts move things to the same destination - this will cause race conditions and maybe make the items disappear.
 """
 
-from jaxmarl.environments.overcooked_v3.common import StaticObject, Direction, ButtonAction
-from jaxmarl.environments.overcooked_v3.settings import MAX_POTS, MAX_ITEM_CONVEYORS, MAX_PLAYER_CONVEYORS
+from jaxmarl.environments.overcooked_v3.common import (
+    StaticObject,
+    Direction,
+    ButtonAction,
+)
+from jaxmarl.environments.overcooked_v3.settings import (
+    MAX_POTS,
+    MAX_ITEM_CONVEYORS,
+    MAX_PLAYER_CONVEYORS,
+    MAX_MOVING_WALLS,
+    MAX_BUTTONS,
+    MAX_BARRIERS,
+    MAX_BUTTON_TARGETS,
+)
 import numpy as np
+import textwrap
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 import itertools
@@ -256,8 +269,10 @@ class Layout:
     # Moving walls: list of (y, x, direction, bounce) tuples
     moving_wall_info: List[Tuple[int, int, int, bool]] = field(default_factory=list)
 
-    # Buttons: list of (y, x, linked_wall_idx, action_type) tuples
-    button_info: List[Tuple[int, int, int, int]] = field(default_factory=list)
+    # Buttons: list of (y, x, target_idxs, action_type) tuples
+    button_info: List[Tuple[int, int, Tuple[int, ...], int]] = field(
+        default_factory=list
+    )
 
     # Barriers: list of (y, x, active) tuples
     barrier_info: List[Tuple[int, int, bool]] = field(default_factory=list)
@@ -310,8 +325,20 @@ class Layout:
             Direction.DOWN: '}',
         }
 
+        moving_wall_symbols = {
+            Direction.RIGHT: 'e',
+            Direction.LEFT: 'w',
+            Direction.UP: 'n',
+            Direction.DOWN: 's',
+        }
+
         item_conveyors = {(y, x): direction for y, x, direction in self.item_conveyor_info}
         player_conveyors = {(y, x): direction for y, x, direction in self.player_conveyor_info}
+        moving_walls = {
+            (y, x): direction for y, x, direction, _ in self.moving_wall_info
+        }
+        buttons = {(y, x) for y, x, _, _ in self.button_info}
+        barriers = {(y, x) for y, x, _ in self.barrier_info}
 
         for y in range(height):
             for x in range(width):
@@ -323,6 +350,13 @@ class Layout:
                 elif (y, x) in player_conveyors:
                     direction = Direction(player_conveyors[(y, x)])
                     grid[y][x] = player_conveyor_symbols[direction]
+                elif (y, x) in moving_walls:
+                    direction = Direction(moving_walls[(y, x)])
+                    grid[y][x] = moving_wall_symbols[direction]
+                elif (y, x) in buttons:
+                    grid[y][x] = '!'
+                elif (y, x) in barriers:
+                    grid[y][x] = '#'
                 elif StaticObject.is_ingredient_pile(obj):
                     ingredient_idx = obj - StaticObject.INGREDIENT_PILE_BASE
                     grid[y][x] = str(ingredient_idx)
@@ -412,7 +446,120 @@ class Layout:
         if info['num_player_conveyors'] > MAX_PLAYER_CONVEYORS:
             errors.append(f"Too many player conveyors ({info['num_player_conveyors']} > {MAX_PLAYER_CONVEYORS})")
 
-        if self.possible_recipes is None or len(self.possible_recipes) == 0:
+        if len(self.moving_wall_info) > MAX_MOVING_WALLS:
+            errors.append(
+                f"Too many moving walls ({len(self.moving_wall_info)} > {MAX_MOVING_WALLS})"
+            )
+
+        if len(self.button_info) > MAX_BUTTONS:
+            errors.append(
+                f"Too many buttons ({len(self.button_info)} > {MAX_BUTTONS})"
+            )
+
+        if len(self.barrier_info) > MAX_BARRIERS:
+            errors.append(
+                f"Too many barriers ({len(self.barrier_info)} > {MAX_BARRIERS})"
+            )
+
+        moving_wall_actions = {
+            ButtonAction.TOGGLE_PAUSE,
+            ButtonAction.TOGGLE_DIRECTION,
+            ButtonAction.TOGGLE_BOUNCE,
+            ButtonAction.TRIGGER_MOVE,
+        }
+        barrier_actions = {
+            ButtonAction.TOGGLE_BARRIER,
+            ButtonAction.TIMED_BARRIER,
+        }
+
+        def _in_bounds(y, x):
+            return 0 <= y < self.height and 0 <= x < self.width
+
+        for idx, (y, x, direction, _) in enumerate(self.moving_wall_info):
+            if not _in_bounds(y, x):
+                errors.append(
+                    f"Moving wall {idx} position {(y, x)} is outside layout bounds"
+                )
+                continue
+            if self.static_objects[y, x] != StaticObject.MOVING_WALL:
+                errors.append(
+                    f"Moving wall {idx} at {(y, x)} is not encoded as a moving wall tile"
+                )
+            try:
+                Direction(direction)
+            except (TypeError, ValueError):
+                errors.append(f"Moving wall {idx} has invalid direction {direction!r}")
+
+        for idx, (y, x, target_idxs, action_type) in enumerate(self.button_info):
+            if not _in_bounds(y, x):
+                errors.append(f"Button {idx} position {(y, x)} is outside layout bounds")
+                continue
+            if self.static_objects[y, x] != StaticObject.BUTTON:
+                errors.append(
+                    f"Button {idx} at {(y, x)} is not encoded as a button tile"
+                )
+
+            try:
+                action = ButtonAction(action_type)
+            except (TypeError, ValueError):
+                errors.append(f"Button {idx} has invalid action type {action_type!r}")
+                continue
+
+            if isinstance(target_idxs, list):
+                target_idxs = tuple(target_idxs)
+            elif not isinstance(target_idxs, tuple):
+                target_idxs = (target_idxs,)
+
+            if len(target_idxs) == 0:
+                errors.append(f"Button {idx} must target at least one index")
+                continue
+
+            if len(target_idxs) > MAX_BUTTON_TARGETS:
+                errors.append(
+                    f"Button {idx} targets {len(target_idxs)} indexes, but at most "
+                    f"{MAX_BUTTON_TARGETS} are supported"
+                )
+                continue
+
+            for target_idx in target_idxs:
+                try:
+                    target_idx = int(target_idx)
+                except (TypeError, ValueError):
+                    errors.append(
+                        f"Button {idx} target index {target_idx!r} must be an integer"
+                    )
+                    continue
+
+                if action in moving_wall_actions:
+                    if target_idx < 0 or target_idx >= len(self.moving_wall_info):
+                        errors.append(
+                            f"Button {idx} targets moving wall {target_idx}, but only "
+                            f"{len(self.moving_wall_info)} moving walls exist"
+                        )
+                elif action in barrier_actions:
+                    if target_idx < 0 or target_idx >= len(self.barrier_info):
+                        errors.append(
+                            f"Button {idx} targets barrier {target_idx}, but only "
+                            f"{len(self.barrier_info)} barriers exist"
+                        )
+
+        for idx, (y, x, _) in enumerate(self.barrier_info):
+            if not _in_bounds(y, x):
+                errors.append(
+                    f"Barrier {idx} position {(y, x)} is outside layout bounds"
+                )
+                continue
+            if self.static_objects[y, x] != StaticObject.BARRIER:
+                errors.append(
+                    f"Barrier {idx} at {(y, x)} is not encoded as a barrier tile"
+                )
+
+        if self.possible_recipes is None:
+            if not info['has_recipe_indicator']:
+                errors.append("Layout has no recipe indicator and no possible_recipes specified")
+        elif not isinstance(self.possible_recipes, list):
+            errors.append("possible_recipes must be a list")
+        elif len(self.possible_recipes) == 0:
             if not info['has_recipe_indicator']:
                 errors.append("Layout has no recipe indicator and no possible_recipes specified")
         else:
@@ -421,7 +568,18 @@ class Layout:
                     errors.append(f"Recipe {i} must be a list of exactly 3 ingredient indices")
                 else:
                     for ingredient_idx in recipe:
-                        if ingredient_idx not in info['num_ingredient_piles'] and ingredient_idx < self.num_ingredients:
+                        try:
+                            ingredient_idx = int(ingredient_idx)
+                        except (TypeError, ValueError):
+                            errors.append(
+                                f"Recipe {i} ingredient {ingredient_idx!r} must be an integer index"
+                            )
+                            continue
+                        if ingredient_idx < 0:
+                            errors.append(
+                                f"Recipe {i} ingredient {ingredient_idx} must be non-negative"
+                            )
+                        elif ingredient_idx not in info['num_ingredient_piles'] and ingredient_idx < self.num_ingredients:
                             warnings.append(f"Recipe uses ingredient {ingredient_idx} but no pile exists in layout")
 
         all_messages = errors + warnings
@@ -433,13 +591,21 @@ class Layout:
     def _is_agent_walkable_tile(obj) -> bool:
         return obj in (StaticObject.EMPTY, StaticObject.PLAYER_CONVEYOR)
 
+    @staticmethod
+    def _is_interaction_access_tile(obj) -> bool:
+        return obj in (
+            StaticObject.EMPTY,
+            StaticObject.PLAYER_CONVEYOR,
+            StaticObject.BARRIER,
+        )
+
     def _has_adjacent_walkable_tile(self, y: int, x: int) -> bool:
         for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             adj_y = y + dy
             adj_x = x + dx
             if not (0 <= adj_y < self.height and 0 <= adj_x < self.width):
                 continue
-            if self._is_agent_walkable_tile(self.static_objects[adj_y, adj_x]):
+            if self._is_interaction_access_tile(self.static_objects[adj_y, adj_x]):
                 return True
         return False
 
@@ -668,19 +834,22 @@ class Layout:
             grid: ASCII string layout
             possible_recipes: List of recipes, or None for auto-detect
             swap_agents: Reverse agent order
-            moving_wall_bounce: List of bools per moving wall (by parse order),
-                whether wall bounces when blocked. Default: all False.
-            button_config: List of (wall_idx, action_type) per button (by parse
-                order). wall_idx is the moving wall index (parse order).
-                action_type is a ButtonAction enum value.
+            moving_wall_bounce: List of bools per moving wall. Parse order is
+                row-major: top-to-bottom, left-to-right. Default: all False.
+            button_config: List of (target_idx_or_idxs, action_type) per button.
+                Parse order is row-major: top-to-bottom, left-to-right.
+                target_idx_or_idxs may be a single int or a list/tuple of ints.
+                Targets are moving wall indexes for moving-wall actions and
+                barrier indexes for barrier actions. action_type is a
+                ButtonAction enum value.
                 Default: all (0, ButtonAction.TOGGLE_DIRECTION).
-            barrier_config: List of bools per barrier (by parse order),
-                whether barrier is initially active. Default: all False.
+            barrier_config: List of bools per barrier. Parse order is row-major:
+                top-to-bottom, left-to-right. Default: all False.
 
         Legacy:
             O: onion pile - will be interpreted as ingredient 0
         """
-        rows = grid.split("\n")
+        rows = textwrap.dedent(grid).strip("\n").split("\n")
 
         if len(rows[0]) == 0:
             rows = rows[1:]
@@ -796,16 +965,7 @@ class Layout:
 
                 c += 1
 
-        # Validation for recipes 
-        # NOTE: possible_recipes is a list of lists of ingredient indices, max 3 ingredients per recipe - if no recipe indicator, we just auto-gen all possible combinations. Otherwise we just take the possible_recipes specified in layout. 
-        if possible_recipes is not None:
-            if not isinstance(possible_recipes, list):
-                raise ValueError("possible_recipes must be a list")
-            if not all(isinstance(recipe, list) for recipe in possible_recipes):
-                raise ValueError("possible_recipes must be a list of lists")
-            if not all(len(recipe) == 3 for recipe in possible_recipes):
-                raise ValueError("All recipes must be of length 3")
-        elif not includes_recipe_indicator:
+        if possible_recipes is None and not includes_recipe_indicator:
             raise ValueError(
                 "Layout does not include a recipe indicator, a fixed recipe must be provided"
             )
@@ -838,9 +998,17 @@ class Layout:
                 f"button_config length ({len(button_config)}) must match "
                 f"number of buttons ({len(button_positions)})"
             )
+
+        def _normalize_button_targets(target_idxs):
+            if isinstance(target_idxs, (list, tuple)):
+                return tuple(target_idxs)
+            return (target_idxs,)
+
         button_info = [
-            (y, x, wall_idx, action_type)
-            for (y, x), (wall_idx, action_type) in zip(button_positions, button_config)
+            (y, x, _normalize_button_targets(target_idxs), action_type)
+            for (y, x), (target_idxs, action_type) in zip(
+                button_positions, button_config
+            )
         ]
 
         # Build barrier info with config
@@ -914,7 +1082,7 @@ overcooked_v3_layouts = {
         moving_wall_bounce_demo,
         possible_recipes=[[0, 0, 0]],
         moving_wall_bounce=[True, True],
-        button_config=[(0, ButtonAction.TOGGLE_PAUSE)],
+        button_config=[(1, ButtonAction.TOGGLE_PAUSE)],
     ),
 
     # Barrier demo

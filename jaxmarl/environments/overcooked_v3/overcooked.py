@@ -38,6 +38,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_PLAYER_CONVEYORS,
     MAX_MOVING_WALLS,
     MAX_BUTTONS,
+    MAX_BUTTON_TARGETS,
     MAX_BARRIERS,
     DEFAULT_BARRIER_DURATION,
 )
@@ -101,7 +102,8 @@ class State:
 
     # Button state
     button_positions: chex.Array  # [max_buttons, 2] - (y, x)
-    button_linked_wall: chex.Array  # [max_buttons] - index into moving wall arrays
+    button_target_idxs: chex.Array  # [max_buttons, max_button_targets]
+    button_target_mask: chex.Array  # [max_buttons, max_button_targets] - bool
     button_action_type: chex.Array  # [max_buttons] - ButtonAction enum
     button_active_mask: chex.Array  # [max_buttons] - bool
     button_toggled: chex.Array  # [max_buttons] - bool (current toggle state)
@@ -411,14 +413,25 @@ class OvercookedV3(MultiAgentEnv):
 
         # Extract button info from layout
         self._button_positions = np.zeros((MAX_BUTTONS, 2), dtype=np.int32)
-        self._button_linked_wall = np.zeros(MAX_BUTTONS, dtype=np.int32)
+        self._button_target_idxs = np.zeros(
+            (MAX_BUTTONS, MAX_BUTTON_TARGETS), dtype=np.int32
+        )
+        self._button_target_mask = np.zeros(
+            (MAX_BUTTONS, MAX_BUTTON_TARGETS), dtype=bool
+        )
         self._button_action_type = np.zeros(MAX_BUTTONS, dtype=np.int32)
         self._button_active_mask = np.zeros(MAX_BUTTONS, dtype=bool)
-        for i, (y, x, linked_wall, action_type) in enumerate(
+        for i, (y, x, target_idxs, action_type) in enumerate(
             layout.button_info[:MAX_BUTTONS]
         ):
             self._button_positions[i] = [y, x]
-            self._button_linked_wall[i] = linked_wall
+            if isinstance(target_idxs, list):
+                target_idxs = tuple(target_idxs)
+            elif not isinstance(target_idxs, tuple):
+                target_idxs = (target_idxs,)
+            for j, target_idx in enumerate(target_idxs[:MAX_BUTTON_TARGETS]):
+                self._button_target_idxs[i, j] = target_idx
+                self._button_target_mask[i, j] = True
             self._button_action_type[i] = action_type
             self._button_active_mask[i] = True
 
@@ -550,7 +563,8 @@ class OvercookedV3(MultiAgentEnv):
             moving_wall_paused=jnp.zeros(MAX_MOVING_WALLS, dtype=jnp.bool_),
             moving_wall_bounce=jnp.array(self._moving_wall_bounce),
             button_positions=jnp.array(self._button_positions),
-            button_linked_wall=jnp.array(self._button_linked_wall),
+            button_target_idxs=jnp.array(self._button_target_idxs),
+            button_target_mask=jnp.array(self._button_target_mask),
             button_action_type=jnp.array(self._button_action_type),
             button_active_mask=jnp.array(self._button_active_mask),
             button_toggled=jnp.zeros(MAX_BUTTONS, dtype=jnp.bool_),
@@ -599,7 +613,6 @@ class OvercookedV3(MultiAgentEnv):
 
         is_walkable = (
             (static_object == StaticObject.EMPTY)
-            | (static_object == StaticObject.ITEM_CONVEYOR)
             | (static_object == StaticObject.PLAYER_CONVEYOR)
             | (
                 is_barrier_tile & ~barrier_blocks
@@ -891,7 +904,6 @@ class OvercookedV3(MultiAgentEnv):
                             (btn_y == fwd_pos.y) & (btn_x == fwd_pos.x) & is_active
                         )
 
-                        linked_wall = state.button_linked_wall[button_idx]
                         action_type = state.button_action_type[button_idx]
 
                         # Toggle button state
@@ -900,55 +912,103 @@ class OvercookedV3(MultiAgentEnv):
                         )
                         btn_toggled = btn_toggled.at[button_idx].set(new_toggled)
 
-                        # TOGGLE_PAUSE (for moving walls)
-                        mw_paused = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_PAUSE),
-                            mw_paused.at[linked_wall].set(~mw_paused[linked_wall]),
-                            mw_paused,
-                        )
+                        def _apply_target(carry, target_slot):
+                            (
+                                mw_dirs,
+                                mw_paused,
+                                mw_bounce,
+                                bar_active,
+                                bar_timer,
+                            ) = carry
+                            target_idx = state.button_target_idxs[
+                                button_idx, target_slot
+                            ]
+                            target_enabled = state.button_target_mask[
+                                button_idx, target_slot
+                            ]
+                            should_apply = is_this & target_enabled
+                            mw_idx = jnp.clip(target_idx, 0, MAX_MOVING_WALLS - 1)
+                            barrier_idx = jnp.clip(target_idx, 0, MAX_BARRIERS - 1)
 
-                        # TOGGLE_DIRECTION (for moving walls)
-                        new_dir = Direction.opposite(mw_dirs[linked_wall])
-                        mw_dirs = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_DIRECTION),
-                            mw_dirs.at[linked_wall].set(new_dir),
+                            # Moving wall actions
+                            mw_paused = jax.lax.select(
+                                should_apply
+                                & (action_type == ButtonAction.TOGGLE_PAUSE),
+                                mw_paused.at[mw_idx].set(~mw_paused[mw_idx]),
+                                mw_paused,
+                            )
+
+                            new_dir = Direction.opposite(mw_dirs[mw_idx])
+                            mw_dirs = jax.lax.select(
+                                should_apply
+                                & (action_type == ButtonAction.TOGGLE_DIRECTION),
+                                mw_dirs.at[mw_idx].set(new_dir),
+                                mw_dirs,
+                            )
+
+                            mw_bounce = jax.lax.select(
+                                should_apply
+                                & (action_type == ButtonAction.TOGGLE_BOUNCE),
+                                mw_bounce.at[mw_idx].set(~mw_bounce[mw_idx]),
+                                mw_bounce,
+                            )
+
+                            mw_paused = jax.lax.select(
+                                should_apply
+                                & (action_type == ButtonAction.TRIGGER_MOVE),
+                                mw_paused.at[mw_idx].set(False),
+                                mw_paused,
+                            )
+
+                            # Barrier actions
+                            bar_active = jax.lax.select(
+                                should_apply
+                                & (action_type == ButtonAction.TOGGLE_BARRIER),
+                                bar_active.at[barrier_idx].set(
+                                    ~bar_active[barrier_idx]
+                                ),
+                                bar_active,
+                            )
+
+                            bar_active = jax.lax.select(
+                                should_apply
+                                & (action_type == ButtonAction.TIMED_BARRIER),
+                                bar_active.at[barrier_idx].set(False),
+                                bar_active,
+                            )
+                            bar_timer = jax.lax.select(
+                                should_apply
+                                & (action_type == ButtonAction.TIMED_BARRIER),
+                                bar_timer.at[barrier_idx].set(
+                                    state.barrier_duration[barrier_idx]
+                                ),
+                                bar_timer,
+                            )
+
+                            return (
+                                mw_dirs,
+                                mw_paused,
+                                mw_bounce,
+                                bar_active,
+                                bar_timer,
+                            ), None
+
+                        (
                             mw_dirs,
-                        )
-
-                        # TOGGLE_BOUNCE (for moving walls)
-                        mw_bounce = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_BOUNCE),
-                            mw_bounce.at[linked_wall].set(~mw_bounce[linked_wall]),
-                            mw_bounce,
-                        )
-
-                        # TRIGGER_MOVE (for moving walls): unpause for one step
-                        mw_paused = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TRIGGER_MOVE),
-                            mw_paused.at[linked_wall].set(False),
                             mw_paused,
-                        )
-
-                        # TOGGLE_BARRIER: toggle barrier on/off (linked_wall refers to barrier idx)
-                        bar_active = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TOGGLE_BARRIER),
-                            bar_active.at[linked_wall].set(~bar_active[linked_wall]),
+                            mw_bounce,
                             bar_active,
-                        )
-
-                        # TIMED_BARRIER: deactivate barrier temporarily (linked_wall refers to barrier idx)
-                        # Set barrier inactive and start timer
-                        bar_active = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TIMED_BARRIER),
-                            bar_active.at[linked_wall].set(False),
-                            bar_active,
-                        )
-                        bar_timer = jax.lax.select(
-                            is_this & (action_type == ButtonAction.TIMED_BARRIER),
-                            bar_timer.at[linked_wall].set(
-                                state.barrier_duration[linked_wall]
-                            ),
                             bar_timer,
+                        ), _ = jax.lax.scan(
+                            _apply_target,
+                            (
+                                mw_dirs,
+                                mw_paused,
+                                mw_bounce,
+                                bar_active,
+                                bar_timer,
+                            ),
+                            jnp.arange(MAX_BUTTON_TARGETS),
                         )
 
                         return (
@@ -1651,14 +1711,22 @@ class OvercookedV3(MultiAgentEnv):
             is_trigger = (
                 state.button_action_type[button_idx] == ButtonAction.TRIGGER_MOVE
             )
-            linked_wall = state.button_linked_wall[button_idx]
 
-            new_paused = jax.lax.select(
-                is_active & is_trigger,
-                paused.at[linked_wall].set(True),
-                paused,
+            def _pause_target(paused, target_slot):
+                target_idx = state.button_target_idxs[button_idx, target_slot]
+                target_enabled = state.button_target_mask[button_idx, target_slot]
+                mw_idx = jnp.clip(target_idx, 0, MAX_MOVING_WALLS - 1)
+                new_paused = jax.lax.select(
+                    is_active & is_trigger & target_enabled,
+                    paused.at[mw_idx].set(True),
+                    paused,
+                )
+                return new_paused, None
+
+            paused, _ = jax.lax.scan(
+                _pause_target, paused, jnp.arange(MAX_BUTTON_TARGETS)
             )
-            return new_paused, None
+            return paused, None
 
         new_paused, _ = jax.lax.scan(
             _reapply_trigger_pause, new_paused, jnp.arange(MAX_BUTTONS)
@@ -1810,6 +1878,9 @@ class OvercookedV3(MultiAgentEnv):
             StaticObject.PLATE_PILE,
             StaticObject.ITEM_CONVEYOR,
             StaticObject.PLAYER_CONVEYOR,
+            StaticObject.MOVING_WALL,
+            StaticObject.BUTTON,
+            StaticObject.BARRIER,
         ])
         static_layers = static_objects[..., None] == static_encoding
 

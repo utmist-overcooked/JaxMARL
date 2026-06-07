@@ -7,6 +7,7 @@ from jaxmarl import make
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
 from jaxmarl.environments.overcooked_v3.common import (
     Actions,
+    ButtonAction,
     Direction,
     DynamicObject,
     Position,
@@ -15,6 +16,7 @@ from jaxmarl.environments.overcooked_v3.common import (
 from jaxmarl.environments.overcooked_v3.layouts import (
     Layout,
     coordinated_temporal_conveyor,
+    moving_wall_bounce_demo,
 )
 from jaxmarl.environments.multi_agent_env import MultiAgentEnv
 
@@ -567,14 +569,14 @@ WWWWWWW
         """Agents should still be able to occupy player conveyor cells."""
         layout = Layout.from_string(
             """
-WWWWWW
-WA]X W
-W0BP W
-WWWWWW
-""",
+            WWWWWW
+            WA]X W
+            W0BP W
+            WWWWWW
+            """,
             possible_recipes=[[0, 0, 0]],
         )
-        env = OvercookedV3(layout=layout, enable_player_conveyors=False)
+        env = OvercookedV3(layout=layout)
         key = jax.random.PRNGKey(0)
         obs, state = env.reset(key)
 
@@ -591,11 +593,11 @@ WWWWWW
         """Player conveyors should not push agents onto item conveyors."""
         layout = Layout.from_string(
             """
-WWWWWW
-WA]>XW
-W0BP W
-WWWWWW
-""",
+            WWWWWW
+            WA]>XW
+            W0BP W
+            WWWWWW
+            """,
             possible_recipes=[[0, 0, 0]],
         )
         env = OvercookedV3(layout=layout, enable_player_conveyors=True)
@@ -619,6 +621,40 @@ WWWWWW
 
         assert new_state.agents.pos.x[0] == 2
         assert new_state.agents.pos.y[0] == 1
+
+
+class TestOvercookedV3Buttons:
+    """Test button mechanics."""
+
+    def test_multi_target_button_pauses_multiple_moving_walls(self):
+        """A single button can control more than one moving wall."""
+        layout = Layout.from_string(
+            moving_wall_bounce_demo,
+            possible_recipes=[[0, 0, 0]],
+            moving_wall_bounce=[True, True],
+            button_config=[([0, 1], ButtonAction.TOGGLE_PAUSE)],
+        )
+        env = OvercookedV3(layout=layout)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        # Put agent 0 directly above the button at (5, 3), facing down.
+        pos_x = state.agents.pos.x.at[0].set(5)
+        pos_y = state.agents.pos.y.at[0].set(2)
+        agent_dir = state.agents.dir.at[0].set(Direction.DOWN)
+        state = state.replace(
+            agents=state.agents.replace(
+                pos=Position(x=pos_x, y=pos_y),
+                dir=agent_dir,
+            )
+        )
+
+        actions = {"agent_0": int(Actions.interact), "agent_1": int(Actions.stay)}
+        key, subkey = jax.random.split(key)
+        obs, new_state, rewards, dones, info = env.step_env(subkey, state, actions)
+
+        assert bool(new_state.moving_wall_paused[0])
+        assert bool(new_state.moving_wall_paused[1])
 
 
 class TestOvercookedV3Registration:
