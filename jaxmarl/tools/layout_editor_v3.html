@@ -1,0 +1,2151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overcooked V3 Layout Editor</title>
+  <style>
+    :root {
+      --bg: #f6f8f5;
+      --panel: #ffffff;
+      --panel-2: #eef3f0;
+      --ink: #17211d;
+      --muted: #65736b;
+      --line: #cfd8d1;
+      --line-strong: #aebdb3;
+      --accent: #236f69;
+      --accent-2: #195b56;
+      --focus: #3c8c84;
+      --warn: #9a6a13;
+      --warn-bg: #fff3cf;
+      --error: #a23434;
+      --error-bg: #ffe1de;
+      --ok: #1f6f3d;
+      --ok-bg: #ddf5e4;
+      --shadow: 0 12px 36px rgba(17, 35, 29, 0.12);
+      --radius: 8px;
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    body {
+      overflow: hidden;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease, color 120ms ease, transform 80ms ease;
+    }
+
+    button:hover {
+      border-color: var(--focus);
+      background: #f7fbf9;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover {
+      background: var(--accent-2);
+      border-color: var(--accent-2);
+    }
+
+    button.ghost {
+      background: transparent;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--ink);
+      outline: none;
+    }
+
+    input,
+    select {
+      height: 34px;
+      padding: 0 10px;
+    }
+
+    textarea {
+      min-height: 130px;
+      padding: 10px;
+      resize: vertical;
+      line-height: 1.35;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      white-space: pre;
+      overflow: auto;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus,
+    button:focus-visible {
+      border-color: var(--focus);
+      box-shadow: 0 0 0 3px rgba(60, 140, 132, 0.18);
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 274px minmax(430px, 1fr) 382px;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .topbar {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: minmax(230px, 1fr) auto auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 58px;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      z-index: 3;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #1f5f59;
+      color: #fff;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.1;
+      font-weight: 750;
+      letter-spacing: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 550;
+      margin-top: 2px;
+    }
+
+    .top-actions,
+    .grid-actions,
+    .inline-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .top-actions button {
+      padding: 0 12px;
+      white-space: nowrap;
+    }
+
+    .name-field {
+      width: 210px;
+    }
+
+    .sidebar,
+    .details {
+      overflow-y: auto;
+      background: var(--panel);
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      padding: 14px;
+    }
+
+    .details {
+      border-left: 1px solid var(--line);
+      padding: 14px;
+    }
+
+    .section {
+      padding-bottom: 16px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section:last-child {
+      border-bottom: 0;
+      margin-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: #35453d;
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .tool-grid.ingredients {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
+    .tool-grid.directions {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .tool-button {
+      height: 42px;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr);
+      align-items: center;
+      gap: 7px;
+      padding: 5px 8px;
+      text-align: left;
+    }
+
+    .tool-grid.ingredients .tool-button,
+    .tool-grid.directions .tool-button {
+      grid-template-columns: 1fr;
+      justify-items: center;
+      text-align: center;
+      padding: 5px;
+    }
+
+    .tool-button.active {
+      border-color: var(--accent);
+      background: #e1f2ef;
+      color: #123c38;
+      box-shadow: inset 0 0 0 1px rgba(35, 111, 105, 0.24);
+    }
+
+    .tool-symbol {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(0, 0, 0, 0.14);
+      border-radius: 6px;
+      color: #111;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 850;
+      line-height: 1;
+    }
+
+    .tool-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .workspace {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      background: #edf2ef;
+    }
+
+    .workspace-bar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #f9fbfa;
+    }
+
+    .size-controls {
+      display: flex;
+      align-items: end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .size-controls label {
+      width: 72px;
+    }
+
+    .zoom-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 170px;
+    }
+
+    .zoom-control input {
+      padding: 0;
+      height: 28px;
+    }
+
+    .canvas-shell {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+    }
+
+    .canvas-frame {
+      position: relative;
+      display: inline-grid;
+      background: #d8e1db;
+      border: 1px solid var(--line-strong);
+      box-shadow: var(--shadow);
+    }
+
+    canvas {
+      display: block;
+      background: #fff;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .statusbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 36px;
+      align-items: center;
+      padding: 6px 14px;
+      border-top: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+    }
+
+    .statusbar span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    .tabs button {
+      min-width: 0;
+      padding: 0 6px;
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .tabs button.active {
+      background: #21332e;
+      border-color: #21332e;
+      color: #fff;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .stat {
+      min-height: 48px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfb;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .stat span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .messages {
+      display: grid;
+      gap: 8px;
+    }
+
+    .message {
+      border-radius: 8px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      font-size: 13px;
+      line-height: 1.32;
+    }
+
+    .message.ok {
+      color: var(--ok);
+      background: var(--ok-bg);
+      border-color: #b7dfc2;
+    }
+
+    .message.warn {
+      color: var(--warn);
+      background: var(--warn-bg);
+      border-color: #ecd08b;
+    }
+
+    .message.error {
+      color: var(--error);
+      background: var(--error-bg);
+      border-color: #efb0a9;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 750;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .pill.ok {
+      color: var(--ok);
+      border-color: #b7dfc2;
+      background: var(--ok-bg);
+    }
+
+    .pill.error {
+      color: var(--error);
+      border-color: #efb0a9;
+      background: var(--error-bg);
+    }
+
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .check-row input {
+      width: 16px;
+      height: 16px;
+    }
+
+    dialog {
+      width: min(560px, calc(100vw - 32px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 0;
+    }
+
+    dialog::backdrop {
+      background: rgba(12, 24, 20, 0.32);
+    }
+
+    .dialog-body {
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+      background: #fff;
+    }
+
+    .dialog-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .dialog-title h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%) translateY(16px);
+      min-width: min(360px, calc(100vw - 32px));
+      max-width: calc(100vw - 32px);
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #17211d;
+      color: #fff;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 140ms ease, transform 140ms ease;
+      text-align: center;
+      font-size: 13px;
+      z-index: 10;
+    }
+
+    .toast.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    @media (max-width: 1080px) {
+      body {
+        overflow: auto;
+      }
+
+      .app {
+        height: auto;
+        min-height: 100vh;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto auto minmax(520px, 68vh) auto;
+      }
+
+      .topbar,
+      .workspace-bar {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .sidebar,
+      .details {
+        border: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .tool-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 640px) {
+      .top-actions,
+      .grid-actions,
+      .inline-actions,
+      .size-controls {
+        width: 100%;
+      }
+
+      .top-actions button,
+      .inline-actions button,
+      .grid-actions button {
+        flex: 1 1 90px;
+      }
+
+      .name-field,
+      .zoom-control {
+        width: 100%;
+      }
+
+      .tool-grid,
+      .tool-grid.ingredients,
+      .tool-grid.directions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .split,
+      .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">OC</div>
+        <div>
+          <h1>Overcooked V3 Layout Editor</h1>
+          <span>Static browser editor for Layout.from_string maps</span>
+        </div>
+      </div>
+      <label class="name-field">
+        Layout name
+        <input id="layoutName" autocomplete="off" value="custom_layout">
+      </label>
+      <div class="top-actions">
+        <button id="newBtn" title="New layout">New</button>
+        <button id="loadTabBtn" title="Open import panel">Load</button>
+        <button id="exportTabBtn" title="Open export panel">Export</button>
+        <button id="copyCodeBtn" class="primary" title="Copy generated Python code">Copy Code</button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <section class="section">
+        <div class="section-title">
+          <h2>Objects</h2>
+          <span id="selectedToolPill" class="pill">Wall</span>
+        </div>
+        <div id="basicTools" class="tool-grid"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">
+          <h2>Ingredients</h2>
+        </div>
+        <div id="ingredientTools" class="tool-grid ingredients"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">
+          <h2>Item Conveyors</h2>
+        </div>
+        <div id="itemConveyorTools" class="tool-grid directions"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">
+          <h2>Player Conveyors</h2>
+        </div>
+        <div id="playerConveyorTools" class="tool-grid directions"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">
+          <h2>Moving Walls</h2>
+        </div>
+        <div id="movingWallTools" class="tool-grid directions"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">
+          <h2>Controls</h2>
+        </div>
+        <div id="controlTools" class="tool-grid"></div>
+      </section>
+    </aside>
+
+    <main class="workspace">
+      <div class="workspace-bar">
+        <div class="size-controls">
+          <label>
+            Width
+            <input id="widthInput" type="number" min="3" max="40" value="7">
+          </label>
+          <label>
+            Height
+            <input id="heightInput" type="number" min="3" max="40" value="5">
+          </label>
+          <button id="resizeBtn" title="Resize grid">Resize</button>
+          <button id="undoBtn" title="Undo">Undo</button>
+          <button id="redoBtn" title="Redo">Redo</button>
+        </div>
+        <div class="grid-actions">
+          <label class="zoom-control">
+            Zoom
+            <input id="zoomInput" type="range" min="18" max="72" value="52">
+          </label>
+          <button id="validateBtn" title="Validate layout">Validate</button>
+        </div>
+      </div>
+      <div class="canvas-shell" id="canvasShell">
+        <div class="canvas-frame">
+          <canvas id="gridCanvas" width="364" height="260" aria-label="Layout grid"></canvas>
+        </div>
+      </div>
+      <footer class="statusbar">
+        <span id="leftStatus">Ready</span>
+        <span id="rightStatus">7 x 5</span>
+      </footer>
+    </main>
+
+    <aside class="details">
+      <nav class="tabs" aria-label="Editor panels">
+        <button class="active" data-tab="validatePanel">Validate</button>
+        <button data-tab="exportPanel">Export</button>
+        <button data-tab="importPanel">Import</button>
+      </nav>
+
+      <section id="validatePanel" class="tab-panel active">
+        <div class="stack">
+          <div id="validityPill" class="pill">Not checked</div>
+          <div class="stats" id="stats"></div>
+          <div class="messages" id="messages"></div>
+        </div>
+      </section>
+
+      <section id="exportPanel" class="tab-panel">
+        <div class="stack">
+          <label>
+            Possible recipes
+            <input id="recipesInput" value="[[0, 0, 0]]" spellcheck="false">
+          </label>
+          <details>
+            <summary>Advanced Layout.from_string arguments</summary>
+            <div class="stack" style="margin-top: 10px;">
+              <label>
+                moving_wall_bounce
+                <input id="movingWallBounceInput" placeholder="[false, true]" spellcheck="false">
+              </label>
+              <label>
+                button_config
+                <input id="buttonConfigInput" placeholder="[(0, ButtonAction.TOGGLE_DIRECTION)]" spellcheck="false">
+              </label>
+              <label>
+                barrier_config
+                <input id="barrierConfigInput" placeholder="[false, true]" spellcheck="false">
+              </label>
+            </div>
+          </details>
+          <label>
+            Layout string
+            <textarea id="layoutOutput" readonly spellcheck="false"></textarea>
+          </label>
+          <div class="inline-actions">
+            <button id="copyLayoutBtn">Copy Layout</button>
+            <button id="downloadBtn">Download .txt</button>
+          </div>
+          <label>
+            Python snippet
+            <textarea id="codeOutput" readonly spellcheck="false"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section id="importPanel" class="tab-panel">
+        <div class="stack">
+          <label>
+            Built-in layout
+            <select id="builtinSelect"></select>
+          </label>
+          <div class="inline-actions">
+            <button id="loadBuiltinBtn">Load Built-in</button>
+            <button id="loadTextBtn" class="primary">Load Text</button>
+          </div>
+          <label>
+            Layout text
+            <textarea id="importText" spellcheck="false"></textarea>
+          </label>
+          <label class="check-row">
+            <input id="padRowsInput" type="checkbox" checked>
+            Pad short rows
+          </label>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <dialog id="newDialog">
+    <div class="dialog-body">
+      <div class="dialog-title">
+        <h2>New layout</h2>
+        <button id="closeNewDialog" class="ghost" title="Close">Close</button>
+      </div>
+      <div class="split">
+        <label>
+          Width
+          <input id="newWidthInput" type="number" min="3" max="40" value="7">
+        </label>
+        <label>
+          Height
+          <input id="newHeightInput" type="number" min="3" max="40" value="5">
+        </label>
+      </div>
+      <label>
+        Layout name
+        <input id="newNameInput" value="custom_layout" autocomplete="off">
+      </label>
+      <div class="inline-actions">
+        <button id="createNewBtn" class="primary">Create</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const LIMITS = {
+      minWidth: 3,
+      maxWidth: 40,
+      minHeight: 3,
+      maxHeight: 40,
+      maxPots: 4,
+      maxItemConveyors: 16,
+      maxPlayerConveyors: 8,
+      maxMovingWalls: 8,
+      maxButtons: 8,
+      maxBarriers: 16
+    };
+
+    const PALETTE = {
+      empty: "#fffdf8",
+      grid: "#d9e0dc",
+      wall: "#6f7872",
+      pot: "#d88134",
+      plate: "#f6f8fb",
+      delivery: "#58a56c",
+      recipe: "#8c6bb8",
+      agent: "#3478c8",
+      onion: "#e9ca47",
+      tomato: "#d9544f",
+      lettuce: "#438a54",
+      cyan: "#7ac9c4",
+      player: "#a176bd",
+      moving: "#536a78",
+      button: "#e0b347",
+      barrier: "#32393a",
+      erase: "#f5f5f5"
+    };
+
+    const VIZ = {
+      red: "#ff0000",
+      green: "#00ff00",
+      blue: "#0000ff",
+      purple: "#a020f0",
+      yellow: "#ffff00",
+      grey: "#646464",
+      white: "#ffffff",
+      black: "#191919",
+      orange: "#e6b400",
+      pink: "#ff69b4",
+      brown: "#8b4513",
+      cyan: "#00ffff",
+      lightBlue: "#add8e6",
+      darkGreen: "#009600",
+      lightGrey: "#b4b4b4",
+      buttonInner: "#ff6464"
+    };
+
+    const VIZ_INGREDIENT_COLORS = [
+      VIZ.yellow,
+      VIZ.red,
+      VIZ.darkGreen,
+      VIZ.cyan,
+      VIZ.orange,
+      VIZ.purple,
+      VIZ.blue,
+      VIZ.pink,
+      VIZ.brown,
+      VIZ.white
+    ];
+
+    const VIZ_AGENT_COLORS = [
+      VIZ.blue,
+      VIZ.green,
+      VIZ.red,
+      VIZ.purple,
+      VIZ.yellow,
+      VIZ.orange
+    ];
+
+    const TOOLS = [
+      { group: "basic", symbol: "W", name: "Wall", color: PALETTE.wall, text: "#fff", shortcut: "w" },
+      { group: "basic", symbol: "A", name: "Agent", color: PALETTE.agent, text: "#fff", shortcut: "a" },
+      { group: "basic", symbol: "P", name: "Pot", color: PALETTE.pot, text: "#161616", shortcut: "p" },
+      { group: "basic", symbol: "B", name: "Plate", color: PALETTE.plate, text: "#17211d", shortcut: "b" },
+      { group: "basic", symbol: "X", name: "Delivery", color: PALETTE.delivery, text: "#fff", shortcut: "x" },
+      { group: "basic", symbol: "R", name: "Recipe", color: PALETTE.recipe, text: "#fff", shortcut: "r" },
+      { group: "ingredients", symbol: "0", name: "0", color: PALETTE.onion, text: "#181818", shortcut: "0" },
+      { group: "ingredients", symbol: "1", name: "1", color: PALETTE.tomato, text: "#fff", shortcut: "1" },
+      { group: "ingredients", symbol: "2", name: "2", color: PALETTE.lettuce, text: "#fff", shortcut: "2" },
+      { group: "ingredients", symbol: "3", name: "3", color: "#61b4d8", text: "#10191c", shortcut: "3" },
+      { group: "ingredients", symbol: "4", name: "4", color: "#e99648", text: "#101010", shortcut: "4" },
+      { group: "ingredients", symbol: "5", name: "5", color: "#9c72c5", text: "#fff", shortcut: "5" },
+      { group: "ingredients", symbol: "6", name: "6", color: "#476ec4", text: "#fff", shortcut: "6" },
+      { group: "ingredients", symbol: "7", name: "7", color: "#d66c9c", text: "#fff", shortcut: "7" },
+      { group: "ingredients", symbol: "8", name: "8", color: "#9a6948", text: "#fff", shortcut: "8" },
+      { group: "ingredients", symbol: "9", name: "9", color: "#edf0f2", text: "#17211d", shortcut: "9" },
+      { group: "item", symbol: ">", name: "Right", color: PALETTE.cyan, text: "#102323", shortcut: ">" },
+      { group: "item", symbol: "<", name: "Left", color: PALETTE.cyan, text: "#102323", shortcut: "<" },
+      { group: "item", symbol: "^", name: "Up", color: PALETTE.cyan, text: "#102323", shortcut: "^" },
+      { group: "item", symbol: "v", name: "Down", color: PALETTE.cyan, text: "#102323", shortcut: "v" },
+      { group: "player", symbol: "]", name: "Right", color: PALETTE.player, text: "#fff", shortcut: "]" },
+      { group: "player", symbol: "[", name: "Left", color: PALETTE.player, text: "#fff", shortcut: "[" },
+      { group: "player", symbol: "{", name: "Up", color: PALETTE.player, text: "#fff", shortcut: "{" },
+      { group: "player", symbol: "}", name: "Down", color: PALETTE.player, text: "#fff", shortcut: "}" },
+      { group: "moving", symbol: "e", name: "East", color: PALETTE.moving, text: "#fff", shortcut: "e" },
+      { group: "moving", symbol: "w", name: "West", color: PALETTE.moving, text: "#fff", shortcut: "w" },
+      { group: "moving", symbol: "n", name: "North", color: PALETTE.moving, text: "#fff", shortcut: "n" },
+      { group: "moving", symbol: "s", name: "South", color: PALETTE.moving, text: "#fff", shortcut: "s" },
+      { group: "control", symbol: "!", name: "Button", color: PALETTE.button, text: "#1b1608", shortcut: "!" },
+      { group: "control", symbol: "#", name: "Barrier", color: PALETTE.barrier, text: "#fff", shortcut: "#" },
+      { group: "control", symbol: " ", name: "Erase", color: PALETTE.erase, text: "#17211d", shortcut: "Delete" }
+    ];
+
+    const BUILTIN_LAYOUTS = {
+      cramped_room: {
+        recipes: [[0, 0, 0]],
+        text: `WWPWW
+OA AO
+W   W
+WBWXW`
+      },
+      asymm_advantages: {
+        recipes: [[0, 0, 0]],
+        text: `WWWWWWWWW
+O WXWOW X
+W   P   W
+W A PA  W
+WWWBWBWWW`
+      },
+      coord_ring: {
+        recipes: [[0, 0, 0]],
+        text: `WWWPW
+W A P
+BAW W
+O   W
+WOXWW`
+      },
+      forced_coord: {
+        recipes: [[0, 0, 0]],
+        text: `WWWPW
+O WAP
+OAW W
+B W W
+WWWXW`
+      },
+      counter_circuit: {
+        recipes: [[0, 0, 0]],
+        text: `WWWPPWWW
+W A    W
+B WWWW X
+W     AW
+WWWOOWWW`
+      },
+      cramped_room_v2: {
+        recipes: [[0, 0, 0]],
+        text: `WWPWW
+0A A1
+W   R
+WBWXW`
+      },
+      conveyor_demo: {
+        recipes: [[0, 0, 0]],
+        text: `WWPWWWW
+0A >  X
+W  v  W
+W  > AW
+WWBWWWW`
+      },
+      player_conveyor_demo: {
+        recipes: [[0, 0, 0]],
+        text: `WWWWWWW
+0A ]  X
+W     W
+W   [ P
+WWWBWWW`
+      },
+      player_conveyor_loop: {
+        recipes: [[0, 0, 0]],
+        text: `WWPBW
+W]}AW
+W{[0W
+WWXWW`
+      },
+      moving_wall_demo: {
+        recipes: [[0, 0, 0]],
+        buttonConfig: "[(0, ButtonAction.TOGGLE_DIRECTION)]",
+        text: `WWWPWWW
+0As   X
+W  !  W
+W    AW
+WWWBWWW`
+      },
+      moving_wall_bounce_demo: {
+        recipes: [[0, 0, 0]],
+        movingWallBounce: [true, true],
+        buttonConfig: "[(1, ButtonAction.TOGGLE_PAUSE)]",
+        text: `WWWWPWWWWW
+0A e   AXW
+W        W
+W  e !   W
+WWWWBWWWWW`
+      },
+      barrier_demo: {
+        recipes: [[0, 0, 0]],
+        barrierConfig: [false, true],
+        text: `WWWPWWW
+0A #  X
+W  #  W
+W    AW
+WWWBWWW`
+      },
+      timed_barrier_demo: {
+        recipes: [[0, 0, 0]],
+        barrierConfig: [true, true],
+        buttonConfig: "[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)]",
+        text: `WWWPWWW
+0A #  X
+W ! ! W
+W  # AW
+WWWBWWW`
+      },
+      middle_conveyor: {
+        recipes: [[0, 0, 0]],
+        text: `WWWWW^WWWWW
+WW  W^W  WW
+WW AW^WA WW
+W1   ^   PW
+WW  W^W  WW
+WW BW^WB WW
+W0   ^   XW
+WW  W^W  WW
+WW  W^W  WW
+WWWWW^WWWWW`
+      },
+      follow_the_leader: {
+        recipes: [[0, 0, 0]],
+        text: `WWWWWWWW
+WWB1  WW
+W0AWA PW
+W  W  WW
+WWWW  XW
+W     WW
+WWWWWWWW`
+      },
+      around_the_island: {
+        recipes: [[0, 0, 0]],
+        text: `WW0W1WWWWW
+B        W
+W  A     W
+WWWWWWW  X
+W  A     W
+W        W
+WWWPWWWWWW`
+      },
+      single_file: {
+        recipes: [[0, 0, 0]],
+        text: `WBWWPWW
+W A A W
+W WWW W
+X     W
+WW1W0WW`
+      }
+    };
+
+    const els = {
+      canvas: document.getElementById("gridCanvas"),
+      canvasShell: document.getElementById("canvasShell"),
+      layoutName: document.getElementById("layoutName"),
+      widthInput: document.getElementById("widthInput"),
+      heightInput: document.getElementById("heightInput"),
+      resizeBtn: document.getElementById("resizeBtn"),
+      undoBtn: document.getElementById("undoBtn"),
+      redoBtn: document.getElementById("redoBtn"),
+      zoomInput: document.getElementById("zoomInput"),
+      validateBtn: document.getElementById("validateBtn"),
+      selectedToolPill: document.getElementById("selectedToolPill"),
+      leftStatus: document.getElementById("leftStatus"),
+      rightStatus: document.getElementById("rightStatus"),
+      stats: document.getElementById("stats"),
+      messages: document.getElementById("messages"),
+      validityPill: document.getElementById("validityPill"),
+      layoutOutput: document.getElementById("layoutOutput"),
+      codeOutput: document.getElementById("codeOutput"),
+      recipesInput: document.getElementById("recipesInput"),
+      movingWallBounceInput: document.getElementById("movingWallBounceInput"),
+      buttonConfigInput: document.getElementById("buttonConfigInput"),
+      barrierConfigInput: document.getElementById("barrierConfigInput"),
+      copyCodeBtn: document.getElementById("copyCodeBtn"),
+      copyLayoutBtn: document.getElementById("copyLayoutBtn"),
+      downloadBtn: document.getElementById("downloadBtn"),
+      importText: document.getElementById("importText"),
+      builtinSelect: document.getElementById("builtinSelect"),
+      loadBuiltinBtn: document.getElementById("loadBuiltinBtn"),
+      loadTextBtn: document.getElementById("loadTextBtn"),
+      padRowsInput: document.getElementById("padRowsInput"),
+      newBtn: document.getElementById("newBtn"),
+      loadTabBtn: document.getElementById("loadTabBtn"),
+      exportTabBtn: document.getElementById("exportTabBtn"),
+      newDialog: document.getElementById("newDialog"),
+      closeNewDialog: document.getElementById("closeNewDialog"),
+      newWidthInput: document.getElementById("newWidthInput"),
+      newHeightInput: document.getElementById("newHeightInput"),
+      newNameInput: document.getElementById("newNameInput"),
+      createNewBtn: document.getElementById("createNewBtn"),
+      toast: document.getElementById("toast")
+    };
+
+    const ctx = els.canvas.getContext("2d");
+    const toolBySymbol = new Map(TOOLS.map((tool) => [tool.symbol, tool]));
+    const shortcutToTool = new Map();
+    for (const tool of TOOLS) {
+      if (!shortcutToTool.has(tool.shortcut)) {
+        shortcutToTool.set(tool.shortcut, tool.symbol);
+      }
+    }
+    shortcutToTool.set("Backspace", " ");
+    shortcutToTool.set("Delete", " ");
+
+    const state = {
+      width: 7,
+      height: 5,
+      zoom: 52,
+      cells: [],
+      selected: "W",
+      undo: [],
+      redo: [],
+      painting: false,
+      lastPaintKey: "",
+      validation: null
+    };
+
+    function blankCells(width, height) {
+      return Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
+    }
+
+    function snapshot() {
+      return {
+        width: state.width,
+        height: state.height,
+        cells: state.cells.map((row) => row.slice())
+      };
+    }
+
+    function restore(snapshotValue) {
+      state.width = snapshotValue.width;
+      state.height = snapshotValue.height;
+      state.cells = snapshotValue.cells.map((row) => row.slice());
+      syncSizeInputs();
+      invalidateAndRender();
+    }
+
+    function pushUndo() {
+      state.undo.push(snapshot());
+      if (state.undo.length > 80) {
+        state.undo.shift();
+      }
+      state.redo = [];
+      updateUndoRedoButtons();
+    }
+
+    function undo() {
+      if (!state.undo.length) return;
+      state.redo.push(snapshot());
+      restore(state.undo.pop());
+      updateUndoRedoButtons();
+    }
+
+    function redo() {
+      if (!state.redo.length) return;
+      state.undo.push(snapshot());
+      restore(state.redo.pop());
+      updateUndoRedoButtons();
+    }
+
+    function updateUndoRedoButtons() {
+      els.undoBtn.disabled = state.undo.length === 0;
+      els.redoBtn.disabled = state.redo.length === 0;
+    }
+
+    function clampInt(value, min, max, fallback) {
+      const parsed = Number.parseInt(value, 10);
+      if (!Number.isFinite(parsed)) return fallback;
+      return Math.max(min, Math.min(max, parsed));
+    }
+
+    function syncSizeInputs() {
+      els.widthInput.value = String(state.width);
+      els.heightInput.value = String(state.height);
+      els.rightStatus.textContent = `${state.width} x ${state.height}`;
+    }
+
+    function setSelected(symbol) {
+      state.selected = symbol;
+      const tool = toolBySymbol.get(symbol);
+      els.selectedToolPill.textContent = tool ? tool.name : symbol;
+      document.querySelectorAll(".tool-button").forEach((button) => {
+        button.classList.toggle("active", button.dataset.symbol === symbol);
+      });
+      render();
+    }
+
+    function renderToolButtons() {
+      const targets = {
+        basic: document.getElementById("basicTools"),
+        ingredients: document.getElementById("ingredientTools"),
+        item: document.getElementById("itemConveyorTools"),
+        player: document.getElementById("playerConveyorTools"),
+        moving: document.getElementById("movingWallTools"),
+        control: document.getElementById("controlTools")
+      };
+
+      for (const tool of TOOLS) {
+        const button = document.createElement("button");
+        button.className = "tool-button";
+        button.dataset.symbol = tool.symbol;
+        button.title = tool.name;
+        const symbol = document.createElement("span");
+        symbol.className = "tool-symbol";
+        symbol.style.background = tool.color;
+        symbol.style.color = tool.text;
+        symbol.textContent = tool.symbol === " " ? "E" : tool.symbol;
+        const name = document.createElement("span");
+        name.className = "tool-name";
+        name.textContent = tool.name;
+        button.append(symbol, name);
+        button.addEventListener("click", () => setSelected(tool.symbol));
+        targets[tool.group].append(button);
+      }
+    }
+
+    function fillRectN(px, py, tile, x0, x1, y0, y1, color) {
+      ctx.fillStyle = color;
+      ctx.fillRect(px + x0 * tile, py + y0 * tile, (x1 - x0) * tile, (y1 - y0) * tile);
+    }
+
+    function fillCircleN(px, py, tile, cx, cy, radius, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(px + cx * tile, py + cy * tile, radius * tile, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function fillPolyN(px, py, tile, points, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      points.forEach(([x, y], index) => {
+        const drawX = px + x * tile;
+        const drawY = py + y * tile;
+        if (index === 0) ctx.moveTo(drawX, drawY);
+        else ctx.lineTo(drawX, drawY);
+      });
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function rotatePoint(point, turns) {
+      let [x, y] = point;
+      for (let i = 0; i < turns; i += 1) {
+        const nextX = 1 - y;
+        const nextY = x;
+        x = nextX;
+        y = nextY;
+      }
+      return [x, y];
+    }
+
+    function rotated(points, turns) {
+      return points.map((point) => rotatePoint(point, turns));
+    }
+
+    function turnsForArrow(symbol) {
+      // The visualizer's base triangle points left; these turns mirror its direction remap.
+      if (symbol === "<" || symbol === "[" || symbol === "w") return 0;
+      if (symbol === "^" || symbol === "{" || symbol === "n") return 1;
+      if (symbol === ">" || symbol === "]" || symbol === "e") return 2;
+      return 3;
+    }
+
+    function drawArrow(px, py, tile, symbol, color) {
+      const arrow = [
+        [0.29, 0.50],
+        [0.69, 0.27],
+        [0.69, 0.43],
+        [0.84, 0.43],
+        [0.84, 0.57],
+        [0.69, 0.57],
+        [0.69, 0.73]
+      ];
+      fillPolyN(px, py, tile, rotated(arrow, turnsForArrow(symbol)), color);
+    }
+
+    function drawDish(px, py, tile, recipe) {
+      fillCircleN(px, py, tile, 0.5, 0.5, 0.3, VIZ.white);
+      const positions = [
+        [0.5, 0.4],
+        [0.4, 0.6],
+        [0.6, 0.6]
+      ];
+      const safeRecipe = Array.isArray(recipe) ? recipe : [0, 0, 0];
+      positions.forEach(([cx, cy], index) => {
+        const ingredient = Number.isInteger(safeRecipe[index]) ? safeRecipe[index] : 0;
+        fillCircleN(px, py, tile, cx, cy, 0.1, VIZ_INGREDIENT_COLORS[Math.max(0, Math.min(VIZ_INGREDIENT_COLORS.length - 1, ingredient))]);
+      });
+    }
+
+    function firstRecipe() {
+      try {
+        const recipes = parseJsonInput(els.recipesInput.value, [[0, 0, 0]]);
+        return Array.isArray(recipes) && Array.isArray(recipes[0]) ? recipes[0] : [0, 0, 0];
+      } catch {
+        return [0, 0, 0];
+      }
+    }
+
+    function parsedBarrierConfig() {
+      try {
+        const config = parseJsonInput(els.barrierConfigInput.value, []);
+        return Array.isArray(config) ? config : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function drawBaseTile(px, py, tile, fill = VIZ.black) {
+      ctx.fillStyle = fill;
+      ctx.fillRect(px, py, tile, tile);
+      fillRectN(px, py, tile, 0, 0.031, 0, 1, VIZ.grey);
+      fillRectN(px, py, tile, 0, 1, 0, 0.031, VIZ.grey);
+    }
+
+    function drawPlatePile(px, py, tile) {
+      fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.grey);
+      [
+        [0.3, 0.3],
+        [0.75, 0.42],
+        [0.4, 0.75]
+      ].forEach(([cx, cy]) => fillCircleN(px, py, tile, cx, cy, 0.2, VIZ.white));
+    }
+
+    function drawIngredientPile(px, py, tile, symbol) {
+      const ingredient = Number(symbol);
+      const color = VIZ_INGREDIENT_COLORS[Math.max(0, Math.min(VIZ_INGREDIENT_COLORS.length - 1, ingredient))];
+      fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.grey);
+      [
+        [0.5, 0.15],
+        [0.3, 0.4],
+        [0.8, 0.35],
+        [0.4, 0.8],
+        [0.75, 0.75]
+      ].forEach(([cx, cy]) => fillCircleN(px, py, tile, cx, cy, 0.15, color));
+    }
+
+    function drawPot(px, py, tile) {
+      fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.grey);
+      fillRectN(px, py, tile, 0.1, 0.9, 0.33, 0.9, VIZ.black);
+      fillRectN(px, py, tile, 0.1, 0.9, 0.21, 0.25, VIZ.black);
+      fillRectN(px, py, tile, 0.4, 0.6, 0.16, 0.21, VIZ.black);
+    }
+
+    function drawConveyor(px, py, tile, symbol, playerConveyor) {
+      fillRectN(px, py, tile, 0, 1, 0, 1, playerConveyor ? VIZ.lightBlue : VIZ.lightGrey);
+      for (let i = 0; i < 4; i += 1) {
+        const offset = 0.15 + i * 0.2;
+        fillRectN(px, py, tile, 0.05, 0.95, offset, offset + 0.1, playerConveyor ? VIZ.blue : VIZ.grey);
+      }
+      drawArrow(px, py, tile, symbol, playerConveyor ? VIZ.cyan : VIZ.orange);
+    }
+
+    function drawMovingWall(px, py, tile, symbol) {
+      fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.red);
+      ctx.globalAlpha = 0.78;
+      drawArrow(px, py, tile, symbol, VIZ.white);
+      ctx.globalAlpha = 1;
+    }
+
+    function drawButton(px, py, tile) {
+      fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.grey);
+      fillCircleN(px, py, tile, 0.5, 0.5, 0.35, VIZ.red);
+      fillCircleN(px, py, tile, 0.5, 0.5, 0.2, VIZ.buttonInner);
+    }
+
+    function drawBarrier(px, py, tile, active) {
+      fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.black);
+      if (active) {
+        fillRectN(px, py, tile, 0.1, 0.9, 0.1, 0.9, VIZ.red);
+        ctx.strokeStyle = VIZ.white;
+        ctx.lineWidth = Math.max(3, tile * 0.08);
+        ctx.beginPath();
+        ctx.moveTo(px + 0.25 * tile, py + 0.25 * tile);
+        ctx.lineTo(px + 0.75 * tile, py + 0.75 * tile);
+        ctx.moveTo(px + 0.75 * tile, py + 0.25 * tile);
+        ctx.lineTo(px + 0.25 * tile, py + 0.75 * tile);
+        ctx.stroke();
+      } else {
+        fillRectN(px, py, tile, 0.1, 0.9, 0.1, 0.9, VIZ.lightGrey);
+        [
+          [0.2, 0.2],
+          [0.8, 0.2],
+          [0.2, 0.8],
+          [0.8, 0.8]
+        ].forEach(([cx, cy]) => fillCircleN(px, py, tile, cx, cy, 0.1, VIZ.blue));
+      }
+    }
+
+    function drawAgent(px, py, tile, agentIndex) {
+      const color = VIZ_AGENT_COLORS[agentIndex % VIZ_AGENT_COLORS.length];
+      fillPolyN(px, py, tile, [
+        [0.12, 0.19],
+        [0.87, 0.50],
+        [0.12, 0.81]
+      ], color);
+    }
+
+    function drawCell(x, y, symbol, tile, details = {}) {
+      const px = x * tile;
+      const py = y * tile;
+      drawBaseTile(px, py, tile);
+
+      if (symbol === "W") fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.grey);
+      else if (symbol === "X") {
+        fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.grey);
+        fillRectN(px, py, tile, 0.1, 0.9, 0.1, 0.9, VIZ.green);
+      } else if (symbol === "P") drawPot(px, py, tile);
+      else if (symbol === "B") drawPlatePile(px, py, tile);
+      else if (symbol === "R") {
+        fillRectN(px, py, tile, 0, 1, 0, 1, VIZ.grey);
+        fillRectN(px, py, tile, 0.1, 0.9, 0.1, 0.9, VIZ.brown);
+        drawDish(px, py, tile, firstRecipe());
+      } else if (/[0-9]/.test(symbol)) drawIngredientPile(px, py, tile, symbol);
+      else if ([">", "<", "^", "v"].includes(symbol)) drawConveyor(px, py, tile, symbol, false);
+      else if (["]", "[", "{", "}"].includes(symbol)) drawConveyor(px, py, tile, symbol, true);
+      else if (["e", "w", "n", "s"].includes(symbol)) drawMovingWall(px, py, tile, symbol);
+      else if (symbol === "!") drawButton(px, py, tile);
+      else if (symbol === "#") drawBarrier(px, py, tile, Boolean(details.barrierActive));
+      else if (symbol === "A") drawAgent(px, py, tile, details.agentIndex || 0);
+
+      ctx.strokeStyle = "rgba(100, 100, 100, 0.55)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(px + 0.5, py + 0.5, tile - 1, tile - 1);
+    }
+
+    function render() {
+      const tile = state.zoom;
+      const dpr = window.devicePixelRatio || 1;
+      const widthPx = state.width * tile;
+      const heightPx = state.height * tile;
+      els.canvas.style.width = `${widthPx}px`;
+      els.canvas.style.height = `${heightPx}px`;
+      els.canvas.width = Math.round(widthPx * dpr);
+      els.canvas.height = Math.round(heightPx * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, widthPx, heightPx);
+
+      let agentIndex = 0;
+      let barrierIndex = 0;
+      const barrierConfig = parsedBarrierConfig();
+
+      for (let y = 0; y < state.height; y += 1) {
+        for (let x = 0; x < state.width; x += 1) {
+          const symbol = state.cells[y][x];
+          const details = {};
+          if (symbol === "A") {
+            details.agentIndex = agentIndex;
+            agentIndex += 1;
+          } else if (symbol === "#") {
+            details.barrierActive = Boolean(barrierConfig[barrierIndex]);
+            barrierIndex += 1;
+          }
+          drawCell(x, y, symbol, tile, details);
+        }
+      }
+    }
+
+    function invalidateAndRender() {
+      state.validation = null;
+      updateOutputs();
+      updateStatus();
+      render();
+      saveDraft();
+    }
+
+    function canvasCellFromEvent(event) {
+      const rect = els.canvas.getBoundingClientRect();
+      const x = Math.floor((event.clientX - rect.left) / state.zoom);
+      const y = Math.floor((event.clientY - rect.top) / state.zoom);
+      if (x < 0 || y < 0 || x >= state.width || y >= state.height) {
+        return null;
+      }
+      return { x, y };
+    }
+
+    function paintCell(x, y, symbol) {
+      if (state.cells[y][x] === symbol) return false;
+      state.cells[y][x] = symbol;
+      return true;
+    }
+
+    function applyPaint(event) {
+      const cell = canvasCellFromEvent(event);
+      if (!cell) return;
+      const key = `${cell.x},${cell.y}`;
+      if (key === state.lastPaintKey) return;
+      state.lastPaintKey = key;
+      const symbol = event.button === 2 || event.buttons === 2 ? " " : state.selected;
+      if (paintCell(cell.x, cell.y, symbol)) {
+        invalidateAndRender();
+      }
+      els.leftStatus.textContent = `Cell ${cell.x}, ${cell.y}`;
+    }
+
+    function resizeGrid(width, height) {
+      const resized = blankCells(width, height);
+      for (let y = 0; y < Math.min(height, state.height); y += 1) {
+        for (let x = 0; x < Math.min(width, state.width); x += 1) {
+          resized[y][x] = state.cells[y][x];
+        }
+      }
+      state.width = width;
+      state.height = height;
+      state.cells = resized;
+      syncSizeInputs();
+      invalidateAndRender();
+    }
+
+    function layoutRows() {
+      return state.cells.map((row) => row.join(""));
+    }
+
+    function layoutString() {
+      return layoutRows().join("\n");
+    }
+
+    function sanitizeName(rawName) {
+      const cleaned = rawName.trim().replace(/[^A-Za-z0-9_]/g, "_").replace(/^[^A-Za-z_]+/, "");
+      return cleaned || "custom_layout";
+    }
+
+    function parseJsonInput(inputValue, fallback) {
+      const text = inputValue.trim();
+      if (!text) return fallback;
+      return JSON.parse(text);
+    }
+
+    function jsonToPython(value) {
+      return JSON.stringify(value)
+        .replace(/\btrue\b/g, "True")
+        .replace(/\bfalse\b/g, "False")
+        .replace(/\bnull\b/g, "None");
+    }
+
+    function recipesPython() {
+      try {
+        const recipes = parseJsonInput(els.recipesInput.value, []);
+        return jsonToPython(recipes);
+      } catch {
+        return els.recipesInput.value.trim() || "[]";
+      }
+    }
+
+    function generatedCode() {
+      const name = sanitizeName(els.layoutName.value);
+      const layout = layoutString();
+      const args = [
+        `    ${name}`,
+        `    possible_recipes=${recipesPython()}`,
+        "    swap_agents=False"
+      ];
+
+      const movingWallBounce = els.movingWallBounceInput.value.trim();
+      const buttonConfig = els.buttonConfigInput.value.trim();
+      const barrierConfig = els.barrierConfigInput.value.trim();
+
+      if (movingWallBounce) {
+        try {
+          args.push(`    moving_wall_bounce=${jsonToPython(JSON.parse(movingWallBounce))}`);
+        } catch {
+          args.push(`    moving_wall_bounce=${movingWallBounce}`);
+        }
+      }
+      if (buttonConfig) {
+        args.push(`    button_config=${buttonConfig}`);
+      }
+      if (barrierConfig) {
+        try {
+          args.push(`    barrier_config=${jsonToPython(JSON.parse(barrierConfig))}`);
+        } catch {
+          args.push(`    barrier_config=${barrierConfig}`);
+        }
+      }
+
+      const importNote = buttonConfig.includes("ButtonAction")
+        ? "\n# button_config uses ButtonAction from jaxmarl.environments.overcooked_v3.common.\n"
+        : "";
+
+      return `# Add to jaxmarl/environments/overcooked_v3/layouts.py${importNote}
+${name} = """
+${layout}
+"""
+
+overcooked_v3_layouts["${name}"] = Layout.from_string(
+${args.join(",\n")}
+)
+`;
+    }
+
+    function updateOutputs() {
+      els.layoutOutput.value = layoutString();
+      els.codeOutput.value = generatedCode();
+    }
+
+    function countSymbols() {
+      const counts = {
+        agents: 0,
+        goals: 0,
+        ingredients: new Set(),
+        ingredientPiles: 0,
+        pots: 0,
+        plates: 0,
+        recipes: 0,
+        itemConveyors: 0,
+        playerConveyors: 0,
+        movingWalls: 0,
+        buttons: 0,
+        barriers: 0,
+        walls: 0
+      };
+      const item = new Set([">", "<", "^", "v"]);
+      const player = new Set(["]", "[", "{", "}"]);
+      const moving = new Set(["e", "w", "n", "s"]);
+
+      for (const row of state.cells) {
+        for (const symbol of row) {
+          if (symbol === "A") counts.agents += 1;
+          else if (symbol === "X") counts.goals += 1;
+          else if (/[0-9O]/.test(symbol)) {
+            counts.ingredientPiles += 1;
+            counts.ingredients.add(symbol === "O" ? 0 : Number(symbol));
+          } else if (symbol === "P") counts.pots += 1;
+          else if (symbol === "B") counts.plates += 1;
+          else if (symbol === "R") counts.recipes += 1;
+          else if (symbol === "W") counts.walls += 1;
+          else if (item.has(symbol)) counts.itemConveyors += 1;
+          else if (player.has(symbol)) counts.playerConveyors += 1;
+          else if (moving.has(symbol)) counts.movingWalls += 1;
+          else if (symbol === "!") counts.buttons += 1;
+          else if (symbol === "#") counts.barriers += 1;
+        }
+      }
+      return counts;
+    }
+
+    function validateRecipes(counts, errors, warnings) {
+      let recipes;
+      try {
+        recipes = parseJsonInput(els.recipesInput.value, []);
+      } catch (error) {
+        errors.push(`possible_recipes is not valid JSON: ${error.message}`);
+        return;
+      }
+
+      if (!counts.recipes && (!Array.isArray(recipes) || recipes.length === 0)) {
+        errors.push("Layout has no recipe indicator and no possible_recipes specified.");
+        return;
+      }
+
+      if (!Array.isArray(recipes)) {
+        errors.push("possible_recipes must be a list.");
+        return;
+      }
+
+      recipes.forEach((recipe, index) => {
+        if (!Array.isArray(recipe) || recipe.length !== 3) {
+          errors.push(`Recipe ${index} must contain exactly 3 ingredient indices.`);
+          return;
+        }
+        recipe.forEach((ingredient) => {
+          if (!Number.isInteger(ingredient) || ingredient < 0) {
+            errors.push(`Recipe ${index} includes invalid ingredient ${ingredient}.`);
+          } else if (!counts.ingredients.has(ingredient)) {
+            warnings.push(`Recipe ${index} uses ingredient ${ingredient}, but no matching pile exists.`);
+          }
+        });
+      });
+    }
+
+    function validateConfigList(input, expectedLength, label, errors) {
+      const value = input.value.trim();
+      if (!value) return;
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+          errors.push(`${label} must be a list.`);
+        } else if (parsed.length !== expectedLength) {
+          errors.push(`${label} length (${parsed.length}) must match ${expectedLength}.`);
+        }
+      } catch {
+        errors.push(`${label} must be JSON in the browser editor.`);
+      }
+    }
+
+    function validateLayout() {
+      const counts = countSymbols();
+      const errors = [];
+      const warnings = [];
+
+      if (!counts.agents) errors.push("Layout must have at least one agent.");
+      if (!counts.goals) errors.push("Layout must have at least one delivery zone.");
+      if (!counts.ingredientPiles) errors.push("Layout must have at least one ingredient pile.");
+      if (!counts.plates) warnings.push("No plate pile found.");
+      if (!counts.pots) warnings.push("No pot found.");
+      if (counts.pots > LIMITS.maxPots) errors.push(`Too many pots (${counts.pots} > ${LIMITS.maxPots}).`);
+      if (counts.itemConveyors > LIMITS.maxItemConveyors) errors.push(`Too many item conveyors (${counts.itemConveyors} > ${LIMITS.maxItemConveyors}).`);
+      if (counts.playerConveyors > LIMITS.maxPlayerConveyors) errors.push(`Too many player conveyors (${counts.playerConveyors} > ${LIMITS.maxPlayerConveyors}).`);
+      if (counts.movingWalls > LIMITS.maxMovingWalls) errors.push(`Too many moving walls (${counts.movingWalls} > ${LIMITS.maxMovingWalls}).`);
+      if (counts.buttons > LIMITS.maxButtons) errors.push(`Too many buttons (${counts.buttons} > ${LIMITS.maxButtons}).`);
+      if (counts.barriers > LIMITS.maxBarriers) errors.push(`Too many barriers (${counts.barriers} > ${LIMITS.maxBarriers}).`);
+      if (counts.buttons && !counts.movingWalls && !els.buttonConfigInput.value.trim()) {
+        errors.push("Buttons without button_config target moving wall 0 by default, but no moving wall exists.");
+      }
+
+      validateRecipes(counts, errors, warnings);
+      validateConfigList(els.movingWallBounceInput, counts.movingWalls, "moving_wall_bounce", errors);
+      validateConfigList(els.barrierConfigInput, counts.barriers, "barrier_config", errors);
+
+      state.validation = { counts, errors, warnings };
+      renderValidation();
+      return state.validation;
+    }
+
+    function renderValidation() {
+      const validation = state.validation || validateLayout();
+      const { counts, errors, warnings } = validation;
+
+      els.stats.innerHTML = "";
+      const statItems = [
+        ["Agents", counts.agents],
+        ["Ingredients", counts.ingredientPiles],
+        ["Pots", counts.pots],
+        ["Plates", counts.plates],
+        ["Delivery", counts.goals],
+        ["Item conv", counts.itemConveyors],
+        ["Player conv", counts.playerConveyors],
+        ["Moving", counts.movingWalls],
+        ["Buttons", counts.buttons],
+        ["Barriers", counts.barriers]
+      ];
+      for (const [label, value] of statItems) {
+        const item = document.createElement("div");
+        item.className = "stat";
+        item.innerHTML = `<strong>${value}</strong><span>${label}</span>`;
+        els.stats.append(item);
+      }
+
+      els.messages.innerHTML = "";
+      if (!errors.length && !warnings.length) {
+        els.messages.append(messageNode("ok", "Layout passes browser validation."));
+      } else {
+        errors.forEach((message) => els.messages.append(messageNode("error", message)));
+        warnings.forEach((message) => els.messages.append(messageNode("warn", message)));
+      }
+
+      els.validityPill.textContent = errors.length ? `${errors.length} error${errors.length === 1 ? "" : "s"}` : "Valid";
+      els.validityPill.className = errors.length ? "pill error" : "pill ok";
+    }
+
+    function messageNode(type, text) {
+      const node = document.createElement("div");
+      node.className = `message ${type}`;
+      node.textContent = text;
+      return node;
+    }
+
+    function updateStatus() {
+      const counts = countSymbols();
+      els.leftStatus.textContent = `${counts.agents} agents, ${counts.ingredientPiles} ingredient piles, ${counts.pots} pots`;
+      els.rightStatus.textContent = `${state.width} x ${state.height}`;
+    }
+
+    function normalizeLayoutText(text, padRows) {
+      let rows = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+      while (rows.length && rows[0] === "") rows.shift();
+      while (rows.length && rows[rows.length - 1] === "") rows.pop();
+      if (!rows.length) {
+        throw new Error("Layout text is empty.");
+      }
+      const width = Math.max(...rows.map((row) => row.length));
+      if (!padRows && rows.some((row) => row.length !== width)) {
+        throw new Error(`Rows are not rectangular: ${rows.map((row) => row.length).join(", ")}.`);
+      }
+      rows = rows.map((row) => row.padEnd(width, " "));
+      const height = rows.length;
+      if (width < LIMITS.minWidth || width > LIMITS.maxWidth || height < LIMITS.minHeight || height > LIMITS.maxHeight) {
+        throw new Error(`Layout dimensions must be ${LIMITS.minWidth}-${LIMITS.maxWidth} by ${LIMITS.minHeight}-${LIMITS.maxHeight}.`);
+      }
+      const valid = new Set([" ", "W", "A", "X", "B", "P", "R", "O", ">", "<", "^", "v", "]", "[", "{", "}", "e", "w", "n", "s", "!", "#", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+      rows.forEach((row, y) => {
+        Array.from(row).forEach((symbol, x) => {
+          if (!valid.has(symbol)) {
+            throw new Error(`Unknown symbol ${JSON.stringify(symbol)} at row ${y}, col ${x}.`);
+          }
+        });
+      });
+      return rows;
+    }
+
+    function loadRows(rows, name = null) {
+      pushUndo();
+      state.height = rows.length;
+      state.width = rows[0].length;
+      state.cells = rows.map((row) => Array.from(row, (symbol) => (symbol === "O" ? "0" : symbol)));
+      if (name) {
+        els.layoutName.value = `${name}_modified`;
+      }
+      syncSizeInputs();
+      invalidateAndRender();
+      validateLayout();
+    }
+
+    function populateBuiltins() {
+      els.builtinSelect.innerHTML = "";
+      Object.keys(BUILTIN_LAYOUTS).forEach((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        els.builtinSelect.append(option);
+      });
+      const first = Object.keys(BUILTIN_LAYOUTS)[0];
+      if (first) {
+        els.importText.value = BUILTIN_LAYOUTS[first].text;
+      }
+    }
+
+    function loadBuiltin(name) {
+      const builtin = BUILTIN_LAYOUTS[name];
+      if (!builtin) return;
+      els.importText.value = builtin.text;
+      els.recipesInput.value = JSON.stringify(builtin.recipes || [[0, 0, 0]]);
+      els.movingWallBounceInput.value = builtin.movingWallBounce ? JSON.stringify(builtin.movingWallBounce) : "";
+      els.buttonConfigInput.value = builtin.buttonConfig || "";
+      els.barrierConfigInput.value = builtin.barrierConfig ? JSON.stringify(builtin.barrierConfig) : "";
+      loadRows(normalizeLayoutText(builtin.text, true), name);
+      showToast(`Loaded ${name}`);
+    }
+
+    async function copyText(text, label) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(`${label} copied`);
+      } catch {
+        const scratch = document.createElement("textarea");
+        scratch.value = text;
+        document.body.append(scratch);
+        scratch.select();
+        document.execCommand("copy");
+        scratch.remove();
+        showToast(`${label} copied`);
+      }
+    }
+
+    function downloadCode() {
+      const name = sanitizeName(els.layoutName.value);
+      const blob = new Blob([generatedCode()], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${name}.txt`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast("Download started");
+    }
+
+    function showToast(message) {
+      els.toast.textContent = message;
+      els.toast.classList.add("visible");
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => {
+        els.toast.classList.remove("visible");
+      }, 1700);
+    }
+
+    function setActiveTab(panelId) {
+      document.querySelectorAll(".tabs button").forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === panelId);
+      });
+      document.querySelectorAll(".tab-panel").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === panelId);
+      });
+      updateOutputs();
+      if (panelId === "validatePanel") {
+        validateLayout();
+      }
+    }
+
+    function saveDraft() {
+      const draft = {
+        width: state.width,
+        height: state.height,
+        zoom: state.zoom,
+        selected: state.selected,
+        cells: state.cells,
+        layoutName: els.layoutName.value,
+        recipes: els.recipesInput.value,
+        movingWallBounce: els.movingWallBounceInput.value,
+        buttonConfig: els.buttonConfigInput.value,
+        barrierConfig: els.barrierConfigInput.value
+      };
+      try {
+        localStorage.setItem("jaxmarl-layout-editor-v3-html", JSON.stringify(draft));
+      } catch {
+        // Browsers can deny storage for local files; the editor still works.
+      }
+    }
+
+    function loadDraft() {
+      try {
+        const raw = localStorage.getItem("jaxmarl-layout-editor-v3-html");
+        if (!raw) return false;
+        const draft = JSON.parse(raw);
+        if (!Array.isArray(draft.cells)) return false;
+        state.width = draft.width;
+        state.height = draft.height;
+        state.zoom = draft.zoom || state.zoom;
+        state.cells = draft.cells;
+        state.selected = draft.selected || "W";
+        els.layoutName.value = draft.layoutName || "custom_layout";
+        els.recipesInput.value = draft.recipes || "[[0, 0, 0]]";
+        els.movingWallBounceInput.value = draft.movingWallBounce || "";
+        els.buttonConfigInput.value = draft.buttonConfig || "";
+        els.barrierConfigInput.value = draft.barrierConfig || "";
+        els.zoomInput.value = String(state.zoom);
+        syncSizeInputs();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function resetToBlank(width, height, name) {
+      pushUndo();
+      state.width = width;
+      state.height = height;
+      state.cells = blankCells(width, height);
+      els.layoutName.value = sanitizeName(name);
+      syncSizeInputs();
+      invalidateAndRender();
+      validateLayout();
+    }
+
+    function isEditingTarget(target) {
+      return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+    }
+
+    function wireEvents() {
+      els.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+      els.canvas.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        pushUndo();
+        state.painting = true;
+        state.lastPaintKey = "";
+        applyPaint(event);
+      });
+      window.addEventListener("mousemove", (event) => {
+        if (!state.painting) return;
+        applyPaint(event);
+      });
+      window.addEventListener("mouseup", () => {
+        state.painting = false;
+        state.lastPaintKey = "";
+        updateUndoRedoButtons();
+      });
+
+      els.canvas.addEventListener("mousemove", (event) => {
+        const cell = canvasCellFromEvent(event);
+        if (cell) {
+          els.leftStatus.textContent = `Cell ${cell.x}, ${cell.y}`;
+        }
+      });
+
+      els.resizeBtn.addEventListener("click", () => {
+        const width = clampInt(els.widthInput.value, LIMITS.minWidth, LIMITS.maxWidth, state.width);
+        const height = clampInt(els.heightInput.value, LIMITS.minHeight, LIMITS.maxHeight, state.height);
+        pushUndo();
+        resizeGrid(width, height);
+        validateLayout();
+      });
+      els.zoomInput.addEventListener("input", () => {
+        state.zoom = clampInt(els.zoomInput.value, 18, 72, state.zoom);
+        render();
+        saveDraft();
+      });
+      els.undoBtn.addEventListener("click", undo);
+      els.redoBtn.addEventListener("click", redo);
+      els.validateBtn.addEventListener("click", () => {
+        setActiveTab("validatePanel");
+        validateLayout();
+      });
+      els.copyCodeBtn.addEventListener("click", () => copyText(generatedCode(), "Code"));
+      els.copyLayoutBtn.addEventListener("click", () => copyText(layoutString(), "Layout"));
+      els.downloadBtn.addEventListener("click", downloadCode);
+      els.loadBuiltinBtn.addEventListener("click", () => loadBuiltin(els.builtinSelect.value));
+      els.builtinSelect.addEventListener("change", () => {
+        const builtin = BUILTIN_LAYOUTS[els.builtinSelect.value];
+        if (builtin) els.importText.value = builtin.text;
+      });
+      els.loadTextBtn.addEventListener("click", () => {
+        try {
+          const rows = normalizeLayoutText(els.importText.value, els.padRowsInput.checked);
+          loadRows(rows);
+          showToast("Layout loaded");
+        } catch (error) {
+          showToast(error.message);
+        }
+      });
+      els.newBtn.addEventListener("click", () => {
+        els.newWidthInput.value = String(state.width);
+        els.newHeightInput.value = String(state.height);
+        els.newNameInput.value = els.layoutName.value;
+        els.newDialog.showModal();
+      });
+      els.closeNewDialog.addEventListener("click", () => els.newDialog.close());
+      els.createNewBtn.addEventListener("click", () => {
+        const width = clampInt(els.newWidthInput.value, LIMITS.minWidth, LIMITS.maxWidth, 7);
+        const height = clampInt(els.newHeightInput.value, LIMITS.minHeight, LIMITS.maxHeight, 5);
+        resetToBlank(width, height, els.newNameInput.value);
+        els.newDialog.close();
+      });
+      els.loadTabBtn.addEventListener("click", () => setActiveTab("importPanel"));
+      els.exportTabBtn.addEventListener("click", () => setActiveTab("exportPanel"));
+
+      document.querySelectorAll(".tabs button").forEach((button) => {
+        button.addEventListener("click", () => setActiveTab(button.dataset.tab));
+      });
+
+      [els.layoutName, els.recipesInput, els.movingWallBounceInput, els.buttonConfigInput, els.barrierConfigInput].forEach((input) => {
+        input.addEventListener("input", () => {
+          state.validation = null;
+          updateOutputs();
+          saveDraft();
+        });
+      });
+
+      window.addEventListener("keydown", (event) => {
+        if (isEditingTarget(event.target)) return;
+        if (event.metaKey || event.ctrlKey) {
+          const key = event.key.toLowerCase();
+          if (key === "z") {
+            event.preventDefault();
+            if (event.shiftKey) redo();
+            else undo();
+          } else if (key === "y") {
+            event.preventDefault();
+            redo();
+          } else if (key === "e") {
+            event.preventDefault();
+            setActiveTab("exportPanel");
+          } else if (key === "n") {
+            event.preventDefault();
+            els.newBtn.click();
+          }
+          return;
+        }
+
+        const shortcut = shortcutToTool.get(event.key) || shortcutToTool.get(event.key.toLowerCase());
+        if (shortcut !== undefined) {
+          event.preventDefault();
+          setSelected(shortcut);
+        }
+      });
+
+      window.addEventListener("resize", render);
+    }
+
+    function init() {
+      renderToolButtons();
+      populateBuiltins();
+      if (!loadDraft()) {
+        state.cells = blankCells(state.width, state.height);
+        loadRows(normalizeLayoutText(BUILTIN_LAYOUTS.cramped_room_v2.text, true), "cramped_room_v2");
+        state.undo = [];
+        state.redo = [];
+      }
+      syncSizeInputs();
+      setSelected(state.selected);
+      wireEvents();
+      updateUndoRedoButtons();
+      updateOutputs();
+      updateStatus();
+      validateLayout();
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>
