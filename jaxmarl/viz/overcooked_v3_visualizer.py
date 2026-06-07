@@ -877,24 +877,16 @@ class OvercookedV3Visualizer:
         if link_color is None:
             link_color = jnp.array([0, 0, 0], dtype=jnp.uint8)
 
-        def _draw_link_overlay(img, color):
-            border_size = 0.08
-            img = rendering.fill_coords(
-                img, rendering.point_in_rect(0, 1, 0, border_size), color
-            )
-            img = rendering.fill_coords(
-                img, rendering.point_in_rect(0, 1, 1 - border_size, 1), color
-            )
-            img = rendering.fill_coords(
-                img, rendering.point_in_rect(0, border_size, 0, 1), color
-            )
-            return rendering.fill_coords(
-                img, rendering.point_in_rect(1 - border_size, 1, 0, 1), color
-            )
+        def _apply_link_tint(img, color):
+            alpha = 0.25
+            return (
+                (1.0 - alpha) * img.astype(jnp.float32)
+                + alpha * color.astype(jnp.float32)
+            ).round().astype(jnp.uint8)
 
         img = jax.lax.select(
             link_mask,
-            _draw_link_overlay(img, link_color),
+            _apply_link_tint(img, link_color),
             img,
         )
 
