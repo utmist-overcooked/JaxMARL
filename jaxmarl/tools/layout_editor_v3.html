@@ -1752,6 +1752,22 @@ ${args.join(",\n")}
       }
     }
 
+    function validateButtonConfig(counts, errors) {
+      const value = els.buttonConfigInput.value.trim();
+      if (!value) return;
+
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+          errors.push("button_config must be a list.");
+        } else if (parsed.length !== counts.buttons) {
+          errors.push(`button_config length (${parsed.length}) must match number of buttons (${counts.buttons}).`);
+        }
+      } catch {
+        // keep as-is for Python-native formats like [(0, ButtonAction.TOGGLE_DIRECTION)]
+      }
+    }
+
     function validateLayout() {
       const counts = countSymbols();
       const errors = [];
@@ -1775,6 +1791,7 @@ ${args.join(",\n")}
       validateRecipes(counts, errors, warnings);
       validateConfigList(els.movingWallBounceInput, counts.movingWalls, "moving_wall_bounce", errors);
       validateConfigList(els.barrierConfigInput, counts.barriers, "barrier_config", errors);
+      validateButtonConfig(counts, errors);
 
       state.validation = { counts, errors, warnings };
       renderValidation();
