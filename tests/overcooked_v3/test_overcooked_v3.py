@@ -442,6 +442,32 @@ class TestOvercookedV3Conveyors:
         env = OvercookedV3()
         assert env.enable_player_conveyors == False
 
+    def test_layout_features_enabled_by_default(self):
+        """Mechanics are enabled by default when present in the layout."""
+        item_env = OvercookedV3(layout="conveyor_demo")
+        assert item_env.enable_item_conveyors == True
+
+        player_env = OvercookedV3(layout="player_conveyor_demo")
+        assert player_env.enable_player_conveyors == True
+
+        wall_env = OvercookedV3(layout="moving_wall_bounce_demo")
+        assert wall_env.enable_moving_walls == True
+        assert wall_env.enable_buttons == True
+
+    def test_explicit_layout_feature_disable_warns(self):
+        """Explicitly disabling a present layout mechanic still works but warns."""
+        with pytest.warns(UserWarning, match="Layout contains item conveyors"):
+            item_env = OvercookedV3(
+                layout="conveyor_demo", enable_item_conveyors=False
+            )
+        assert item_env.enable_item_conveyors == False
+
+        with pytest.warns(UserWarning, match="Layout contains buttons"):
+            button_env = OvercookedV3(
+                layout="moving_wall_bounce_demo", enable_buttons=False
+            )
+        assert button_env.enable_buttons == False
+
     def test_conveyor_demo_layout(self):
         """Test conveyor demo layout loads correctly."""
         env = OvercookedV3(layout="conveyor_demo", enable_item_conveyors=True)

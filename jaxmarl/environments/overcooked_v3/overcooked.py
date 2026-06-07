@@ -2,6 +2,7 @@
 
 from enum import Enum
 from typing import List, Optional, Union, Tuple, Dict
+import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -44,6 +45,11 @@ from jaxmarl.environments.overcooked_v3.utils import (
     tree_select,
     compute_enclosed_spaces,
 )
+
+
+# =============================================================================
+# Observation Types and State Container
+# =============================================================================
 
 
 class ObservationType(str, Enum):
@@ -120,6 +126,11 @@ class State:
     new_correct_delivery: bool = False
 
 
+# =============================================================================
+# Overcooked V3 Environment
+# =============================================================================
+
+
 class OvercookedV3(MultiAgentEnv):
     """Overcooked V3 environment with pot burning, order queue, and conveyors.
 
@@ -163,6 +174,10 @@ class OvercookedV3(MultiAgentEnv):
             Return the box observation space.
     """
 
+    # -------------------------------------------------------------------------
+    # Construction and Layout Preprocessing
+    # -------------------------------------------------------------------------
+
     def __init__(
         self,
         layout: Union[str, Layout] = "cramped_room",
@@ -180,11 +195,11 @@ class OvercookedV3(MultiAgentEnv):
         order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
         order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
         # Conveyor belt settings
-        enable_item_conveyors: bool = False,
-        enable_player_conveyors: bool = False,
+        enable_item_conveyors: Optional[bool] = None,
+        enable_player_conveyors: Optional[bool] = None,
         # Moving wall and button settings
-        enable_moving_walls: bool = False,
-        enable_buttons: bool = False,
+        enable_moving_walls: Optional[bool] = None,
+        enable_buttons: Optional[bool] = None,
         # Barrier settings
         barrier_duration: Union[int, List[int]] = DEFAULT_BARRIER_DURATION,
         # Reward settings
@@ -207,10 +222,14 @@ class OvercookedV3(MultiAgentEnv):
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
             order_expiration_time: Steps before order expires
-            enable_item_conveyors: Whether item conveyors move items
-            enable_player_conveyors: Whether player conveyors push agents
-            enable_moving_walls: Whether moving walls move each step
-            enable_buttons: Whether buttons can be interacted with
+            enable_item_conveyors: Whether item conveyors move items. If None,
+                inferred from whether the layout contains item conveyors.
+            enable_player_conveyors: Whether player conveyors push agents. If
+                None, inferred from whether the layout contains player conveyors.
+            enable_moving_walls: Whether moving walls move each step. If None,
+                inferred from whether the layout contains moving walls.
+            enable_buttons: Whether buttons can be interacted with. If None,
+                inferred from whether the layout contains buttons.
             barrier_duration: Duration (steps) for timed barrier deactivation.
                 Can be int (same for all) or list of ints per barrier.
             delivery_reward: Reward for correct delivery
@@ -265,12 +284,58 @@ class OvercookedV3(MultiAgentEnv):
         self.order_expiration_time = order_expiration_time
 
         # Conveyor settings
-        self.enable_item_conveyors = enable_item_conveyors
-        self.enable_player_conveyors = enable_player_conveyors
+        layout_has_item_conveyors = len(layout.item_conveyor_info) > 0
+        if enable_item_conveyors is None:
+            self.enable_item_conveyors = layout_has_item_conveyors
+        else:
+            self.enable_item_conveyors = enable_item_conveyors
+            if layout_has_item_conveyors and not enable_item_conveyors:
+                warnings.warn(
+                    "Layout contains item conveyors, but "
+                    "enable_item_conveyors=False. Item conveyors will be inert.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        layout_has_player_conveyors = len(layout.player_conveyor_info) > 0
+        if enable_player_conveyors is None:
+            self.enable_player_conveyors = layout_has_player_conveyors
+        else:
+            self.enable_player_conveyors = enable_player_conveyors
+            if layout_has_player_conveyors and not enable_player_conveyors:
+                warnings.warn(
+                    "Layout contains player conveyors, but "
+                    "enable_player_conveyors=False. Player conveyors will be inert.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Moving wall and button settings
-        self.enable_moving_walls = enable_moving_walls
-        self.enable_buttons = enable_buttons
+        layout_has_moving_walls = len(layout.moving_wall_info) > 0
+        if enable_moving_walls is None:
+            self.enable_moving_walls = layout_has_moving_walls
+        else:
+            self.enable_moving_walls = enable_moving_walls
+            if layout_has_moving_walls and not enable_moving_walls:
+                warnings.warn(
+                    "Layout contains moving walls, but "
+                    "enable_moving_walls=False. Moving walls will be inert.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        layout_has_buttons = len(layout.button_info) > 0
+        if enable_buttons is None:
+            self.enable_buttons = layout_has_buttons
+        else:
+            self.enable_buttons = enable_buttons
+            if layout_has_buttons and not enable_buttons:
+                warnings.warn(
+                    "Layout contains buttons, but enable_buttons=False. "
+                    "Buttons will be inert.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Barrier settings
         self.barrier_duration = barrier_duration
@@ -414,6 +479,10 @@ class OvercookedV3(MultiAgentEnv):
             ]
 
         return _get_obs_shape_single(self.observation_type)
+
+    # -------------------------------------------------------------------------
+    # Reset and Random Initialization
+    # -------------------------------------------------------------------------
 
     def reset(
         self,
@@ -580,6 +649,10 @@ class OvercookedV3(MultiAgentEnv):
         # Could add more randomization here (pot contents, items on counters, etc.)
         return state
 
+    # -------------------------------------------------------------------------
+    # Environment Step Pipeline
+    # -------------------------------------------------------------------------
+
     def step_env(
         self,
         key: chex.PRNGKey,
@@ -638,6 +711,10 @@ class OvercookedV3(MultiAgentEnv):
             dones,
             {"shaped_reward": shaped_rewards_dict},
         )
+
+    # -------------------------------------------------------------------------
+    # Agent Movement, Collisions, and Button Interactions
+    # -------------------------------------------------------------------------
 
     def step_agents(
         self,
@@ -964,6 +1041,10 @@ class OvercookedV3(MultiAgentEnv):
             shaped_rewards,
         )
 
+    # -------------------------------------------------------------------------
+    # Interact Action Handling
+    # -------------------------------------------------------------------------
+
     def process_interact(
         self,
         grid: chex.Array,
@@ -998,15 +1079,15 @@ class OvercookedV3(MultiAgentEnv):
         )
         object_is_pile = object_is_plate_pile | object_is_ingredient_pile
 
-        object_is_pot = fwd_pos_in_bounds & interact_item == StaticObject.POT
-        object_is_goal = fwd_pos_in_bounds & interact_item == StaticObject.GOAL
+        object_is_pot = fwd_pos_in_bounds & (interact_item == StaticObject.POT)
+        object_is_goal = fwd_pos_in_bounds & (interact_item == StaticObject.GOAL)
         object_is_wall = fwd_pos_in_bounds & (
-            interact_item == StaticObject.WALL) | (
-            interact_item == StaticObject.MOVING_WALL
+            (interact_item == StaticObject.WALL)
+            | (interact_item == StaticObject.MOVING_WALL)
         )
         object_is_conveyor = fwd_pos_in_bounds & (
-            interact_item == StaticObject.ITEM_CONVEYOR) | (
-            interact_item == StaticObject.PLAYER_CONVEYOR
+            (interact_item == StaticObject.ITEM_CONVEYOR)
+            | (interact_item == StaticObject.PLAYER_CONVEYOR)
         )
         object_has_no_ingredients = interact_ingredients == 0
 
@@ -1166,6 +1247,10 @@ class OvercookedV3(MultiAgentEnv):
             shaped_reward,
             new_pot_timers,
         )
+
+    # -------------------------------------------------------------------------
+    # Dynamic Environment Systems
+    # -------------------------------------------------------------------------
 
     def _update_pot_timers(
         self,
@@ -1590,6 +1675,10 @@ class OvercookedV3(MultiAgentEnv):
             moving_wall_paused=new_paused,
         )
 
+    # -------------------------------------------------------------------------
+    # Order Queue
+    # -------------------------------------------------------------------------
+
     def _process_order_queue(
         self, state: State, key: chex.PRNGKey
     ) -> Tuple[State, float]:
@@ -1647,6 +1736,10 @@ class OvercookedV3(MultiAgentEnv):
             order_expirations=new_expirations,
             order_active_mask=new_active_mask,
         ), reward
+
+    # -------------------------------------------------------------------------
+    # Termination, Observations, and Spaces
+    # -------------------------------------------------------------------------
 
     def is_terminal(self, state: State) -> bool:
         """Check whether state is terminal."""
