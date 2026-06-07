@@ -644,16 +644,20 @@ class OvercookedV3(MultiAgentEnv):
 
         merged_ingredients = interact_ingredients + inventory
 
-        # Pot state
+        # Pot state. Timers live in State, not the grid's extra channel.
+        def _timer_for_pot(pot_idx):
+            pot_y, pot_x = pot_positions[pot_idx]
+            is_this_pot = (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
+            return jax.lax.select(is_this_pot, pot_timers[pot_idx], 0)
+
+        current_pot_timer = jnp.max(jax.vmap(_timer_for_pot)(jnp.arange(MAX_POTS)))
         pot_is_cooked = object_is_pot * (
             (interact_ingredients & DynamicObject.COOKED) != 0
         )
-        pot_is_cooking = object_is_pot * (interact_extra > 0) * ~pot_is_cooked
-        pot_is_burned = object_is_pot * ((interact_ingredients & DynamicObject.BURNED) != 0)
-        pot_is_idle = object_is_pot * ~pot_is_cooking * ~pot_is_cooked * ~pot_is_burned
+        pot_is_cooking = object_is_pot * (current_pot_timer > 0) * ~pot_is_cooked
+        pot_is_idle = object_is_pot * (current_pot_timer == 0) * ~pot_is_cooked
 
-        # Check if pot is ready (in burning window)
-        # In V3: dish_ready when cooking_timer is between 1 and burn_time
+        # Check if pot is ready.
         pot_is_ready = pot_is_cooked
 
         # Pickup success conditions
@@ -671,18 +675,10 @@ class OvercookedV3(MultiAgentEnv):
             + successful_dish_pickup
             + object_is_wall * ~object_has_no_ingredients * inventory_is_empty
             + object_is_conveyor * ~object_has_no_ingredients * inventory_is_empty
-        )
-
-        # Ingredient pickup reward (picking up ingredient from pile)
-        if self.shaped_rewards_enabled:
-            successful_ingredient_pickup = object_is_ingredient_pile * inventory_is_empty
-            shaped_reward += (
-                successful_ingredient_pickup
-                * SHAPED_REWARDS["INGREDIENT_PICKUP"]
-            )        
+        )      
 
         # Pot placement
-        pot_full = DynamicObject.ingredient_count(interact_ingredients) == 3
+        pot_full = DynamicObject.ingredient_count(interact_ingredients) == 2
 
         # Check same ingredient type for pot
         pot_ingredient_type = DynamicObject.get_ingredient_type(interact_ingredients)
@@ -702,10 +698,12 @@ class OvercookedV3(MultiAgentEnv):
             )
 
         # Drop on counter/conveyor
-        successful_drop = (
-            (object_is_wall | object_is_conveyor) * object_has_no_ingredients * ~inventory_is_empty
-            + successful_pot_placement
+        successful_counter_drop = (
+            (object_is_wall | object_is_conveyor)
+            * object_has_no_ingredients
+            * ~inventory_is_empty
         )
+        successful_drop = successful_counter_drop | successful_pot_placement
 
         # Delivery
         successful_delivery = object_is_goal * inventory_is_dish
@@ -717,12 +715,37 @@ class OvercookedV3(MultiAgentEnv):
             + object_is_ingredient_pile * StaticObject.get_ingredient(interact_item)
         )
 
+        # Ingredient pickup reward. Infinite ingredient piles are easy to farm
+        # by repeatedly picking up and dropping ingredients, so only pay for a
+        # pile pickup while the current recipe still needs that ingredient in
+        # play. Ingredients already on counters, in pots, or in inventories count
+        # toward the recipe demand.
+        successful_ingredient_pickup = object_is_ingredient_pile * inventory_is_empty
+        ingredient_selector = pile_ingredient | (pile_ingredient << 1)
+        safe_pile_ingredient = jnp.maximum(pile_ingredient, 1)
+        ingredients_in_grid = jnp.sum(
+            (grid[:, :, 1] & ingredient_selector) // safe_pile_ingredient
+        )
+        ingredients_in_inventories = jnp.sum(
+            (all_inventories & ingredient_selector) // safe_pile_ingredient
+        )
+        ingredients_needed = (recipe & ingredient_selector) // safe_pile_ingredient
+        is_ingredient_pickup_useful = (
+            ingredients_in_grid + ingredients_in_inventories
+        ) < ingredients_needed
+        if self.shaped_rewards_enabled:
+            shaped_reward += (
+                successful_ingredient_pickup
+                * is_ingredient_pickup_useful
+                * SHAPED_REWARDS["INGREDIENT_PICKUP"]
+            )        
+
         new_ingredients = (
             successful_drop * merged_ingredients + no_effect * interact_ingredients
         )
 
         # Start cooking when pot becomes full
-        pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
+        pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 2
         auto_cook = pot_is_idle & pot_full_after_drop
 
         # Update pot timer
@@ -770,11 +793,25 @@ class OvercookedV3(MultiAgentEnv):
         if self.shaped_rewards_enabled:
             inventory_is_plate_now = new_inventory == DynamicObject.PLATE
             successful_plate_pickup = successful_pickup * inventory_is_plate_now
-            num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
-            num_nonempty_pots = jnp.sum(
-                (grid[:, :, 0] == StaticObject.POT) & (grid[:, :, 1] != 0)
+            # Count plates already committed to the task, whether held or
+            # dropped on counters. The previous gate only counted inventories,
+            # so pickup->drop->pickup from a plate pile could repeatedly earn
+            # PLATE_PICKUP while a full pot existed.
+            num_plates_in_grid = jnp.sum((grid[:, :, 1] & DynamicObject.PLATE) != 0)
+            num_plates_in_inventory = jnp.sum(
+                (all_inventories & DynamicObject.PLATE) != 0
             )
-            is_plate_pickup_useful = num_plates_in_inventory < num_nonempty_pots
+            num_plates_in_play = num_plates_in_grid + num_plates_in_inventory
+            pot_ingredient_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
+                grid[:, :, 1]
+            )
+            full_unburned_pots = (
+                (grid[:, :, 0] == StaticObject.POT)
+                & (pot_ingredient_counts == 2)
+                & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
+            )
+            num_useful_pots = jnp.sum(full_unburned_pots)
+            is_plate_pickup_useful = num_plates_in_play < num_useful_pots
             shaped_reward += (
                 is_plate_pickup_useful
                 * successful_plate_pickup
@@ -782,9 +819,29 @@ class OvercookedV3(MultiAgentEnv):
             )
 
         correct_delivery = successful_delivery & is_correct_recipe
+        event_metrics = jnp.array(
+            (
+                auto_cook & successful_pot_placement,
+                successful_pot_placement,
+                successful_pickup,
+                successful_counter_drop,
+                successful_dish_pickup,
+                0.0,  # Filled in after movement with progress toward delivery.
+                correct_delivery,
+            ),
+            dtype=jnp.float32,
+        )
 
-        return new_grid, new_agent, correct_delivery, reward, shaped_reward, new_pot_timers
-
+        return (
+            new_grid,
+            new_agent,
+            correct_delivery,
+            reward,
+            shaped_reward,
+            event_metrics,
+            new_pot_timers,
+        )
+    
     def _update_pot_timers(
         self,
         grid: chex.Array,
@@ -803,9 +860,9 @@ class OvercookedV3(MultiAgentEnv):
             pot_cell = grid[pot_y, pot_x]
             pot_ingredients = pot_cell[1]
 
-            # Check if pot is full (has 3 ingredients)
+            # Check if pot is full (has 2 ingredients)
             ingredient_count = DynamicObject.ingredient_count(pot_ingredients)
-            pot_is_full = ingredient_count == 3
+            pot_is_full = ingredient_count == 2
             pot_is_cooking = (current_timer > 0) & pot_is_full
             pot_already_cooked = (pot_ingredients & DynamicObject.COOKED) != 0
 
@@ -986,7 +1043,7 @@ class OvercookedV3(MultiAgentEnv):
         # Generate random order type (1 = onion soup, 2 = tomato soup if num_ingredients > 1)
         key, subkey = jax.random.split(key)
         new_order_type = jax.random.randint(
-            subkey, (), 1, min(self.layout.num_ingredients + 1, 3)
+            subkey, (), 1, min(self.layout.num_ingredients + 1, 2)
         )
 
         should_add = should_generate & has_empty_slot
@@ -1086,7 +1143,7 @@ class OvercookedV3(MultiAgentEnv):
 
         def _ingredient_layers(ingredients):
             shift = jnp.array([0, 1] + [2 * (i + 1) for i in range(num_ingredients)])
-            mask = jnp.array([0x1, 0x1] + [0x3] * num_ingredients)
+            mask = jnp.array([0x1, 0x1] + [0x2] * num_ingredients)
 
             layers = ingredients[..., None] >> shift
             layers = layers & mask
