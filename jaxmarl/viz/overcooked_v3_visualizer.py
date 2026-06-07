@@ -470,10 +470,30 @@ class OvercookedV3Visualizer:
             return img
 
         def _render_moving_wall(cell, img):
-            """Render moving wall - red block."""
+            """Render moving wall with current movement direction."""
             img = rendering.fill_coords(
                 img, rendering.point_in_rect(0, 1, 0, 1), COLORS["red"]
             )
+
+            direction = cell[2] & 0x3
+            direction_reordering = jnp.array([1, 3, 2, 0])
+            dir_idx = direction_reordering[direction]
+
+            arrow_tail_fn = rendering.point_in_rect(0.55, 0.8, 0.43, 0.57)
+            arrow_head_fn = rendering.point_in_triangle(
+                (0.25, 0.5),
+                (0.62, 0.25),
+                (0.62, 0.75),
+            )
+            arrow_tail_fn = rendering.rotate_fn(
+                arrow_tail_fn, cx=0.5, cy=0.5, theta=0.5 * math.pi * dir_idx
+            )
+            arrow_head_fn = rendering.rotate_fn(
+                arrow_head_fn, cx=0.5, cy=0.5, theta=0.5 * math.pi * dir_idx
+            )
+            img = rendering.fill_coords(img, arrow_tail_fn, COLORS["white"])
+            img = rendering.fill_coords(img, arrow_head_fn, COLORS["white"])
+
             # Render any item sitting on the wall
             img = OvercookedV3Visualizer._render_dynamic_item(cell[1], img)
             return img
