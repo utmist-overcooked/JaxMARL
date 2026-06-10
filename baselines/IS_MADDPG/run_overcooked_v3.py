@@ -31,9 +31,9 @@ from train import save_checkpoint, save_checkpoint_zip, DEFAULT_CONFIG
 
 LAYOUTS = [
     "cramped_room",
-    "asymmetric_advantages",
-    "coordination_ring",
-    "forced_coordination",
+    "asymm_advantages",
+    "coord_ring",
+    "forced_coord",
     "counter_circuit",
 ]
 
