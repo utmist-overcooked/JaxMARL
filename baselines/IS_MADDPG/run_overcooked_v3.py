@@ -7,6 +7,7 @@ Usage:
     python run_overcooked_v3.py --layout asymmetric_advantages
     python run_overcooked_v3.py --layout coordination_ring --num_envs 16 --wandb
     python run_overcooked_v3.py --total_timesteps 50000  # quick smoke test
+    python run_overcooked_v3.py --num_envs 64 --total_timesteps 8_000_000 --max_steps 400
 """
 
 import argparse
@@ -124,6 +125,7 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         # ── Training schedule ────────────────────────────────────────────
         "TOTAL_TIMESTEPS":  args.total_timesteps,
         "NUM_ENVS":         args.num_envs,
+        "MAX_STEPS":        args.max_steps,
         "BATCH_SIZE":       128,
         "BUFFER_SIZE":      2_000_000,
         "LEARNING_STARTS":  5_000,
@@ -1067,6 +1069,10 @@ def main():
         help="Number of parallel environments"
     )
     parser.add_argument(
+        "--max_steps", type=int, default=400,
+        help="Maximum steps per episode"
+    )
+    parser.add_argument(
         "--seed", type=int, default=4,
         help="Random seed"
     )
@@ -1123,7 +1129,7 @@ def main():
     # ── Instantiate envs ─────────────────────────────────────────────
     # env_vec is vmapped in run() — we just pass the base instance
     # env_eval is used single-threaded for greedy evaluation
-    env_vec  = OvercookedV3(layout=args.layout)
+    env_vec  = OvercookedV3(layout=args.layout, max_steps=args.max_steps)
     # env_eval = OvercookedV3(layout=args.layout)
 
     # ── Run ──────────────────────────────────────────────────────────
