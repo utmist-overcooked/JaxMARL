@@ -338,6 +338,41 @@ def _checkpoint_policy_step(network: CommActorRNN, action_dim: int):
     return policy_step
 
 
+def checkpoint_updates(num_updates: int, checkpoint_count: int) -> tuple[int, ...]:
+    if num_updates <= 0 or checkpoint_count <= 0:
+        return ()
+
+    count = min(num_updates, checkpoint_count)
+    updates = np.rint(np.linspace(1, num_updates, count)).astype(np.int32)
+    return tuple(sorted({int(update) for update in updates}))
+
+
+def checkpoint_actor_paths(
+    *,
+    wandb_dir: str,
+    run_name: str,
+    updates: Sequence[int],
+) -> list[tuple[int, Path]]:
+    wanted_updates = set(int(update) for update in updates)
+    models_dir = Path(wandb_dir) / "models"
+    if not models_dir.exists():
+        return []
+
+    paths = []
+    for ckpt_dir in models_dir.iterdir():
+        if not ckpt_dir.is_dir() or not ckpt_dir.name.startswith(f"{run_name}_"):
+            continue
+        for actor_path in ckpt_dir.glob("*_actor.safetensors"):
+            try:
+                update = int(actor_path.name.split("_", 1)[0])
+            except ValueError:
+                continue
+            if update in wanted_updates:
+                paths.append((update, actor_path))
+
+    return sorted(paths, key=lambda item: item[0])
+
+
 def _annotate_checkpoint_frame(
     frame,
     *,
@@ -484,6 +519,7 @@ def render_and_log_checkpoint_gif(
     update: int,
     run_name: str,
     checkpoint_interval: int,
+    rollout_index: int | None = None,
 ) -> None:
     checkpoint_gif = config.get("CHECKPOINT_GIF", False)
     assert isinstance(checkpoint_gif, bool), (
@@ -519,7 +555,8 @@ def render_and_log_checkpoint_gif(
     if config["WANDB_MODE"] == "disabled" or wandb.run is None:
         return
 
-    rollout_index = max(update // checkpoint_interval - 1, 0)
+    if rollout_index is None:
+        rollout_index = max(update // checkpoint_interval - 1, 0)
     media_key = config.get("CHECKPOINT_GIF_MEDIA_KEY") or "checkpoint_rollouts/rollout"
     wandb.log(
         {
@@ -630,7 +667,10 @@ def make_train(config, monitor=None):
         dim_hist = jnp.stack(dim_hists, axis=0)
         return code_counts, dim_hist, unique_codes, entropy, max_frac
 
-    checkpoint_interval = max(int(config["NUM_UPDATES"]) // 10, 1)
+    checkpoint_count = int(config.get("CHECKPOINT_GIF_COUNT", 10))
+    checkpoint_update_set = set(
+        checkpoint_updates(int(config["NUM_UPDATES"]), checkpoint_count)
+    )
     checkpoint_dir = os.path.join(config["WANDB_DIR"], "models")
     layout_name = config["ENV_KWARGS"]["layout"]
 
@@ -1181,7 +1221,7 @@ def make_train(config, monitor=None):
                 # Periodic checkpointing
                 if (
                     not config.get("DISABLE_CHECKPOINTS", False)
-                    and updates % checkpoint_interval == 0
+                    and updates in checkpoint_update_set
                 ):
                     run_name = wandb.run.name if wandb.run else "offline"
                     date_str = datetime.datetime.now().strftime("%Y%m%d")
@@ -1324,6 +1364,10 @@ def single_run(config):
     os.makedirs(save_dir, exist_ok=True)
 
     actor_state, critic_state = out["runner_state"][0]
+    run_name = wandb.run.name if wandb.run else "offline"
+    gif_checkpoint_count = int(config.get("CHECKPOINT_GIF_COUNT", 10))
+    gif_checkpoint_updates = checkpoint_updates(num_updates, gif_checkpoint_count)
+
     OmegaConf.save(
         config,
         os.path.join(
@@ -1348,15 +1392,38 @@ def single_run(config):
         print(f"Saved actor params to {actor_path}")
         print(f"Saved critic params to {critic_path}")
         if checkpoint_gif:
-            run_name = wandb.run.name if wandb.run else "offline"
             gif_run_name = f"{run_name}_vmap{i}" if num_seeds > 1 else run_name
-            render_and_log_checkpoint_gif(
-                actor_params=actor_params,
-                config=config,
-                update=num_updates,
-                run_name=gif_run_name,
-                checkpoint_interval=max(num_updates, 1),
+            checkpoint_paths = checkpoint_actor_paths(
+                wandb_dir=wandb_dir,
+                run_name=run_name,
+                updates=gif_checkpoint_updates,
             )
+            if checkpoint_paths:
+                for rollout_index, (update, checkpoint_path) in enumerate(
+                    checkpoint_paths
+                ):
+                    checkpoint_actor_params = load_params(checkpoint_path)
+                    render_and_log_checkpoint_gif(
+                        actor_params=checkpoint_actor_params,
+                        config=config,
+                        update=update,
+                        run_name=gif_run_name,
+                        checkpoint_interval=max(num_updates, 1),
+                        rollout_index=rollout_index,
+                    )
+            else:
+                print(
+                    "No periodic checkpoint actors found for GIF rendering; "
+                    "rendering the final actor only."
+                )
+                render_and_log_checkpoint_gif(
+                    actor_params=actor_params,
+                    config=config,
+                    update=num_updates,
+                    run_name=gif_run_name,
+                    checkpoint_interval=max(num_updates, 1),
+                    rollout_index=0,
+                )
 
 
 def tune(config):

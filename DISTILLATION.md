@@ -93,8 +93,8 @@ Major changes:
 - Uses env-level shuffling so both agents from each env remain paired during
   PPO reruns.
 - Logs FSQ usage metrics.
-- Saves periodic safetensors checkpoints and can render a final checkpoint GIF
-  after the training JIT returns.
+- Saves periodic safetensors checkpoints and can render checkpoint GIFs after
+  the training JIT returns.
 
 Logged communication/distillation metrics include:
 
@@ -122,13 +122,15 @@ Hydra config for FSQ distillation. Key fields:
 "TEACHER_ACTOR_PATH": "/path/to/full_obs_actor.safetensors"
 "DISABLE_CHECKPOINTS": False
 "CHECKPOINT_GIF": True
+"CHECKPOINT_GIF_COUNT": 10
 ```
 
 The current local default points at an `asymm_advantages_recipes_right` teacher
 checkpoint. Override `TEACHER_ACTOR_PATH` for other layouts or machines.
-Checkpoint GIF rendering is intentionally performed after the training JIT
-returns, not inside the checkpoint callback, to avoid nesting extra JAX render
-work inside `jax.debug.callback`.
+`CHECKPOINT_GIF_COUNT` controls how many evenly spaced checkpoint actors are
+saved and rendered into GIFs per run. GIF rendering is intentionally performed
+after the training JIT returns, not inside the checkpoint callback, to avoid
+nesting extra JAX render work inside `jax.debug.callback`.
 
 ### `slurm_scripts/mappo_rnn_overcooked_v3_fsq_distill.sbatch`
 
