@@ -16,6 +16,7 @@ import time
 import numpy as np
 import jax
 import jax.numpy as jnp
+import csv
 
 from jaxmarl.environments.overcooked_v3.overcooked import OvercookedV3, State
 
@@ -537,7 +538,9 @@ def run(config: dict, env_vec: OvercookedV3,
     # 5. Metrics
     # ------------------------------------------------------------------
     ep_returns   = np.zeros((num_envs, num_agents), dtype=np.float32)
+    ep_lengths   = np.zeros((num_envs,), dtype=np.int32)
     all_returns  = []
+    all_lengths  = []
     all_deliveries = []
     ep_deliveries  = np.zeros((num_envs,), dtype=np.float32)
     last_metrics = None
@@ -679,16 +682,51 @@ def run(config: dict, env_vec: OvercookedV3,
         t_buffer += time.time() - t0
 
         # ── Reward type tracking ──────────────────────────────────────
-        if "shaped_reward" in info:
+        # Prefer explicit event flags if provided by the environment via
+        # info["reward_events"]. Fall back to shaped-reward inference.
+        if "reward_events" in info:
+            re = info["reward_events"]
+            for e in range(num_envs):
+                for ev in list(reward_type_counts.keys()):
+                    count = 0.0
+                    # Case A: re is mapping agent_id -> {event: array}
+                    try:
+                        if isinstance(re, dict) and agent_ids[0] in re:
+                            for aid in agent_ids:
+                                sub = re.get(aid, {})
+                                if isinstance(sub, dict) and ev in sub:
+                                    count += float(jnp.array(sub[ev])[e])
+                        # Case B: re is mapping event -> agent mapping or event -> array
+                        elif isinstance(re, dict) and ev in re:
+                            val = re[ev]
+                            if isinstance(val, dict):
+                                for aid in agent_ids:
+                                    if aid in val:
+                                        count += float(jnp.array(val[aid])[e])
+                            else:
+                                # val might be per-agent array or per-env scalar array
+                                try:
+                                    arr = jnp.array(val)
+                                    # If arr has agent axis, try summing across agents
+                                    if arr.ndim == 2:
+                                        count += float(arr[:, :][e].sum())
+                                    else:
+                                        count += float(arr[e])
+                                except Exception:
+                                    pass
+                    except Exception:
+                        count = 0.0
+
+                    ep_reward_types[ev][e] += count
+
+        elif "shaped_reward" in info:
             shaped = info["shaped_reward"]
             for e in range(num_envs):
                 aid0 = agent_ids[0]
                 sv = float(jnp.array(shaped[aid0])[e])
-
-                sv = float(jnp.array(shaped[aid0])[e])
                 rv = float(jnp.array(rewards_dict[aid0])[e])
 
-                # Infer reward type from value
+                # Infer reward type from shaped value
                 if sv == 12.0:
                     ep_reward_types["soup_in_dish"][e] += 1
                 elif sv == 3.0:
@@ -697,21 +735,21 @@ def run(config: dict, env_vec: OvercookedV3,
                     ep_reward_types["placement_in_pot"][e] += 1
                 elif sv == 4.0:
                     ep_reward_types["plate_pickup"][e] += 1
-                # elif rv == -5.0:
-                #     ep_reward_types["burn_penalty"][e] += 1  
 
-                rv = float(jnp.array(rewards_dict[aid0])[e])
                 if rv >= 20.0:
-                    ep_reward_types["delivery"][e] += 1                          
+                    ep_reward_types["delivery"][e] += 1
 
         # ── Episode tracking ─────────────────────────────────────────
         ep_returns += rewards_all
+        ep_lengths += 1
         for e in range(num_envs):
             if dones_all[e]:
                 all_returns.append(float(ep_returns[e].sum()))
+                all_lengths.append(int(ep_lengths[e]))
                 all_deliveries.append(float(ep_deliveries[e]))  # deliveries this episode
                 ep_returns[e]   = 0.0
                 ep_deliveries[e] = 0.0
+                ep_lengths[e] = 0
                 for k in reward_type_counts:
                     reward_type_history[k].append(float(ep_reward_types[k][e]))
                     reward_type_counts[k] += ep_reward_types[k][e]
@@ -958,6 +996,59 @@ def run(config: dict, env_vec: OvercookedV3,
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         print(f"\nPlot saved → {plot_path}")
         plt.show()
+
+    # --- Per-episode event counts (non-cumulative) and actions ---
+    if all_lengths:
+        hist_dir = ckpt_dir if ckpt_dir else "."
+        os.makedirs(hist_dir, exist_ok=True)
+
+        # Events to include (match DEBUG_HISTOGRAM.md semantics)
+        event_cols = ["placement_in_pot", "plate_pickup", "soup_in_dish", "delivery"]
+
+        csv_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["episode", "actions", *event_cols])
+            n_eps = len(all_lengths)
+            # prepare per-event lists (pad with zeros if necessary)
+            per_event = {}
+            for ev in event_cols:
+                vals = reward_type_history.get(ev, [])
+                if len(vals) < n_eps:
+                    vals = vals + [0.0] * (n_eps - len(vals))
+                per_event[ev] = vals
+
+            for i in range(n_eps):
+                row = [i + 1, int(all_lengths[i])]
+                row += [int(per_event[ev][i]) for ev in event_cols]
+                writer.writerow(row)
+
+        try:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            episodes = np.arange(1, len(all_lengths) + 1)
+
+            # plot each event as a line (per-episode counts, non-cumulative)
+            for ev in event_cols:
+                vals = reward_type_history.get(ev, [])
+                if len(vals) < len(episodes):
+                    vals = vals + [0.0] * (len(episodes) - len(vals))
+                ax.plot(episodes, vals, marker="o", linewidth=1.2, label=ev.replace("_", " "))
+
+            # actions as scatter for context
+            ax.scatter(episodes, all_lengths, s=6, alpha=0.4, color="k", label="actions (steps)")
+
+            ax.set_title(f"Per-episode event counts — IS-MADDPG / {config['LAYOUT']}")
+            ax.set_xlabel("Episode")
+            ax.set_ylabel("Count (per episode)")
+            ax.grid(alpha=0.3)
+            ax.legend()
+            fig.tight_layout()
+            png_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.png")
+            fig.savefig(png_path, dpi=150, bbox_inches="tight")
+            print(f"Saved episode-event CSV to {csv_path} and {png_path}")
+            plt.show()
+        except Exception as exc:
+            print(f"Saved episode-event CSV to {csv_path}; plot skipped: {exc}")
     
     # ---------------------------------------------------------------------------
     # Reward type histograms
