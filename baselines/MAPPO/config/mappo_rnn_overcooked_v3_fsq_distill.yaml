@@ -1,0 +1,85 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_fsq_distill/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+"ENV_KWARGS":
+  "layout": "asymm_advantages_recipes_right"
+  "agent_view_size": 2
+  "shaped_rewards": True
+  "random_agent_positions": True
+  "max_steps": 400
+
+"TEACHER_ACTOR_PATH": "/home/tangzach/JaxMARL/outputs/overcookedv3-mappo-full-obs/models/mappo_v3_full_obs_full_asymm_advantages_recipes_right_20260527/150_actor.safetensors"
+"DISTILL_COEF": 1.0
+"DISTILL_TEMPERATURE": 1.0
+"DISTILL_DECAY_FRACTION": 0.30
+
+"FSQ_LEVELS": [5, 5, 5]
+
+"LR": 0.00025
+"ANNEAL_LR": True
+"LR_WARMUP": 0.05
+
+"NUM_ENVS": 256
+"NUM_STEPS": 256
+"UPDATE_EPOCHS": 4
+"NUM_MINIBATCHES": 64
+
+"TOTAL_TIMESTEPS": 3e7
+"REW_SHAPING_HORIZON": 1.5e7
+"SHAPED_REWARD_SCALE": 1.0
+
+"FC_DIM_SIZE": 64
+"GRU_HIDDEN_DIM": 128
+
+"CLIP_EPS": 0.2
+"ENT_COEF": 0.04
+"GAMMA": 0.99
+"GAE_LAMBDA": 0.95
+"VF_COEF": 0.5
+"MAX_GRAD_NORM": 0.5
+"ACTIVATION": "relu"
+"SEED": 0
+"NUM_SEEDS": 1
+
+"ENTITY": ""
+"PROJECT": ""
+"WANDB_MODE": "disabled"
+"WANDB_RUN_NAME": ""
+"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_fsq_distill"
+"USE_RICH_MONITOR": True
+"DISABLE_CHECKPOINTS": False
+"CHECKPOINT_GIF": True
+"CHECKPOINT_GIF_OUTPUT_DIR": ""
+"CHECKPOINT_GIF_MAX_STEPS": 300
+"CHECKPOINT_GIF_EPSILON": 0.0
+"CHECKPOINT_GIF_SEED": 0
+"CHECKPOINT_GIF_FPS": 8
+"CHECKPOINT_GIF_TILE_SIZE": 32
+"CHECKPOINT_GIF_MEDIA_KEY": "checkpoint_rollouts/rollout"
+
+# CARBS sweep
+"TUNE": False
+"CARBS_NUM_TRIALS": 20
+
+"CARBS_SWEEP":
+  "LR":
+    space: "log"
+    scale: 0.5
+    min: 1.0e-4
+    max: 1.0e-2
+  "CLIP_EPS":
+    space: "linear"
+    scale: 0.1
+    min: 0.05
+    max: 0.5
+  "ENT_COEF":
+    space: "log"
+    scale: 0.5
+    min: 1.0e-5
+    max: 0.1
+  "GAE_LAMBDA":
+    space: "linear"
+    scale: 0.05
+    min: 0.8
+    max: 1.0

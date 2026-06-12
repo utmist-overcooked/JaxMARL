@@ -1,0 +1,87 @@
+#!/bin/bash
+#SBATCH -J mappo_fsq_distill
+#SBATCH -o /home/tangzach/JaxMARL/.worktrees/codex/overcooked-fsq-distill/outputs/logs/%x.%j.out
+#SBATCH -e /home/tangzach/JaxMARL/.worktrees/codex/overcooked-fsq-distill/outputs/logs/%x.%j.err
+#SBATCH -p base_suma_rtx3090
+#SBATCH -q base_qos
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=12:00:00
+#SBATCH --exclude=node19,node13,node16,node08,node10,node21,node14,node04,node05
+
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-/home/tangzach/JaxMARL/.worktrees/codex/overcooked-fsq-distill}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/scratch/tangzach/jaxmarl}"
+
+# shellcheck disable=SC1091
+source "${PROJECT_DIR}/venv/bin/activate"
+
+export PYTHONUNBUFFERED=1
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+export JAX_PLATFORMS="${JAX_PLATFORMS:-cuda,cpu}"
+export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-${OUTPUT_ROOT}/wandb-cache}"
+export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-${OUTPUT_ROOT}/wandb-config}"
+
+MODE="${MODE:-full}"
+LAYOUT="${LAYOUT:-asymm_advantages_recipes_right}"
+NUM_ENVS="${NUM_ENVS:-2048}"
+NUM_STEPS="${NUM_STEPS:-256}"
+NUM_MINIBATCHES="${NUM_MINIBATCHES:-64}"
+UPDATE_EPOCHS="${UPDATE_EPOCHS:-4}"
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000000}"
+REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON:-50000000}"
+WANDB_MODE="${WANDB_MODE:-online}"
+WANDB_PROJECT="${WANDB_PROJECT:-overcookedv3-mappo-fsq-distill}"
+DISABLE_CHECKPOINTS="${DISABLE_CHECKPOINTS:-False}"
+CHECKPOINT_GIF="${CHECKPOINT_GIF:-True}"
+TEACHER_ACTOR_PATH="${TEACHER_ACTOR_PATH:-/home/tangzach/JaxMARL/outputs/overcookedv3-mappo-full-obs/models/mappo_v3_full_obs_full_asymm_advantages_recipes_right_20260527/150_actor.safetensors}"
+WANDB_DIR="${WANDB_DIR:-${OUTPUT_ROOT}/${WANDB_PROJECT}}"
+CHECKPOINT_GIF_OUTPUT_DIR="${CHECKPOINT_GIF_OUTPUT_DIR:-${WANDB_DIR}/checkpoint_rollouts}"
+CHECKPOINT_GIF_MAX_STEPS="${CHECKPOINT_GIF_MAX_STEPS:-300}"
+CHECKPOINT_GIF_EPSILON="${CHECKPOINT_GIF_EPSILON:-0}"
+CHECKPOINT_GIF_SEED="${CHECKPOINT_GIF_SEED:-0}"
+CHECKPOINT_GIF_FPS="${CHECKPOINT_GIF_FPS:-8}"
+CHECKPOINT_GIF_TILE_SIZE="${CHECKPOINT_GIF_TILE_SIZE:-32}"
+RUN_DIR="${WANDB_DIR}/runs/${MODE}_${LAYOUT}_${SLURM_JOB_ID:-manual}"
+
+mkdir -p "${OUTPUT_ROOT}/logs" "${WANDB_DIR}/models" "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR" "$CHECKPOINT_GIF_OUTPUT_DIR"
+
+echo "START: $(date)"
+echo "HOST: $(hostname)"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+echo "PROJECT_DIR=$PROJECT_DIR"
+echo "WANDB_DIR=$WANDB_DIR"
+echo "TEACHER_ACTOR_PATH=$TEACHER_ACTOR_PATH"
+echo "CHECKPOINT_GIF=$CHECKPOINT_GIF"
+echo "CHECKPOINT_GIF_OUTPUT_DIR=$CHECKPOINT_GIF_OUTPUT_DIR"
+echo "CHECKPOINT_GIF_MAX_STEPS=$CHECKPOINT_GIF_MAX_STEPS"
+echo "CHECKPOINT_GIF_EPSILON=$CHECKPOINT_GIF_EPSILON"
+
+env -u LD_LIBRARY_PATH python -u "${PROJECT_DIR}/baselines/MAPPO/mappo_rnn_overcooked_v3_fsq_distill.py" \
+    hydra.run.dir="$RUN_DIR" \
+    hydra.output_subdir=null \
+    ENV_KWARGS.layout="$LAYOUT" \
+    TEACHER_ACTOR_PATH="$TEACHER_ACTOR_PATH" \
+    TOTAL_TIMESTEPS="$TOTAL_TIMESTEPS" \
+    REW_SHAPING_HORIZON="$REW_SHAPING_HORIZON" \
+    NUM_ENVS="$NUM_ENVS" \
+    NUM_STEPS="$NUM_STEPS" \
+    NUM_MINIBATCHES="$NUM_MINIBATCHES" \
+    UPDATE_EPOCHS="$UPDATE_EPOCHS" \
+    WANDB_MODE="$WANDB_MODE" \
+    ENTITY=null \
+    PROJECT="$WANDB_PROJECT" \
+    WANDB_DIR="$WANDB_DIR" \
+    "++WANDB_RUN_NAME=mappo_v3_fsq_distill_${MODE}_${LAYOUT}" \
+    USE_RICH_MONITOR=False \
+    "++DISABLE_CHECKPOINTS=$DISABLE_CHECKPOINTS" \
+    CHECKPOINT_GIF="$CHECKPOINT_GIF" \
+    CHECKPOINT_GIF_OUTPUT_DIR="$CHECKPOINT_GIF_OUTPUT_DIR" \
+    CHECKPOINT_GIF_MAX_STEPS="$CHECKPOINT_GIF_MAX_STEPS" \
+    CHECKPOINT_GIF_EPSILON="$CHECKPOINT_GIF_EPSILON" \
+    CHECKPOINT_GIF_SEED="$CHECKPOINT_GIF_SEED" \
+    CHECKPOINT_GIF_FPS="$CHECKPOINT_GIF_FPS" \
+    CHECKPOINT_GIF_TILE_SIZE="$CHECKPOINT_GIF_TILE_SIZE"
+
+echo "END: $(date)"
