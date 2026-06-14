@@ -2,6 +2,7 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jaxmarl import make
 from jaxmarl.environments.overcooked_v3.common import Actions
@@ -233,4 +234,115 @@ class TestTimedBarriers:
         )
         assert state.agents.pos.y[0] == pos_before_y, (
             "Agent should be blocked by reactivated barrier"
+        )
+
+
+class TestPressurePlates:
+    """Pressure plates (TOGGLE_BARRIER) open linked barriers while an agent
+    stands on them and re-close them the moment every agent steps off."""
+
+    def _make(self, layout="pressure_plate_demo", **kwargs):
+        env = make("overcooked_v3", layout=layout, **kwargs)
+        obs, state = env.reset(jax.random.PRNGKey(0))
+        return env, state
+
+    def _place(self, state, idx, y, x):
+        """Teleport agent `idx` to (y, x) without going through movement/collision."""
+        pos = state.agents.pos
+        pos = pos.replace(x=pos.x.at[idx].set(x), y=pos.y.at[idx].set(y))
+        return state.replace(agents=state.agents.replace(pos=pos))
+
+    def test_walking_onto_plate_opens_then_off_recloses(self):
+        """End-to-end: agent_0 starts adjacent to plate 0, which is linked to
+        barrier 1. Stepping on opens it; stepping off re-closes it."""
+        env, state = self._make("pressure_plate_demo")
+
+        # Plate 0 links to barrier 1 (see pressure_plate_config in layouts.py).
+        assert bool(state.barrier_active[1]), "barrier 1 starts closed"
+
+        # agent_0 starts at (y=1, x=4); plate 0 is the floor cell to its left.
+        _, state, _, _, _ = env.step_env(
+            jax.random.PRNGKey(1), state, {"agent_0": int(Actions.left), "agent_1": 4}
+        )
+        assert bool(state.pressure_plate_toggled[0]), "plate 0 should read as pressed"
+        assert not bool(state.barrier_active[1]), "barrier 1 should open while pressed"
+
+        # Step back off the plate.
+        _, state, _, _, _ = env.step_env(
+            jax.random.PRNGKey(2), state, {"agent_0": int(Actions.right), "agent_1": 4}
+        )
+        assert not bool(state.pressure_plate_toggled[0]), "plate 0 no longer pressed"
+        assert bool(state.barrier_active[1]), "barrier 1 should re-close on release"
+
+    def test_plate_press_and_release_via_processor(self):
+        """Unit test of _process_pressure_plates: press opens, release closes."""
+        env, state = self._make("pressure_plate_demo")
+        home = (int(state.agents.pos.y[0]), int(state.agents.pos.x[0]))
+        py, px = (int(v) for v in np.array(state.pressure_plate_positions[0]))
+        linked = np.array(state.pressure_plate_linked_barrier[0])
+
+        pressed = env._process_pressure_plates(self._place(state, 0, py, px))
+        assert not np.array(pressed.barrier_active)[linked].any(), "linked barrier opens"
+
+        released = env._process_pressure_plates(self._place(pressed, 0, *home))
+        mask = np.array(released.barrier_active_mask)
+        assert np.array(released.barrier_active)[linked & mask].all(), (
+            "linked barrier re-closes once the agent steps off"
+        )
+
+    def test_multi_target_plate_opens_all_linked_barriers(self):
+        """A single plate linked to several barriers opens all of them at once,
+        and leaves unlinked barriers untouched."""
+        env, state = self._make("pressure_gated_zones")
+        py, px = (int(v) for v in np.array(state.pressure_plate_positions[0]))
+        linked = np.array(state.pressure_plate_linked_barrier[0])
+        mask = np.array(state.barrier_active_mask)
+        assert linked.sum() > 1, "this layout's plate 0 should target multiple barriers"
+
+        # Park both agents on plate 0 so it is the only plate pressed.
+        state = self._place(state, 0, py, px)
+        if state.agents.pos.x.shape[0] > 1:
+            state = self._place(state, 1, py, px)
+        state = env._process_pressure_plates(state)
+
+        active = np.array(state.barrier_active)
+        assert not active[linked].any(), "all linked barriers open"
+        assert active[mask & ~linked].all(), "unlinked barriers stay closed"
+
+    def test_shared_barrier_stays_open_until_all_plates_released(self):
+        """A barrier targeted by two plates stays open while either is pressed,
+        and only re-closes once both are released."""
+        env, state = self._make("pressure_gated_zones")
+        l0 = np.array(state.pressure_plate_linked_barrier[0])
+        l1 = np.array(state.pressure_plate_linked_barrier[1])
+        shared = l0 & l1
+        only0 = l0 & ~l1
+        assert shared.any() and only0.any(), "layout must have shared + plate0-only barriers"
+
+        p0 = tuple(int(v) for v in np.array(state.pressure_plate_positions[0]))
+        p1 = tuple(int(v) for v in np.array(state.pressure_plate_positions[1]))
+
+        # Both plates pressed.
+        state = self._place(state, 0, *p0)
+        state = self._place(state, 1, *p1)
+        state = env._process_pressure_plates(state)
+        assert not np.array(state.barrier_active)[l0 | l1].any(), "all open while both pressed"
+
+        # Release plate 0 (move agent_0 onto plate 1's cell). Plate 1 still held.
+        state = self._place(state, 0, *p1)
+        state = env._process_pressure_plates(state)
+        active = np.array(state.barrier_active)
+        assert not active[shared].any(), "shared barriers stay open while plate 1 held"
+        assert active[only0].all(), "barriers unique to plate 0 re-close on its release"
+
+    def test_plates_inert_when_disabled(self):
+        """With pressure plates disabled, standing on a plate does nothing."""
+        with pytest.warns(UserWarning, match="Pressure plates will be inert"):
+            env, state = self._make("pressure_plate_demo", enable_pressure_plates=False)
+        py, px = (int(v) for v in np.array(state.pressure_plate_positions[0]))
+        before = np.array(state.barrier_active).copy()
+
+        state = env._process_pressure_plates(self._place(state, 0, py, px))
+        assert np.array_equal(np.array(state.barrier_active), before), (
+            "disabled plates must not change barrier state"
         )

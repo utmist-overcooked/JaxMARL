@@ -1625,53 +1625,47 @@ class OvercookedV3(MultiAgentEnv):
         if not self.enable_pressure_plates:
             return state
 
-        agent_xs = state.agents.pos.x
-        agent_ys = state.agents.pos.y
+        agent_xs = state.agents.pos.x  # [num_agents]
+        agent_ys = state.agents.pos.y  # [num_agents]
 
-        def _check_single_plate(carry, plate_idx):
-            barrier_carry, timer_carry = carry
+        # Which plates currently have an agent standing on them? [num_plates]
+        plate_py = state.pressure_plate_positions[:, 0]
+        plate_px = state.pressure_plate_positions[:, 1]
+        agent_on_plate = jnp.any(
+            (agent_xs[None, :] == plate_px[:, None])
+            & (agent_ys[None, :] == plate_py[:, None]),
+            axis=1,
+        )
+        pressed = agent_on_plate & state.pressure_plate_active_mask  # [num_plates]
 
-            py = state.pressure_plate_positions[plate_idx, 0]
-            px = state.pressure_plate_positions[plate_idx, 1]
-            is_active = state.pressure_plate_active_mask[plate_idx]
-            linked_barrier_mask = (
-                state.pressure_plate_linked_barrier[plate_idx] & state.barrier_active_mask
-            )
-            action_type = state.pressure_plate_action_type[plate_idx]
+        action = state.pressure_plate_action_type  # [num_plates]
+        is_toggle = action == ButtonAction.TOGGLE_BARRIER
+        is_timed = action == ButtonAction.TIMED_BARRIER
 
-            # Check for agent overlap
-            agent_on_plate = jnp.any((agent_xs == px) & (agent_ys == py))
-            plate_triggered = is_active & agent_on_plate
+        # Valid (plate, barrier) links. [num_plates, num_barriers]
+        linked = state.pressure_plate_linked_barrier & state.barrier_active_mask[None, :]
 
-            # Default pressure plate behavior is to open linked barriers while pressed.
-            is_open_action = (
-                (action_type == ButtonAction.TOGGLE_BARRIER)
-                | (action_type == ButtonAction.TIMED_BARRIER)
-            )
-            should_open = plate_triggered & is_open_action
-            new_barriers = jnp.where(linked_barrier_mask & should_open, False, barrier_carry)
+        # TOGGLE_BARRIER: a linked barrier is open *exactly while* one of its
+        # plates is pressed, and closes again the moment every plate is released.
+        toggle_links = linked & is_toggle[:, None]
+        toggle_controlled = jnp.any(toggle_links, axis=0)  # [num_barriers]
+        toggle_open = jnp.any(toggle_links & pressed[:, None], axis=0)  # [num_barriers]
+        new_barrier_active = jnp.where(
+            toggle_controlled, ~toggle_open, state.barrier_active
+        )
 
-            # TIMED_BARRIER additionally starts per-barrier timers.
-            should_time = plate_triggered & (action_type == ButtonAction.TIMED_BARRIER)
-            new_timers = jnp.where(
-                linked_barrier_mask & should_time,
-                state.barrier_duration,
-                timer_carry,
-            )
-
-            return (new_barriers, new_timers), plate_triggered
-
-        # Iterate (scan) through all plates
-        (final_barriers, final_timers), toggled_mask = jax.lax.scan(
-            _check_single_plate,
-            (state.barrier_active, state.barrier_timer),
-            jnp.arange(MAX_PRESSURE_PLATES)
+        # TIMED_BARRIER: pressing opens the barrier and (re)arms its timer; the
+        # barrier reactivates on its own in _process_barrier_timers.
+        timed_open = jnp.any(linked & is_timed[:, None] & pressed[:, None], axis=0)
+        new_barrier_active = jnp.where(timed_open, False, new_barrier_active)
+        new_barrier_timer = jnp.where(
+            timed_open, state.barrier_duration, state.barrier_timer
         )
 
         return state.replace(
-            barrier_active=final_barriers,
-            barrier_timer=final_timers,
-            pressure_plate_toggled=toggled_mask
+            barrier_active=new_barrier_active,
+            barrier_timer=new_barrier_timer,
+            pressure_plate_toggled=pressed,
         )
 
     def _process_moving_walls(self, state: State) -> State:
