@@ -1016,18 +1016,18 @@ def run(config: dict, env_vec: OvercookedV3,
         print(f"\nPlot saved → {plot_path}")
         plt.show()
 
-    # --- Per-episode event counts (non-cumulative) and actions ---
+    # --- Per-episode event counts (non-cumulative) ---
     if all_lengths:
         hist_dir = ckpt_dir if ckpt_dir else "."
         os.makedirs(hist_dir, exist_ok=True)
 
         # Events to include (match DEBUG_HISTOGRAM.md semantics)
-        event_cols = ["placement_in_pot", "plate_pickup", "soup_in_dish", "delivery"]
+        event_cols = ["ingredient_pickup", "placement_in_pot", "plate_pickup", "soup_in_dish", "delivery"]
 
         csv_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["episode", "actions", *event_cols])
+            writer.writerow(["episode", *event_cols])
             n_eps = len(all_lengths)
             # prepare per-event lists (pad with zeros if necessary)
             per_event = {}
@@ -1038,7 +1038,7 @@ def run(config: dict, env_vec: OvercookedV3,
                 per_event[ev] = vals
 
             for i in range(n_eps):
-                row = [i + 1, int(all_lengths[i])]
+                row = [i + 1]
                 row += [int(per_event[ev][i]) for ev in event_cols]
                 writer.writerow(row)
 
@@ -1052,9 +1052,6 @@ def run(config: dict, env_vec: OvercookedV3,
                 if len(vals) < len(episodes):
                     vals = vals + [0.0] * (len(episodes) - len(vals))
                 ax.plot(episodes, vals, marker="o", linewidth=1.2, label=ev.replace("_", " "))
-
-            # actions as scatter for context
-            ax.scatter(episodes, all_lengths, s=6, alpha=0.4, color="k", label="actions (steps)")
 
             ax.set_title(f"Per-episode event counts — IS-MADDPG / {config['LAYOUT']}")
             ax.set_xlabel("Episode")
@@ -1073,6 +1070,7 @@ def run(config: dict, env_vec: OvercookedV3,
     # Reward type histograms
     # ---------------------------------------------------------------------------
     reward_labels = {
+        "ingredient_pickup": f"Ingredient Pickup (+2)",
         "delivery":          f"Delivery (+20)",
         "placement_in_pot":  f"Placement in Pot (+6)",
         "plate_pickup":      f"Plate Pickup (+4)",
@@ -1081,10 +1079,11 @@ def run(config: dict, env_vec: OvercookedV3,
         # "burn_penalty":      f"Burn Penalty (-5)",
     }
     colors = {
+        "ingredient_pickup": "orange",
         "delivery":          "green",
         "placement_in_pot":  "steelblue",
         "plate_pickup":      "yellow",
-        # "pot_start_cooking": "orange",
+        # "pot_start_cooking": "black",
         "soup_in_dish":      "purple",
         # "burn_penalty":      "red",
     }
