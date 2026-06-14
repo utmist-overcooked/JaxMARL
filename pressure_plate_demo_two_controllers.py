@@ -39,6 +39,7 @@ def create_env(layout_name):
         enable_moving_walls=True,
         enable_buttons=True,
         enable_item_conveyors=True,
+        enable_pressure_plates=True,
         pot_cook_time=20,
         pot_burn_time=10,
     )

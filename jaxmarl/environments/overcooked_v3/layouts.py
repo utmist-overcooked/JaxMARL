@@ -990,14 +990,6 @@ class Layout:
             "w": Direction.LEFT,
         }
 
-        # Moving wall directions (compass: n=up, s=down, e=east/right, w=west/left)
-        moving_wall_chars = {
-            "n": Direction.UP,
-            "s": Direction.DOWN,
-            "e": Direction.RIGHT,
-            "w": Direction.LEFT,
-        }
-
         agent_positions = []
         item_conveyor_info = []
         player_conveyor_info = []

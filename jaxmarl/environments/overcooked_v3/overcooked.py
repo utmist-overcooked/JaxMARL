@@ -191,7 +191,7 @@ class OvercookedV3(MultiAgentEnv):
     def __init__(
         self,
         layout: Union[str, Layout] = "cramped_room",
-        max_steps: int = 10e9,
+        max_steps: int = 400,
         observation_type: Union[
             ObservationType, List[ObservationType]
         ] = ObservationType.DEFAULT,
@@ -210,7 +210,7 @@ class OvercookedV3(MultiAgentEnv):
         # Moving wall, pressure plate, and button settings
         enable_moving_walls: Optional[bool] = None,
         enable_buttons: Optional[bool] = None,
-        enable_pressure_plates: bool = False,
+        enable_pressure_plates: Optional[bool] = None,
         # Barrier settings
         barrier_duration: Union[int, List[int]] = DEFAULT_BARRIER_DURATION,
         # Reward settings
@@ -349,9 +349,18 @@ class OvercookedV3(MultiAgentEnv):
                     stacklevel=2,
                 )
 
-        # Pressure plate settings (moving walls / buttons are resolved above
-        # via the layout auto-enable logic; do not overwrite them here).
-        self.enable_pressure_plates = enable_pressure_plates
+        layout_has_pressure_plates = len(layout.pressure_plate_info) > 0
+        if enable_pressure_plates is None:
+            self.enable_pressure_plates = layout_has_pressure_plates
+        else:
+            self.enable_pressure_plates = enable_pressure_plates
+            if layout_has_pressure_plates and not enable_pressure_plates:
+                warnings.warn(
+                    "Layout contains pressure plates, but "
+                    "enable_pressure_plates=False. Pressure plates will be inert.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Barrier settings
         self.barrier_duration = barrier_duration
@@ -790,34 +799,31 @@ class OvercookedV3(MultiAgentEnv):
         """Process agent actions and update state."""
         grid = state.grid
 
-        # Determine which barriers are made walkable by pressure plates
-        # A barrier becomes walkable if an agent is standing on its linked pressure plate
+        # Determine which barriers are made walkable by pressure plates.
+        # Only runs when pressure plates are enabled; otherwise all False.
         barrier_walkable_by_pressure_plate = jnp.zeros(MAX_BARRIERS, dtype=jnp.bool_)
 
-        def _check_pressure_plate(barrier_walkable, plate_idx):
-            plate_valid = state.pressure_plate_active_mask[plate_idx]
-            linked_barrier_mask = state.pressure_plate_linked_barrier[plate_idx]
+        if self.enable_pressure_plates:
+            def _check_pressure_plate(barrier_walkable, plate_idx):
+                plate_valid = state.pressure_plate_active_mask[plate_idx]
+                linked_barrier_mask = state.pressure_plate_linked_barrier[plate_idx]
 
-            # Check if any agent is on this pressure plate
-            def _agent_on_plate(agent_pos):
-                return (agent_pos.y == state.pressure_plate_positions[plate_idx, 0]) & (
-                    agent_pos.x == state.pressure_plate_positions[plate_idx, 1]
-                )
+                def _agent_on_plate(agent_pos):
+                    return (
+                        (agent_pos.y == state.pressure_plate_positions[plate_idx, 0])
+                        & (agent_pos.x == state.pressure_plate_positions[plate_idx, 1])
+                    )
 
-            agent_on_plate = jax.vmap(_agent_on_plate)(state.agents.pos)
-            any_agent_on_plate = jnp.any(agent_on_plate)
+                agent_on_plate = jax.vmap(_agent_on_plate)(state.agents.pos)
+                plate_pressed = plate_valid & jnp.any(agent_on_plate)
+                updated_barrier_walkable = barrier_walkable | (linked_barrier_mask & plate_pressed)
+                return updated_barrier_walkable, None
 
-            plate_pressed = plate_valid & any_agent_on_plate
-
-            # Mark all linked barriers as walkable if this plate is pressed.
-            updated_barrier_walkable = barrier_walkable | (linked_barrier_mask & plate_pressed)
-            return updated_barrier_walkable, None
-
-        barrier_walkable_by_pressure_plate, _ = jax.lax.scan(
-            _check_pressure_plate,
-            barrier_walkable_by_pressure_plate,
-            jnp.arange(MAX_PRESSURE_PLATES),
-        )
+            barrier_walkable_by_pressure_plate, _ = jax.lax.scan(
+                _check_pressure_plate,
+                barrier_walkable_by_pressure_plate,
+                jnp.arange(MAX_PRESSURE_PLATES),
+            )
 
         # Movement phase
         def _move_wrapper(agent, action):

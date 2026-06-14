@@ -36,13 +36,13 @@ AGENT1_KEYS = {
 
 
 def create_env(layout_name):
-    """Create environment with moving walls and buttons enabled."""
+    """Create environment with moving walls, buttons, and pressure plates enabled."""
     return OvercookedV3(
         layout=layout_name,
         enable_moving_walls=True,
         enable_buttons=True,
-        enable_item_conveyors=True, # Need this for custom demos
-        
+        enable_item_conveyors=True,
+        enable_pressure_plates=True,
         pot_cook_time=20,
         pot_burn_time=10,
     )
@@ -88,7 +88,7 @@ def main():
     pygame.display.set_caption(f"Moving Walls Demo - {layout_name}")
     clock = pygame.time.Clock()
 
-    key = jax.random.PsRNGKey(42)
+    key = jax.random.PRNGKey(42)
     key, subkey = jax.random.split(key)
     obs, state = jit_reset(subkey)
 
