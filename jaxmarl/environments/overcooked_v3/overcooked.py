@@ -349,12 +349,8 @@ class OvercookedV3(MultiAgentEnv):
                     stacklevel=2,
                 )
 
-        # Barrier settings
-        self.barrier_duration = barrier_duration
-
-        # Moving wall, pressure plate, button settings
-        self.enable_moving_walls = enable_moving_walls
-        self.enable_buttons = enable_buttons
+        # Pressure plate settings (moving walls / buttons are resolved above
+        # via the layout auto-enable logic; do not overwrite them here).
         self.enable_pressure_plates = enable_pressure_plates
 
         # Barrier settings
