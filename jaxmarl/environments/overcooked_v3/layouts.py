@@ -380,6 +380,7 @@ class Layout:
             StaticObject.PLATE_PILE: 'B',
             StaticObject.POT: 'P',
             StaticObject.RECIPE_INDICATOR: 'R',
+            StaticObject.PRESSURE_PLATE: '_',
         }
 
         item_conveyor_symbols = {
