@@ -16,4 +16,6 @@ wandb/
 outputs/
 models/
 venv/
+.venv/
+.venv*/
 .history/
