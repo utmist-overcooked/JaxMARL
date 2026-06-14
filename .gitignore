@@ -19,4 +19,3 @@ venv/
 .venv*/
 .env
 .history/
-baselines/MAPPO/config/mappo_homogenous_ff_hanabi.yaml
