@@ -120,6 +120,11 @@ if __name__ == "__main__":
 
     if len(args.layout) == 0:
         raise ValueError("You must provide a layout.")
+    if args.layout not in layouts:
+        raise ValueError(
+            f"Unknown layout {args.layout!r}. Available layouts: "
+            f"{', '.join(sorted(layouts))}"
+        )
     layout = layouts[args.layout]
 
     interactive = InteractiveOvercookedV3(

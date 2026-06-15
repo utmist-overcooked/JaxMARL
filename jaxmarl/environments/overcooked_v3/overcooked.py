@@ -525,13 +525,13 @@ class OvercookedV3(MultiAgentEnv):
                 # Layers breakdown:
                 # - agent_layer: 1 (pos) + 4 (dir) + (2 + num_ing) (inv) = 7 + num_ing
                 # - other_agent_layers: same = 7 + num_ing
-                # - static_layers: 10 (wall, goal, pot, recipe, plate, item_conv, player_conv, moving_wall, button, barrier)
+                # - static_layers: 11 (wall, goal, pot, recipe, plate, item_conv, player_conv, moving_wall, button, barrier, pressure_plate)
                 # - ingredient_pile_layers: num_ing
                 # - ingredients_layers: 2 + num_ing
                 # - recipe_layers: 2 + num_ing
                 # - extra_layers: 1 (pot timer)
-                # Total: 29 + 5 * num_ingredients
-                num_layers = 29 + 5 * num_ingredients
+                # Total: 30 + 5 * num_ingredients
+                num_layers = 30 + 5 * num_ingredients
                 return (view_height, view_width, num_layers)
             elif obs_type == ObservationType.FEATURIZED:
                 # Simplified feature vector
@@ -836,21 +836,20 @@ class OvercookedV3(MultiAgentEnv):
                 # Check if new position is walkable
                 new_cell_static = grid[new_pos.y, new_pos.x, 0]
 
-                # Check if destination is a barrier and if it's active
+                # Check if destination is a barrier and if it's active.
+                # Vectorized over all barriers (mirrors _is_agent_walkable) while
+                # also honoring pressure-plate walkability overrides.
                 is_barrier_tile = new_cell_static == StaticObject.BARRIER
-                barrier_blocks = False
-                for i in range(MAX_BARRIERS):
-                    at_barrier_pos = (
-                        (state.barrier_positions[i, 0] == new_pos.y)
-                        & (state.barrier_positions[i, 1] == new_pos.x)
-                        & state.barrier_active_mask[i]
-                    )
-                    # Barrier blocks unless made walkable by a pressure plate
-                    barrier_blocks = barrier_blocks | (
-                        at_barrier_pos
-                        & state.barrier_active[i]
-                        & ~barrier_walkable_by_pressure_plate[i]
-                    )
+                at_barrier_pos = (
+                    (state.barrier_positions[:, 0] == new_pos.y)
+                    & (state.barrier_positions[:, 1] == new_pos.x)
+                    & state.barrier_active_mask
+                )
+                barrier_blocks = jnp.any(
+                    at_barrier_pos
+                    & state.barrier_active
+                    & ~barrier_walkable_by_pressure_plate
+                )
 
                 is_walkable = (
                     (new_cell_static == StaticObject.EMPTY)
@@ -2035,6 +2034,7 @@ class OvercookedV3(MultiAgentEnv):
             StaticObject.MOVING_WALL,
             StaticObject.BUTTON,
             StaticObject.BARRIER,
+            StaticObject.PRESSURE_PLATE,
         ])
         static_layers = static_objects[..., None] == static_encoding
 
