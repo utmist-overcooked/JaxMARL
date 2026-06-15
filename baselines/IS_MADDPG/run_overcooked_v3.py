@@ -17,11 +17,12 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import csv
+from functools import partial
 
 from jaxmarl.environments.overcooked_v3.overcooked import OvercookedV3, State
 
 from networks import ISAgentNet, ISCriticNet
-from buffer import buffer_init, buffer_add, buffer_is_ready, buffer_sample, buffer_sample_prioritized
+from buffer import buffer_init, buffer_add, buffer_add_batch, buffer_is_ready, buffer_sample, buffer_sample_prioritized
 from update import TrainState, UpdateMetrics, init_train_state, train_step
 from loss import received_messages
 from train import save_checkpoint, save_checkpoint_zip, DEFAULT_CONFIG
@@ -146,12 +147,12 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         "TOTAL_TIMESTEPS":  args.total_timesteps,
         "NUM_ENVS":         args.num_envs,
         "MAX_STEPS":        args.max_steps,
-        "BATCH_SIZE":       128,
+        "BATCH_SIZE":       512,
         "BUFFER_SIZE":      200_000,
         "LEARNING_STARTS":  5_000,
         "UPDATE_EVERY":     1,
-        "UPDATES_PER_STEP": 1,
-        "NUM_EPOCHS":       1,
+        "UPDATES_PER_STEP": 2,
+        "NUM_EPOCHS":       2,
 
         # ── Exploration ──────────────────────────────────────────────────
         # Decay epsilon over first 30% of training — Overcooked is dense
@@ -260,84 +261,141 @@ def dones_dict_to_array(dones_dict: dict, agent_ids: list,
 # Action selection
 # ---------------------------------------------------------------------------
 
-def select_actions(
-    train_state: TrainState,
-    actor:       ISAgentNet,
-    obs_all:     np.ndarray,    # (num_envs, N, obs_dim)
-    prev_msgs:   np.ndarray,    # (num_envs, N, msg_dim)
-    epsilon:     float,
-    rng,
-    *,
-    num_agents:  int,
-    act_dim:     int,
-    gumbel_tau:  float,
-) -> tuple:
-    """Epsilon-greedy action selection for all envs and agents.
+# def select_actions(
+#     train_state: TrainState,
+#     actor:       ISAgentNet,
+#     obs_all:     np.ndarray,    # (num_envs, N, obs_dim)
+#     prev_msgs:   np.ndarray,    # (num_envs, N, msg_dim)
+#     epsilon:     float,
+#     rng,
+#     *,
+#     num_agents:  int,
+#     act_dim:     int,
+#     gumbel_tau:  float,
+# ) -> tuple:
+#     """Epsilon-greedy action selection for all envs and agents.
 
-    Runs the IS-MADDPG actor for each agent across all envs simultaneously.
-    With probability epsilon picks a random action (exploration); otherwise
-    uses the actor's argmax (exploitation).
+#     Runs the IS-MADDPG actor for each agent across all envs simultaneously.
+#     With probability epsilon picks a random action (exploration); otherwise
+#     uses the actor's argmax (exploitation).
 
-    Args:
-        train_state: current TrainState (actor_params used)
-        actor:       ISAgentNet module
-        obs_all:     (num_envs, N, obs_dim)
-        prev_msgs:   (num_envs, N, msg_dim)
-        epsilon:     exploration probability
-        rng:         JAX PRNG key
-        num_agents:  N
-        act_dim:     number of discrete actions
-        gumbel_tau:  temperature for actor's Gumbel sampling
+#     Args:
+#         train_state: current TrainState (actor_params used)
+#         actor:       ISAgentNet module
+#         obs_all:     (num_envs, N, obs_dim)
+#         prev_msgs:   (num_envs, N, msg_dim)
+#         epsilon:     exploration probability
+#         rng:         JAX PRNG key
+#         num_agents:  N
+#         act_dim:     number of discrete actions
+#         gumbel_tau:  temperature for actor's Gumbel sampling
 
+#     Returns:
+#         actions_onehot: (num_envs, N, act_dim)  one-hot for buffer
+#         actions_idx:    (num_envs, N)            int for env.step
+#         msgs_out:       (num_envs, N, msg_dim)
+#         rng:            updated key
+#     """
+#     num_envs = obs_all.shape[0]
+#     msg_dim  = prev_msgs.shape[-1]
+
+#     obs_jax       = jnp.array(obs_all)
+#     prev_msgs_jax = jnp.array(prev_msgs)
+
+#     # (num_envs, N, N-1, msg_dim)
+#     received = received_messages(prev_msgs_jax)
+
+#     actions_onehot = np.zeros((num_envs, num_agents, act_dim),  dtype=np.float32)
+#     actions_idx    = np.zeros((num_envs, num_agents),            dtype=np.int32)
+#     msgs_out       = np.zeros((num_envs, num_agents, msg_dim),   dtype=np.float32)
+
+#     for j in range(num_agents):
+#         rng, subkey = jax.random.split(rng)
+
+#         logits, _, msg, _ = actor.apply(
+#             train_state.actor_params,
+#             obs_jax[:, j, :],        # (num_envs, obs_dim)
+#             received[:, j, :, :],    # (num_envs, N-1, msg_dim)
+#             rng=subkey,
+#             gumbel_tau=gumbel_tau,
+#             gumbel_hard=True,
+#         )
+
+#         greedy_acts = np.array(jnp.argmax(logits, axis=-1))   # (num_envs,)
+
+#         rng, eps_key = jax.random.split(rng)
+#         random_acts  = np.array(
+#             jax.random.randint(eps_key, (num_envs,), 0, act_dim)
+#         )
+#         explore = np.random.random(num_envs) < epsilon
+#         final_acts = np.where(explore, random_acts, greedy_acts)
+
+#         onehot = np.zeros((num_envs, act_dim), dtype=np.float32)
+#         onehot[np.arange(num_envs), final_acts] = 1.0
+
+#         actions_onehot[:, j, :] = onehot
+#         actions_idx[:, j]       = final_acts
+#         msgs_out[:, j, :]       = np.array(msg)
+
+#     return actions_onehot, actions_idx, msgs_out, rng
+
+
+# vmap over agents, one JIT dispatch for all agents
+@partial(jax.jit, static_argnums=(1, 4))
+def select_actions_jit(train_state, actor, obs_all, prev_msgs, num_agents, gumbel_tau, rng):
+    """Single JIT call for all agents via vmap.
+    
+    obs_all:   (num_envs, N, obs_dim)
+    prev_msgs: (num_envs, N, msg_dim)
     Returns:
-        actions_onehot: (num_envs, N, act_dim)  one-hot for buffer
-        actions_idx:    (num_envs, N)            int for env.step
-        msgs_out:       (num_envs, N, msg_dim)
-        rng:            updated key
+        logits:   (N, num_envs, act_dim)
+        msgs_out: (N, num_envs, msg_dim)
     """
-    num_envs = obs_all.shape[0]
-    msg_dim  = prev_msgs.shape[-1]
+    received = received_messages(prev_msgs)  # (num_envs, N, N-1, msg_dim)
 
-    obs_jax       = jnp.array(obs_all)
-    prev_msgs_jax = jnp.array(prev_msgs)
-
-    # (num_envs, N, N-1, msg_dim)
-    received = received_messages(prev_msgs_jax)
-
-    actions_onehot = np.zeros((num_envs, num_agents, act_dim),  dtype=np.float32)
-    actions_idx    = np.zeros((num_envs, num_agents),            dtype=np.int32)
-    msgs_out       = np.zeros((num_envs, num_agents, msg_dim),   dtype=np.float32)
-
-    for j in range(num_agents):
-        rng, subkey = jax.random.split(rng)
-
-        logits, _, msg, _ = actor.apply(
-            train_state.actor_params,
-            obs_jax[:, j, :],        # (num_envs, obs_dim)
-            received[:, j, :, :],    # (num_envs, N-1, msg_dim)
-            rng=subkey,
+    def single_agent(j, key):
+        return actor.apply(
+            train_state,
+            obs_all[:, j, :],           # (num_envs, obs_dim)
+            received[:, j, :, :],       # (num_envs, N-1, msg_dim)
+            rng=key,
             gumbel_tau=gumbel_tau,
             gumbel_hard=True,
         )
 
-        greedy_acts = np.array(jnp.argmax(logits, axis=-1))   # (num_envs,)
+    keys = jax.random.split(rng, num_agents)
+    # vmap over agent index
+    logits_all, _, msgs_all, _ = jax.vmap(
+        single_agent, in_axes=(0, 0)
+    )(jnp.arange(num_agents), keys)
 
-        rng, eps_key = jax.random.split(rng)
-        random_acts  = np.array(
-            jax.random.randint(eps_key, (num_envs,), 0, act_dim)
-        )
-        explore = np.random.random(num_envs) < epsilon
-        final_acts = np.where(explore, random_acts, greedy_acts)
+    return logits_all, msgs_all   # (N, num_envs, act_dim), (N, num_envs, msg_dim)
 
-        onehot = np.zeros((num_envs, act_dim), dtype=np.float32)
-        onehot[np.arange(num_envs), final_acts] = 1.0
 
-        actions_onehot[:, j, :] = onehot
-        actions_idx[:, j]       = final_acts
-        msgs_out[:, j, :]       = np.array(msg)
+@partial(jax.jit, static_argnums=(3, 4, 5))
+def apply_epsilon_greedy(logits_all, rng, epsilon, num_agents, num_envs, act_dim):
+    """Apply epsilon-greedy entirely in JAX — no Python loop, no numpy.
+    
+    logits_all: (N, num_envs, act_dim)
+    Returns:
+        actions_idx:    (num_envs, N)   int32
+        actions_onehot: (num_envs, N, act_dim)
+    """
+    greedy = jnp.argmax(logits_all, axis=-1)              # (N, num_envs)
 
-    return actions_onehot, actions_idx, msgs_out, rng
+    rng, eps_key = jax.random.split(rng)
+    random_acts  = jax.random.randint(
+        eps_key, (num_agents, num_envs), 0, act_dim
+    )
 
+    explore = jax.random.uniform(
+        jax.random.split(rng)[1], (num_agents, num_envs)
+    ) < epsilon
+    final   = jnp.where(explore, random_acts, greedy)     # (N, num_envs)
+
+    actions_idx    = final.T                               # (num_envs, N)
+    actions_onehot = jax.nn.one_hot(actions_idx, act_dim) # (num_envs, N, act_dim)
+    return actions_idx, actions_onehot
 
 # ---------------------------------------------------------------------------
 # Greedy evaluation (single env, no exploration)
@@ -390,15 +448,26 @@ def evaluate(
         for _step in range(max_steps):   # bounded — never hangs
             obs_all = obs_dict_to_array(obs_dict, agent_ids, num_envs=1, obs_dim=obs_dim)
 
-            _, acts_idx, msgs, rng = select_actions(
-                train_state, actor, obs_all, prev_msgs,
-                epsilon=0.0,   # greedy — no exploration
-                rng=rng,
-                num_agents=num_agents,
-                act_dim=act_dim,
-                gumbel_tau=gumbel_tau,
+            rng, act_rng = jax.random.split(rng)
+            logits_all, msgs = select_actions_jit(
+                train_state.actor_params,
+                actor,
+                jnp.array(obs_all),
+                jnp.array(prev_msgs),
+                num_agents,
+                gumbel_tau,
+                act_rng,
             )
 
+            rng, eps_rng = jax.random.split(rng)
+            actions_idx, actions_onehot = apply_epsilon_greedy(
+                logits_all, eps_rng, 0.0, num_agents, 1, act_dim
+            )
+
+            # Keep as JAX arrays until buffer write — no numpy conversion
+            msgs = np.array(msgs.transpose(1, 0, 2))        # (num_envs, N, msg_dim)
+            acts_idx = np.array(actions_idx)                # only convert for env.step
+            actions_onehot = np.array(actions_onehot)             # only convert for buffer
             # step_env expects scalar int actions per agent
             action_dict = {
                 f"agent_{i}": int(acts_idx[0, i])
@@ -631,12 +700,30 @@ def run(config: dict, env_vec: OvercookedV3,
         obs_all = obs_dict_to_array(obs_dict, agent_ids, num_envs, obs_dim)
 
         # ── Action selection ─────────────────────────────────────────
-        actions_onehot, actions_idx, msgs, rng = select_actions(
-            train_state, actor, obs_all, prev_msgs,
-            epsilon=epsilon, rng=rng,
-            num_agents=num_agents, act_dim=act_dim,
-            gumbel_tau=config["GUMBEL_TAU"],
+        rng, act_rng = jax.random.split(rng)
+        logits_all, msgs = select_actions_jit(
+            train_state.actor_params,
+            actor,
+            jnp.array(obs_all),
+            jnp.array(prev_msgs),
+            num_agents = num_agents,
+            gumbel_tau = config["GUMBEL_TAU"],
+            rng = act_rng,
+        )    
+
+        actions_idx, actions_onehot = apply_epsilon_greedy(
+            logits_all,
+            act_rng,
+            epsilon,
+            num_agents,
+            num_envs,
+            act_dim,
         )
+
+        # Keep as JAX arrays until buffer write — no numpy conversion
+        msgs = np.array(msgs.transpose(1, 0, 2))        # (num_envs, N, msg_dim)
+        actions_idx = np.array(actions_idx)                # only convert for env.step
+        actions_onehot = np.array(actions_onehot)       # only convert for buffer
 
         # ── Step envs ────────────────────────────────────────────────
         rng, step_rng = jax.random.split(rng)
@@ -680,24 +767,42 @@ def run(config: dict, env_vec: OvercookedV3,
             rewards_all = rewards_dict_to_array(combined_rewards, agent_ids, num_envs)
         else:
             rewards_all = raw_rewards
+        
+        # Make sure they are np arrays before adding to the buffer
+        rewards_all=np.asarray(rewards_all)
+        next_obs_all=np.asarray(next_obs_all)
+        obs_all=np.asarray(obs_all)
 
         # Track deliveries from raw rewards
         ep_deliveries += (raw_rewards >= 20.0).any(axis=1).astype(np.float32)          
 
         # ── Buffer ───────────────────────────────────────────────────
         t0 = time.time()
-        for e in range(num_envs):
-            buffer_state = buffer_add(
-                buffer_state,
-                obs=           obs_all[e],
-                prev_msgs=     prev_msgs[e],
-                actions=       actions_onehot[e],
-                msgs=          msgs[e],
-                rewards=       rewards_all[e],
-                next_obs=      next_obs_all[e],
-                next_prev_msgs=msgs[e],
-                done=          bool(dones_all[e]),
-            )
+        # for e in range(num_envs):
+        #     buffer_state = buffer_add(
+        #         buffer_state,
+        #         obs=           obs_all[e],
+        #         prev_msgs=     prev_msgs[e],
+        #         actions=       actions_onehot[e],
+        #         msgs=          msgs[e],
+        #         rewards=       rewards_all[e],
+        #         next_obs=      next_obs_all[e],
+        #         next_prev_msgs=msgs[e],
+        #         done=          bool(dones_all[e]),
+            # )
+
+        buffer_state = buffer_add_batch(
+            buffer_state,
+            obs=np.asarray(obs_all),
+            prev_msgs=prev_msgs,
+            actions=np.asarray(actions_onehot),
+            msgs=msgs,
+            rewards=np.asarray(rewards_all),
+            next_obs=np.asarray(next_obs_all),
+            next_prev_msgs=msgs,
+            dones=dones_all,
+        )
+
         t_buffer += time.time() - t0
 
         # ── Reward type tracking ──────────────────────────────────────
@@ -783,7 +888,9 @@ def run(config: dict, env_vec: OvercookedV3,
             reset_rngs = jax.random.split(reset_rng, num_envs)
 
             # Reset ALL envs that are done
-            new_obs, new_states = jax.vmap(env_vec.reset)(reset_rngs)
+            # new_obs, new_states = jax.vmap(env_vec.reset)(reset_rngs)
+            new_obs, new_states = jit_reset(reset_rngs)
+
 
             # Only replace done envs — keep running envs as-is
             done_mask = jnp.array(dones_all, dtype=jnp.bool_)  # (num_envs,)
@@ -810,9 +917,11 @@ def run(config: dict, env_vec: OvercookedV3,
         # ── Advance state ─────────────────────────────────────────────
         obs_dict  = next_obs_dict   # contains reset obs for done envs
         prev_msgs = msgs
-        for e in range(num_envs):
-            if dones_all[e]:
-                prev_msgs[e] = 0.0
+        # for e in range(num_envs):
+        #     if dones_all[e]:
+        #         prev_msgs[e] = 0.0
+        done_mask_np = dones_all.astype(bool)  # (num_envs,)
+        prev_msgs[done_mask_np] = 0.0          # one numpy op
 
         # ── Gradient updates ─────────────────────────────────────────
         if (buffer_is_ready(buffer_state, batch_size)
@@ -1022,7 +1131,7 @@ def run(config: dict, env_vec: OvercookedV3,
         os.makedirs(hist_dir, exist_ok=True)
 
         # Events to include (match DEBUG_HISTOGRAM.md semantics)
-        event_cols = ["placement_in_pot", "plate_pickup", "soup_in_dish", "delivery"]
+        event_cols = ["ingredient_pickup", "placement_in_pot", "plate_pickup", "soup_in_dish", "delivery"]
 
         csv_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -1077,6 +1186,7 @@ def run(config: dict, env_vec: OvercookedV3,
         "placement_in_pot":  f"Placement in Pot (+6)",
         "plate_pickup":      f"Plate Pickup (+4)",
         # "pot_start_cooking": f"Pot Start Cooking (+4)",
+        "ingredient_pickup":      f"Onion Pickup (+3)",
         "soup_in_dish":      f"Soup in Dish (+12)",
         # "burn_penalty":      f"Burn Penalty (-5)",
     }
@@ -1085,6 +1195,7 @@ def run(config: dict, env_vec: OvercookedV3,
         "placement_in_pot":  "steelblue",
         "plate_pickup":      "yellow",
         # "pot_start_cooking": "orange",
+        "ingredient_pickup": "pink",
         "soup_in_dish":      "purple",
         # "burn_penalty":      "red",
     }
