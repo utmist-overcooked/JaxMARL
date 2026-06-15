@@ -31,7 +31,7 @@ MAX_PLAYER_CONVEYORS = 8
 
 # Moving walls, pressure plates and buttons
 MAX_MOVING_WALLS = 8
-MAX_BUTTONS = 8
+MAX_BUTTONS = 16
 MAX_PRESSURE_PLATES = 16
 
 # Barriers

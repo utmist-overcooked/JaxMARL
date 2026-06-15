@@ -205,44 +205,12 @@ X     W
 WW1W0WW
 """
 
+# List of All Pressure Plate & Button Levels:
 
-# Moving wall demo - wall moves down, button reverses its direction
-moving_wall_demo = """
-WWWPWWW
-0As   X
-W  !  W
-W    AW
-WWWBWWW
-"""
+# pressure_plate_demo, pressure_gated_conveyor_access, pressure_gated_circuit, pressure_gated_zones, twin_movement
+# button_triple_gate, button_gated_conveyor_access, button_gated_circuit, button_gated_zones
 
-# Moving wall bounce demo - two walls bouncing back and forth
-moving_wall_bounce_demo = """
-WWWWPWWWWW
-0A e   AXW
-W        W
-W  e !   W
-WWWWBWWWWW
-"""
-
-# Barrier demo - togglable barriers that block all directions
-barrier_demo = """
-WWWPWWW
-0A #  X
-W  #  W
-W    AW
-WWWBWWW
-"""
-
-# Timed barrier demo - button deactivates barrier temporarily
-timed_barrier_demo = """
-WWWPWWW
-0A #  X
-W ! ! W
-W  # AW
-WWWBWWW
-"""
-
-# Pressure Plate Sample Level - step on plate to toggle multiple walls
+# Original Pressure Plate Levels
 pressure_plate_demo = """
 WWWWWWW
 B #_AWW
@@ -253,7 +221,6 @@ WWWW WW
 WWWWWWW
 """
 
-# pressure gated conveyor access
 pressure_gated_conveyor_access = """
 WWWWWWBWW
 WA  #   W
@@ -264,7 +231,6 @@ WA  #  PW
 WWWWWWRWW
 """
 
-# pressure gated circuit
 pressure_gated_circuit = """
 WWWWWWWWW
 W   #   W
@@ -299,6 +265,89 @@ WW___WWW W#W XW
 WWW_WWWW#   #WW
 WWWWWWWWWW#WWWW
 WWWWWWWWWW1WWWW
+"""
+
+# Button Adapted Versions
+button_triple_gate = """
+WWW!WWW
+B # AWW
+WWW! WW
+P #   X
+WWW! WW
+0 # AWW
+WWWWWWW
+"""
+
+button_gated_conveyor_access = """
+WWWWWWBWW
+WA  #   W
+W  !W1v0W
+WX  WWvWW
+W  !WWvWW
+WA  #  PW
+WWWWWWRWW
+"""
+
+button_gated_circuit = """
+WWWWWWWWW
+W   #   W
+W PWWW0 W
+W W ! W W
+W#W!A!W#W
+W W ! W W
+W XWWWB W
+W   #  AW
+WWWWWWRWW
+"""
+
+button_gated_zones = """
+WWWWWWW0W
+WP  #   1
+W ! # ! W
+W   #   W
+W###W###W
+W   #   W
+W ! # !AW
+WB  # AXW
+WWWWWWWWW
+"""
+
+# Older Levels Below
+
+# Moving wall demo - wall moves down, button reverses its direction
+moving_wall_demo = """
+WWWPWWW
+0As   X
+W  !  W
+W    AW
+WWWBWWW
+"""
+
+# Moving wall bounce demo - two walls bouncing back and forth
+moving_wall_bounce_demo = """
+WWWWPWWWWW
+0A e   AXW
+W        W
+W  e !   W
+WWWWBWWWWW
+"""
+
+# Barrier demo - toggle barriers that block all directions
+barrier_demo = """
+WWWPWWW
+0A #  X
+W  #  W
+W    AW
+WWWBWWW
+"""
+
+# Timed barrier demo - button deactivates barrier temporarily
+timed_barrier_demo = """
+WWWPWWW
+0A #  X
+W ! ! W
+W  # AW
+WWWBWWW
 """
 
 # Mixed button demo - one button controls a moving wall, the other controls a barrier
@@ -1222,7 +1271,7 @@ overcooked_v3_layouts = {
         button_config=[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
     ),
 
-    # Pressure Plate Demo:
+    # Original Pressure Plate Layouts
     "pressure_plate_demo": Layout.from_string(
         pressure_plate_demo,
         possible_recipes=[[0, 0, 0]],
@@ -1243,7 +1292,7 @@ overcooked_v3_layouts = {
         possible_recipes=[[0, 0, 0]],
         pressure_plate_config=[
             (0, ButtonAction.TOGGLE_BARRIER),
-            (1, ButtonAction.TOGGLE_BARRIER)
+            (1, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
             True,  # Barrier 0 (Top) - initially active
@@ -1258,13 +1307,13 @@ overcooked_v3_layouts = {
             (0, ButtonAction.TOGGLE_BARRIER),
             (1, ButtonAction.TOGGLE_BARRIER),
             (2, ButtonAction.TOGGLE_BARRIER),
-            (3, ButtonAction.TOGGLE_BARRIER)
+            (3, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
             True,  # Barrier 0 - initially active
             True,  # Barrier 1 - initially active
             True,  # Barrier 2 - initially active
-            True   # Barrier 3 - initially active
+            True,  # Barrier 3 - initially active
         ],
     ),
 
@@ -1272,10 +1321,10 @@ overcooked_v3_layouts = {
         pressure_gated_zones,
         possible_recipes=[[0, 0, 0]],
         pressure_plate_config=[
-            ((0,1,2,3,4,5), ButtonAction.TOGGLE_BARRIER),
-            ((0,1,2,6,7,8), ButtonAction.TOGGLE_BARRIER),
-            ((3,4,5,9,10,11), ButtonAction.TOGGLE_BARRIER),
-            ((6,7,8,9,10,11), ButtonAction.TOGGLE_BARRIER)
+            ((0, 1, 2, 3, 4, 5), ButtonAction.TOGGLE_BARRIER),
+            ((0, 1, 2, 6, 7, 8), ButtonAction.TOGGLE_BARRIER),
+            ((3, 4, 5, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+            ((6, 7, 8, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[True] * 12,
     ),
@@ -1295,7 +1344,65 @@ overcooked_v3_layouts = {
             (9, ButtonAction.TOGGLE_BARRIER),
             (8, ButtonAction.TOGGLE_BARRIER),
             (10, ButtonAction.TOGGLE_BARRIER),
-            (11, ButtonAction.TOGGLE_BARRIER)
+            (11, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[True] * 12,
+    ),
+
+    # Button-Adapted Layouts
+    "button_triple_gate": Layout.from_string(
+        button_triple_gate,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,  # Barrier 0 (Top lane) - initially active
+            True,  # Barrier 1 (Middle lane) - initially active
+            True,  # Barrier 2 (Bottom lane) - initially active
+        ],
+    ),
+
+    "button_gated_conveyor_access": Layout.from_string(
+        button_gated_conveyor_access,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,  # Barrier 0 (Top) - initially active
+            True,  # Barrier 1 (Bottom) - initially active
+        ],
+    ),
+
+    "button_gated_circuit": Layout.from_string(
+        button_gated_circuit,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,  # Barrier 0 - initially active
+            True,  # Barrier 1 - initially active
+            True,  # Barrier 2 - initially active
+            True,  # Barrier 3 - initially active
+        ],
+    ),
+
+    "button_gated_zones": Layout.from_string(
+        button_gated_zones,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            ((0, 1, 2, 3, 4, 5), ButtonAction.TOGGLE_BARRIER),
+            ((0, 1, 2, 6, 7, 8), ButtonAction.TOGGLE_BARRIER),
+            ((3, 4, 5, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+            ((6, 7, 8, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[True] * 12,
     ),
