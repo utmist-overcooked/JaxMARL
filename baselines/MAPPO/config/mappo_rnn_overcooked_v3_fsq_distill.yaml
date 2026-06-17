@@ -15,6 +15,7 @@ hydra:
 "DISTILL_DECAY_FRACTION": 0.30
 
 "FSQ_LEVELS": [5, 5, 5]
+"DISABLE_FSQ_COMM": False
 
 "LR": 0.00025
 "ANNEAL_LR": True

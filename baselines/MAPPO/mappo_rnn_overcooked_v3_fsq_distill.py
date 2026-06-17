@@ -172,23 +172,30 @@ class CommActorRNN(nn.Module):
         hidden, embedding = ScannedRNN()(hidden, rnn_in)
 
         fsq = FSQ(levels=tuple(self.config["FSQ_LEVELS"]))
-        msg_logits = nn.Dense(
-            fsq.num_dimensions,
-            kernel_init=orthogonal(0.01),
-            bias_init=constant(0.0),
-        )(embedding)
-        msg_codes, msg_indices = fsq.quantize_and_index(msg_logits)
-
-        num_agents = self.config["NUM_AGENTS"]
         time_steps, batch_size = embedding.shape[:2]
-        num_envs = batch_size // num_agents
-        msg_by_agent = msg_codes.reshape(
-            time_steps, num_agents, num_envs, fsq.num_dimensions
-        )
-        partner_msg = jnp.flip(msg_by_agent, axis=1).reshape(
-            time_steps, batch_size, fsq.num_dimensions
-        )
-        actor_input = jnp.concatenate([embedding, partner_msg], axis=-1)
+        if self.config.get("DISABLE_FSQ_COMM", False):
+            msg_codes = jnp.zeros(
+                (time_steps, batch_size, fsq.num_dimensions), dtype=embedding.dtype
+            )
+            msg_indices = jnp.zeros((time_steps, batch_size), dtype=jnp.int32)
+            actor_input = embedding
+        else:
+            msg_logits = nn.Dense(
+                fsq.num_dimensions,
+                kernel_init=orthogonal(0.01),
+                bias_init=constant(0.0),
+            )(embedding)
+            msg_codes, msg_indices = fsq.quantize_and_index(msg_logits)
+
+            num_agents = self.config["NUM_AGENTS"]
+            num_envs = batch_size // num_agents
+            msg_by_agent = msg_codes.reshape(
+                time_steps, num_agents, num_envs, fsq.num_dimensions
+            )
+            partner_msg = jnp.flip(msg_by_agent, axis=1).reshape(
+                time_steps, batch_size, fsq.num_dimensions
+            )
+            actor_input = jnp.concatenate([embedding, partner_msg], axis=-1)
 
         actor_mean = nn.Dense(
             self.config["FC_DIM_SIZE"],
@@ -428,6 +435,7 @@ def render_checkpoint_gif(
         "ACTIVATION": config["ACTIVATION"],
         "FSQ_LEVELS": tuple(config["FSQ_LEVELS"]),
         "NUM_AGENTS": env.num_agents,
+        "DISABLE_FSQ_COMM": bool(config.get("DISABLE_FSQ_COMM", False)),
     }
     network = CommActorRNN(action_dim, config=network_config)
     policy_step = _checkpoint_policy_step(network, action_dim)
@@ -1314,7 +1322,13 @@ def single_run(config):
         dir=wandb_dir,
         entity=config["ENTITY"],
         project=config["PROJECT"],
-        tags=["MAPPO", "RNN", "OvercookedV3", "FSQ", "Distillation"],
+        tags=[
+            "MAPPO",
+            "RNN",
+            "OvercookedV3",
+            "Distillation",
+            "NoFSQ" if config.get("DISABLE_FSQ_COMM", False) else "FSQ",
+        ],
         config=copy.deepcopy(config),
         mode=config["WANDB_MODE"],
         name=config["WANDB_RUN_NAME"]
