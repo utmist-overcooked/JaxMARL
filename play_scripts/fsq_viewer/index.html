@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FSQ Checkpoint Viewer</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <label>Run<select id="run"></select></label>
+    <label>Checkpoint<select id="checkpoint"></select></label>
+    <label>Recipe<select id="recipe"></select></label>
+    <div id="meta">Loading FSQ artifacts.</div>
+  </header>
+  <main>
+    <svg id="plot" role="img" aria-label="FSQ code grid"></svg>
+    <aside>
+      <div id="rollout"></div>
+      <h2 id="code-title">Select a code</h2>
+      <div id="details" class="muted">Select a run, checkpoint, and recipe.</div>
+      <div id="examples"></div>
+    </aside>
+  </main>
+</body>
+</html>
