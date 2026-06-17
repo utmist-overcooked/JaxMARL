@@ -16,6 +16,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_MOVING_WALLS,
     MAX_BUTTONS,
     MAX_BARRIERS,
+    MAX_PRESSURE_PLATES,
     MAX_BUTTON_TARGETS,
 )
 import numpy as np
@@ -580,6 +581,11 @@ class Layout:
         if len(self.barrier_info) > MAX_BARRIERS:
             errors.append(
                 f"Too many barriers ({len(self.barrier_info)} > {MAX_BARRIERS})"
+            )
+
+        if len(self.pressure_plate_info) > MAX_PRESSURE_PLATES:
+            errors.append(
+                f"Too many pressure plates ({len(self.pressure_plate_info)} > {MAX_PRESSURE_PLATES})"
             )
 
         moving_wall_actions = {

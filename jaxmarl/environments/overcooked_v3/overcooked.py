@@ -672,12 +672,26 @@ class OvercookedV3(MultiAgentEnv):
         is_walkable = (
             (static_object == StaticObject.EMPTY)
             | (static_object == StaticObject.PLAYER_CONVEYOR)
+            | (static_object == StaticObject.PRESSURE_PLATE)
             | (
                 is_barrier_tile & ~barrier_blocks
             )  # Barrier is walkable if inactive
         )
 
         return is_walkable
+
+    @staticmethod
+    def _barriers_occupied(agent_ys, agent_xs, barrier_positions, barrier_active_mask):
+        """Boolean [MAX_BARRIERS]: True where an agent stands on a barrier's tile.
+
+        Used to keep a barrier from (re)closing on top of an agent, so an agent
+        can never be trapped inside a barrier that activates on them.
+        """
+        on_barrier = (
+            (agent_ys[None, :] == barrier_positions[:, 0][:, None])
+            & (agent_xs[None, :] == barrier_positions[:, 1][:, None])
+        )
+        return jnp.any(on_barrier, axis=1) & barrier_active_mask
 
     def _randomize_agent_positions(self, state: State, key: chex.PRNGKey) -> State:
         """Randomize agent positions within their rooms."""
@@ -973,6 +987,14 @@ class OvercookedV3(MultiAgentEnv):
         new_barrier_timer = state.barrier_timer
 
         if self.enable_buttons:
+            # Barriers a toggle button must not close because an agent stands on
+            # them (post-movement positions); the close is skipped until clear.
+            barrier_occupied = self._barriers_occupied(
+                new_agents.pos.y,
+                new_agents.pos.x,
+                state.barrier_positions,
+                state.barrier_active_mask,
+            )
 
             def _process_agent_button(carry, x):
                 mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = (
@@ -1066,13 +1088,19 @@ class OvercookedV3(MultiAgentEnv):
                                 mw_paused,
                             )
 
-                            # Barrier actions
+                            # Barrier actions. A toggle never closes a barrier on
+                            # top of an agent; the close is skipped (left open) so
+                            # a later press can close it once the tile is clear.
+                            toggled_active = ~bar_active[barrier_idx]
+                            safe_active = jnp.where(
+                                toggled_active & barrier_occupied[barrier_idx],
+                                bar_active[barrier_idx],
+                                toggled_active,
+                            )
                             bar_active = jax.lax.select(
                                 should_apply
                                 & (action_type == ButtonAction.TOGGLE_BARRIER),
-                                bar_active.at[barrier_idx].set(
-                                    ~bar_active[barrier_idx]
-                                ),
+                                bar_active.at[barrier_idx].set(safe_active),
                                 bar_active,
                             )
 
@@ -1593,19 +1621,32 @@ class OvercookedV3(MultiAgentEnv):
     def _process_barrier_timers(self, state: State) -> State:
         """Decrement barrier timers and reactivate barriers when timers reach zero."""
 
+        # A barrier is never reactivated on top of an agent; the timer is held
+        # until the tile clears so the agent can't be trapped (see
+        # _barriers_occupied).
+        barrier_occupied = self._barriers_occupied(
+            state.agents.pos.y,
+            state.agents.pos.x,
+            state.barrier_positions,
+            state.barrier_active_mask,
+        )
+
         def _update_single_barrier(i):
             is_active_slot = state.barrier_active_mask[i]
             timer = state.barrier_timer[i]
             barrier_active = state.barrier_active[i]
+            occupied = barrier_occupied[i]
 
-            # Timer only decrements when > 0
+            # The barrier would reactivate when its timer ticks from 1 to 0, but
+            # if an agent is on the tile we hold the timer at 1 and defer.
+            would_reactivate = timer == 1
+            hold = would_reactivate & occupied
+
+            # Timer only decrements when > 0 (and not held by an occupant)
             has_timer = timer > 0
-            new_timer = jax.lax.select(has_timer, timer - 1, timer)
+            new_timer = jax.lax.select(has_timer & ~hold, timer - 1, timer)
 
-            # When timer reaches 0, reactivate the barrier
-            should_reactivate = is_active_slot & (
-                timer == 1
-            )  # Will become 0 after decrement
+            should_reactivate = is_active_slot & would_reactivate & ~occupied
             new_active = jax.lax.select(should_reactivate, True, barrier_active)
 
             return new_timer, new_active
@@ -1644,13 +1685,21 @@ class OvercookedV3(MultiAgentEnv):
         # Valid (plate, barrier) links. [num_plates, num_barriers]
         linked = state.pressure_plate_linked_barrier & state.barrier_active_mask[None, :]
 
+        # A barrier is never re-closed on top of an agent; it stays open until
+        # the tile is clear, so an agent crossing as the plate releases can't be
+        # trapped (see _barriers_occupied).
+        barrier_occupied = self._barriers_occupied(
+            agent_ys, agent_xs, state.barrier_positions, state.barrier_active_mask
+        )
+
         # TOGGLE_BARRIER: a linked barrier is open *exactly while* one of its
-        # plates is pressed, and closes again the moment every plate is released.
+        # plates is pressed (or an agent stands on it), and closes again the
+        # moment every plate is released and the tile is clear.
         toggle_links = linked & is_toggle[:, None]
         toggle_controlled = jnp.any(toggle_links, axis=0)  # [num_barriers]
         toggle_open = jnp.any(toggle_links & pressed[:, None], axis=0)  # [num_barriers]
         new_barrier_active = jnp.where(
-            toggle_controlled, ~toggle_open, state.barrier_active
+            toggle_controlled, ~toggle_open & ~barrier_occupied, state.barrier_active
         )
 
         # TIMED_BARRIER: pressing opens the barrier and (re)arms its timer; the
@@ -1745,6 +1794,7 @@ class OvercookedV3(MultiAgentEnv):
                 (beyond_static == StaticObject.EMPTY)
                 | (beyond_static == StaticObject.ITEM_CONVEYOR)
                 | (beyond_static == StaticObject.PLAYER_CONVEYOR)
+                | (beyond_static == StaticObject.PRESSURE_PLATE)
                 | (is_barrier_tile & ~barrier_blocks)
             )
             # Also check no other agent at beyond position

@@ -346,3 +346,56 @@ class TestPressurePlates:
         assert np.array_equal(np.array(state.barrier_active), before), (
             "disabled plates must not change barrier state"
         )
+
+    def test_toggle_barrier_does_not_close_on_occupying_agent(self):
+        """A TOGGLE barrier stays open while an agent stands on it, even with the
+        plate released, so an agent crossing as the plate releases can't be
+        trapped inside an active barrier (Codex P2 #1)."""
+        env, state = self._make("pressure_plate_demo")
+        linked = np.array(state.pressure_plate_linked_barrier[0])
+        bidx = int(np.flatnonzero(linked)[0])
+        by, bx = (int(v) for v in np.array(state.barrier_positions[bidx]))
+        assert bool(state.barrier_active[bidx]), "linked barrier starts closed"
+
+        # Agent on the barrier tile, no agent on the plate (plate released):
+        # the barrier must NOT re-close on top of the agent.
+        occupied = self._place(state, 0, by, bx)
+        occupied = self._place(occupied, 1, by, bx)
+        result = env._process_pressure_plates(occupied)
+        assert not bool(result.barrier_active[bidx]), (
+            "barrier must stay open while an agent occupies its tile"
+        )
+
+        # Once the tile is clear (and no plate pressed), it re-closes.
+        cleared = self._place(result, 0, 0, 0)
+        cleared = self._place(cleared, 1, 0, 0)
+        result2 = env._process_pressure_plates(cleared)
+        assert bool(result2.barrier_active[bidx]), (
+            "barrier re-closes once the occupying agent steps off"
+        )
+
+    def test_timed_barrier_reactivation_deferred_while_occupied(self):
+        """A timed barrier about to expire does not reactivate onto an agent; the
+        timer is held until the tile clears, then it reactivates."""
+        env, state = self._make("pressure_plate_demo")
+        bidx = int(np.flatnonzero(np.array(state.barrier_active_mask))[0])
+        by, bx = (int(v) for v in np.array(state.barrier_positions[bidx]))
+
+        # Arm barrier as open with its timer one step from expiry.
+        state = state.replace(
+            barrier_active=state.barrier_active.at[bidx].set(False),
+            barrier_timer=state.barrier_timer.at[bidx].set(1),
+        )
+
+        # Agent on the barrier tile -> reactivation deferred, timer held at 1.
+        occupied = self._place(state, 0, by, bx)
+        occupied = self._place(occupied, 1, 0, 0)
+        held = env._process_barrier_timers(occupied)
+        assert not bool(held.barrier_active[bidx]), "deferred while occupied"
+        assert int(held.barrier_timer[bidx]) == 1, "timer held at 1 while occupied"
+
+        # Clear the tile -> reactivates and timer ticks to 0.
+        cleared = self._place(held, 0, 0, 0)
+        done = env._process_barrier_timers(cleared)
+        assert bool(done.barrier_active[bidx]), "reactivates once the tile is clear"
+        assert int(done.barrier_timer[bidx]) == 0, "timer reaches 0 after reactivation"
