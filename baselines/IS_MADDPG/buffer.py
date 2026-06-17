@@ -161,6 +161,27 @@ def buffer_add(
     return state._replace(idx=new_idx, size=new_size)
 
 
+def buffer_add_batch(state, *, obs, prev_msgs, actions, msgs,
+                    rewards, next_obs, next_prev_msgs, dones):
+    """Write num_envs transitions in one numpy operation."""
+    n   = obs.shape[0]
+    cap = state.obs.shape[0]
+    idxs = np.arange(state.idx, state.idx + n) % cap
+
+    state.obs[idxs]             = obs
+    state.prev_msgs[idxs]       = prev_msgs
+    state.actions[idxs]         = actions
+    state.msgs[idxs]            = msgs
+    state.rewards[idxs]         = rewards
+    state.next_obs[idxs]        = next_obs
+    state.next_prev_msgs[idxs]  = next_prev_msgs
+    state.dones[idxs]           = dones
+
+    new_idx  = (state.idx + n) % cap
+    new_size = min(state.size + n, cap)
+    return state._replace(idx=new_idx, size=new_size)
+
+
 def buffer_sample(
     state:      BufferState,
     batch_size: int,

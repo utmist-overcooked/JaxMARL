@@ -261,83 +261,83 @@ def dones_dict_to_array(dones_dict: dict, agent_ids: list,
 # Action selection
 # ---------------------------------------------------------------------------
 
-# def select_actions(
-#     train_state: TrainState,
-#     actor:       ISAgentNet,
-#     obs_all:     np.ndarray,    # (num_envs, N, obs_dim)
-#     prev_msgs:   np.ndarray,    # (num_envs, N, msg_dim)
-#     epsilon:     float,
-#     rng,
-#     *,
-#     num_agents:  int,
-#     act_dim:     int,
-#     gumbel_tau:  float,
-# ) -> tuple:
-#     """Epsilon-greedy action selection for all envs and agents.
+def select_actions(
+    train_state: TrainState,
+    actor:       ISAgentNet,
+    obs_all:     np.ndarray,    # (num_envs, N, obs_dim)
+    prev_msgs:   np.ndarray,    # (num_envs, N, msg_dim)
+    epsilon:     float,
+    rng,
+    *,
+    num_agents:  int,
+    act_dim:     int,
+    gumbel_tau:  float,
+) -> tuple:
+    """Epsilon-greedy action selection for all envs and agents.
 
-#     Runs the IS-MADDPG actor for each agent across all envs simultaneously.
-#     With probability epsilon picks a random action (exploration); otherwise
-#     uses the actor's argmax (exploitation).
+    Runs the IS-MADDPG actor for each agent across all envs simultaneously.
+    With probability epsilon picks a random action (exploration); otherwise
+    uses the actor's argmax (exploitation).
 
-#     Args:
-#         train_state: current TrainState (actor_params used)
-#         actor:       ISAgentNet module
-#         obs_all:     (num_envs, N, obs_dim)
-#         prev_msgs:   (num_envs, N, msg_dim)
-#         epsilon:     exploration probability
-#         rng:         JAX PRNG key
-#         num_agents:  N
-#         act_dim:     number of discrete actions
-#         gumbel_tau:  temperature for actor's Gumbel sampling
+    Args:
+        train_state: current TrainState (actor_params used)
+        actor:       ISAgentNet module
+        obs_all:     (num_envs, N, obs_dim)
+        prev_msgs:   (num_envs, N, msg_dim)
+        epsilon:     exploration probability
+        rng:         JAX PRNG key
+        num_agents:  N
+        act_dim:     number of discrete actions
+        gumbel_tau:  temperature for actor's Gumbel sampling
 
-#     Returns:
-#         actions_onehot: (num_envs, N, act_dim)  one-hot for buffer
-#         actions_idx:    (num_envs, N)            int for env.step
-#         msgs_out:       (num_envs, N, msg_dim)
-#         rng:            updated key
-#     """
-#     num_envs = obs_all.shape[0]
-#     msg_dim  = prev_msgs.shape[-1]
+    Returns:
+        actions_onehot: (num_envs, N, act_dim)  one-hot for buffer
+        actions_idx:    (num_envs, N)            int for env.step
+        msgs_out:       (num_envs, N, msg_dim)
+        rng:            updated key
+    """
+    num_envs = obs_all.shape[0]
+    msg_dim  = prev_msgs.shape[-1]
 
-#     obs_jax       = jnp.array(obs_all)
-#     prev_msgs_jax = jnp.array(prev_msgs)
+    obs_jax       = jnp.array(obs_all)
+    prev_msgs_jax = jnp.array(prev_msgs)
 
-#     # (num_envs, N, N-1, msg_dim)
-#     received = received_messages(prev_msgs_jax)
+    # (num_envs, N, N-1, msg_dim)
+    received = received_messages(prev_msgs_jax)
 
-#     actions_onehot = np.zeros((num_envs, num_agents, act_dim),  dtype=np.float32)
-#     actions_idx    = np.zeros((num_envs, num_agents),            dtype=np.int32)
-#     msgs_out       = np.zeros((num_envs, num_agents, msg_dim),   dtype=np.float32)
+    actions_onehot = np.zeros((num_envs, num_agents, act_dim),  dtype=np.float32)
+    actions_idx    = np.zeros((num_envs, num_agents),            dtype=np.int32)
+    msgs_out       = np.zeros((num_envs, num_agents, msg_dim),   dtype=np.float32)
 
-#     for j in range(num_agents):
-#         rng, subkey = jax.random.split(rng)
+    for j in range(num_agents):
+        rng, subkey = jax.random.split(rng)
 
-#         logits, _, msg, _ = actor.apply(
-#             train_state.actor_params,
-#             obs_jax[:, j, :],        # (num_envs, obs_dim)
-#             received[:, j, :, :],    # (num_envs, N-1, msg_dim)
-#             rng=subkey,
-#             gumbel_tau=gumbel_tau,
-#             gumbel_hard=True,
-#         )
+        logits, _, msg, _ = actor.apply(
+            train_state.actor_params,
+            obs_jax[:, j, :],        # (num_envs, obs_dim)
+            received[:, j, :, :],    # (num_envs, N-1, msg_dim)
+            rng=subkey,
+            gumbel_tau=gumbel_tau,
+            gumbel_hard=True,
+        )
 
-#         greedy_acts = np.array(jnp.argmax(logits, axis=-1))   # (num_envs,)
+        greedy_acts = np.array(jnp.argmax(logits, axis=-1))   # (num_envs,)
 
-#         rng, eps_key = jax.random.split(rng)
-#         random_acts  = np.array(
-#             jax.random.randint(eps_key, (num_envs,), 0, act_dim)
-#         )
-#         explore = np.random.random(num_envs) < epsilon
-#         final_acts = np.where(explore, random_acts, greedy_acts)
+        rng, eps_key = jax.random.split(rng)
+        random_acts  = np.array(
+            jax.random.randint(eps_key, (num_envs,), 0, act_dim)
+        )
+        explore = np.random.random(num_envs) < epsilon
+        final_acts = np.where(explore, random_acts, greedy_acts)
 
-#         onehot = np.zeros((num_envs, act_dim), dtype=np.float32)
-#         onehot[np.arange(num_envs), final_acts] = 1.0
+        onehot = np.zeros((num_envs, act_dim), dtype=np.float32)
+        onehot[np.arange(num_envs), final_acts] = 1.0
 
-#         actions_onehot[:, j, :] = onehot
-#         actions_idx[:, j]       = final_acts
-#         msgs_out[:, j, :]       = np.array(msg)
+        actions_onehot[:, j, :] = onehot
+        actions_idx[:, j]       = final_acts
+        msgs_out[:, j, :]       = np.array(msg)
 
-#     return actions_onehot, actions_idx, msgs_out, rng
+    return actions_onehot, actions_idx, msgs_out, rng
 
 
 # vmap over agents, one JIT dispatch for all agents
