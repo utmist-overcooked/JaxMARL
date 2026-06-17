@@ -1286,7 +1286,7 @@ def main():
         help="Total environment steps"
     )
     parser.add_argument(
-        "--num_envs", type=int, default=4,
+        "--num_envs", type=int, default=6,
         help="Number of parallel environments"
     )
     parser.add_argument(
