@@ -38,7 +38,7 @@ Button Adapted Layouts:
     button_gated_circuit, 
     (GOOD) button_gated_zones
 """
-LAYOUT_NAME = "button_twin_movement" # Change this to try different layouts
+LAYOUT_NAME = "button_gated_zones" # Change this to try different layouts
 
 
 def create_env(layout_name: str) -> OvercookedV3:

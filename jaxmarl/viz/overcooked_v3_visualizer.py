@@ -4,6 +4,7 @@ import math
 from functools import partial
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 try:
     import imageio
@@ -134,10 +135,24 @@ class OvercookedV3Visualizer:
         """Animate a gif from a state sequence and save to file."""
         if not HAS_IMAGEIO:
             raise ImportError("imageio is required for animation. Install with: pip install imageio")
+        # VMAP the renderer over the stacked state sequence. Result is a JAX
+        # DeviceArray on device; copy to host and write frames explicitly to
+        # avoid backend-level optimizations that may drop/merge frames.
         frame_seq = jax.vmap(self._render_state, in_axes=(0, None))(
             state_seq, agent_view_size
         )
-        imageio.mimsave(filename, frame_seq, "GIF", duration=0.5)
+
+        # Move to host and ensure uint8 numpy arrays for the writer.
+        frame_seq_np = jax.device_get(frame_seq)
+        if frame_seq_np.dtype != np.uint8:
+            frame_seq_np = np.clip(frame_seq_np, 0, 255).astype(np.uint8)
+
+        # Ensure shape is (N, H, W, C). Convert grayscale frames to RGB if needed.
+        with imageio.get_writer(filename, mode="I", duration=0.5) as writer:
+            for i, frame in enumerate(frame_seq_np):
+                if frame.ndim == 2:
+                    frame = np.stack([frame, frame, frame], axis=-1)
+                writer.append_data(frame)
 
     def render_sequence(self, state_seq, agent_view_size=None):
         """Render a sequence of states to images."""

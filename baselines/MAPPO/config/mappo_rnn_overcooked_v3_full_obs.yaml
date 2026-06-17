@@ -48,41 +48,43 @@ hydra:
     dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_full_obs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 "ENV_KWARGS":
-  "layout": "cramped_room"
+  "layout": "button_gated_zones"
   "agent_view_size": null
-  "shaped_rewards": False
+  "shaped_rewards": True
   "random_agent_positions": True
   "max_steps": 400
 
-"LR": 0.00001
-"ANNEAL_LR": False
-"LR_WARMUP": 0.0
+# Optimization & Learning Scaling
+"LR": 0.0003                      # Scaled up to account for the larger global batch size
+"ANNEAL_LR": True
+"LR_WARMUP": 0.05
 
-"NUM_ENVS": 64
+# --- THE EFFICIENCY ENGINE (4GB VRAM-SAFE) ---
+"NUM_ENVS": 128                  # Halved from 256 to fit CNN gradients into 4GB
 "NUM_STEPS": 128
 "UPDATE_EPOCHS": 4
-"NUM_MINIBATCHES": 8
+"NUM_MINIBATCHES": 4             # Halved from 8. Minibatch size remains (128 * 128) / 4 = 4,096
 
-"TOTAL_TIMESTEPS": 5e5
-"REW_SHAPING_HORIZON": 0
-"SHAPED_REWARD_SCALE": 0.0
+"TOTAL_TIMESTEPS": 6e7
+"REW_SHAPING_HORIZON": 3e7
+"SHAPED_REWARD_SCALE": 1.0
 
 "FC_DIM_SIZE": 64
 "GRU_HIDDEN_DIM": 128
 
 "CLIP_EPS": 0.2
-"ENT_COEF": 2.0
-"GAMMA": 0.8
-"GAE_LAMBDA": 0.5
+"ENT_COEF": 0.08      # UPDATED FOR GATED ZONES
+"GAMMA": 0.995        # UPDATED FOR GATED ZONES                     
+"GAE_LAMBDA": 0.95                 
 "VF_COEF": 0.5
 "MAX_GRAD_NORM": 0.5
 "ACTIVATION": "relu"
 "SEED": 0
 "NUM_SEEDS": 1
 
-"ENTITY": ""
-"PROJECT": ""
+"ENTITY": "zach-tang-university-of-toronto"
+"PROJECT": "button-gated-zones-mappo-full-obs"
 "WANDB_MODE": "online"
-"WANDB_RUN_NAME": "test_run_cramped_room_max_entropy"
+"WANDB_RUN_NAME": "button_gated_zones_mappo_full_obs"
 "WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
 "USE_RICH_MONITOR": True
