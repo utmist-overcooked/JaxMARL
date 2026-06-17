@@ -1,0 +1,88 @@
+metadata: >
+  hydra:
+    run:
+      dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_full_obs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+  "ENV_KWARGS":
+    "layout": "cramped_room"
+    "agent_view_size": null
+    "shaped_rewards": True
+    "random_agent_positions": True
+    "max_steps": 400
+
+  "LR": 0.00025
+  "ANNEAL_LR": True
+  "LR_WARMUP": 0.05
+
+  "NUM_ENVS": 256
+  "NUM_STEPS": 256
+  "UPDATE_EPOCHS": 4
+  "NUM_MINIBATCHES": 64
+
+  "TOTAL_TIMESTEPS": 3e7
+  "REW_SHAPING_HORIZON": 1.5e7
+  "SHAPED_REWARD_SCALE": 1.0
+
+  "FC_DIM_SIZE": 64
+  "GRU_HIDDEN_DIM": 128
+
+  "CLIP_EPS": 0.2
+  "ENT_COEF": 0.04
+  "GAMMA": 0.99
+  "GAE_LAMBDA": 0.95
+  "VF_COEF": 0.5
+  "MAX_GRAD_NORM": 0.5
+  "ACTIVATION": "relu"
+  "SEED": 0
+  "NUM_SEEDS": 1
+
+  "ENTITY": ""
+  "PROJECT": ""
+  "WANDB_MODE": "disabled"
+  "WANDB_RUN_NAME": ""
+  "WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
+  "USE_RICH_MONITOR": True
+
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_full_obs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+"ENV_KWARGS":
+  "layout": "cramped_room"
+  "agent_view_size": null
+  "shaped_rewards": False
+  "random_agent_positions": True
+  "max_steps": 400
+
+"LR": 0.00001
+"ANNEAL_LR": False
+"LR_WARMUP": 0.0
+
+"NUM_ENVS": 64
+"NUM_STEPS": 128
+"UPDATE_EPOCHS": 4
+"NUM_MINIBATCHES": 8
+
+"TOTAL_TIMESTEPS": 5e5
+"REW_SHAPING_HORIZON": 0
+"SHAPED_REWARD_SCALE": 0.0
+
+"FC_DIM_SIZE": 64
+"GRU_HIDDEN_DIM": 128
+
+"CLIP_EPS": 0.2
+"ENT_COEF": 2.0
+"GAMMA": 0.8
+"GAE_LAMBDA": 0.5
+"VF_COEF": 0.5
+"MAX_GRAD_NORM": 0.5
+"ACTIVATION": "relu"
+"SEED": 0
+"NUM_SEEDS": 1
+
+"ENTITY": ""
+"PROJECT": ""
+"WANDB_MODE": "online"
+"WANDB_RUN_NAME": "test_run_cramped_room_max_entropy"
+"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
+"USE_RICH_MONITOR": True

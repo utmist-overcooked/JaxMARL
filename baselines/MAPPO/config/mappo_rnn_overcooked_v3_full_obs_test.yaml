@@ -1,0 +1,43 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_full_obs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+"ENV_KWARGS":
+  "layout": "cramped_room"
+  "agent_view_size": null
+  "shaped_rewards": True
+  "random_agent_positions": True
+  "max_steps": 400
+
+"LR": 0.00025
+"ANNEAL_LR": True
+"LR_WARMUP": 0.05
+
+"NUM_ENVS": 64
+"NUM_STEPS": 128
+"UPDATE_EPOCHS": 4
+"NUM_MINIBATCHES": 8
+
+"TOTAL_TIMESTEPS": 5e5
+"REW_SHAPING_HORIZON": 2.5e5
+"SHAPED_REWARD_SCALE": 1.0
+
+"FC_DIM_SIZE": 64
+"GRU_HIDDEN_DIM": 128
+
+"CLIP_EPS": 0.2
+"ENT_COEF": 0.04
+"GAMMA": 0.99
+"GAE_LAMBDA": 0.95
+"VF_COEF": 0.5
+"MAX_GRAD_NORM": 0.5
+"ACTIVATION": "relu"
+"SEED": 0
+"NUM_SEEDS": 1
+
+"ENTITY": ""
+"PROJECT": ""
+"WANDB_MODE": "online"
+"WANDB_RUN_NAME": "test_run_cramped_room"
+"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
+"USE_RICH_MONITOR": True
