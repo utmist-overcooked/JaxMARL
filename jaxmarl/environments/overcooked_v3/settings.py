@@ -2,6 +2,7 @@
 
 # Pot timing (matching CoGrid defaults)
 POT_COOK_TIME = 90        # Steps to cook (CoGrid: cooking_time=90)
+POT_COOK_TIMES = [65, 70, 75, 80, 85, 90]       # Leave empty for default to POT_COOK_TIME. Evenly picked from the list of cook times.
 POT_BURN_TIME = 60        # Steps in burning window before burned (CoGrid: burning_time=60)
 
 # Rewards

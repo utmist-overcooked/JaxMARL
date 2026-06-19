@@ -210,6 +210,75 @@ class TestOvercookedV3PotMechanics:
         # All pot timers should be 0
         assert jnp.all(state.pot_cooking_timer == 0)
 
+    def test_pot_cook_time_samples_from_list(self):
+        env = OvercookedV3(pot_cook_time=99, pot_cook_times=[7, 11, 13])
+        sampled_times = set()
+        for seed in range(10):
+            sampled_times.add(int(env._sample_pot_cook_time(jax.random.PRNGKey(seed))))
+
+        assert sampled_times.issubset({7, 11, 13})
+        assert sampled_times
+
+    def test_pot_cook_time_falls_back_to_default_when_list_empty(self):
+        env = OvercookedV3(pot_cook_time=99, pot_cook_times=[])
+        cook_time = env._sample_pot_cook_time(jax.random.PRNGKey(0))
+
+        assert int(cook_time) == 99
+
+    def test_pot_cook_time_is_sampled_on_each_cook_event(self, monkeypatch):
+        env = OvercookedV3(pot_cook_time=99, pot_cook_times=[7, 11, 13])
+        key = jax.random.PRNGKey(0)
+        _, state = env.reset(key)
+
+        samples = iter([jnp.array(7, dtype=jnp.int32), jnp.array(11, dtype=jnp.int32)])
+        monkeypatch.setattr(env, "_sample_pot_cook_time", lambda _key: next(samples))
+
+        pot_y, pot_x = state.pot_positions[0]
+        agent_x = pot_x - 1 if pot_x > 0 else pot_x + 1
+        agent_dir = Direction.RIGHT if pot_x > 0 else Direction.LEFT
+
+        def _make_agent():
+            return Position(
+                x=jnp.array(agent_x, dtype=jnp.int32),
+                y=jnp.array(pot_y, dtype=jnp.int32),
+            )
+
+        agent = state.agents.replace(
+            pos=_make_agent(),
+            dir=jnp.array(agent_dir, dtype=jnp.int32),
+            inventory=jnp.array(DynamicObject.ingredient(0), dtype=jnp.int32),
+        )
+        base_grid = state.grid.at[pot_y, pot_x, 1].set(
+            DynamicObject.ingredient(0) * 2
+        )
+
+        first_result = env.process_interact(
+            base_grid,
+            agent,
+            jnp.array([DynamicObject.ingredient(0)] + [0] * (env.num_agents - 1), dtype=jnp.int32),
+            state.recipe,
+            state.pot_cooking_timer,
+            state.pot_positions,
+            state.pot_active_mask,
+            jnp.array(0, dtype=jnp.int32),
+        )
+        _, _, _, _, _, first_timers = first_result
+        assert int(first_timers[0]) == 7
+
+        second_grid = base_grid
+        second_result = env.process_interact(
+            second_grid,
+            agent,
+            jnp.array([DynamicObject.ingredient(0)] + [0] * (env.num_agents - 1), dtype=jnp.int32),
+            state.recipe,
+            state.pot_cooking_timer,
+            state.pot_positions,
+            state.pot_active_mask,
+            jnp.array(0, dtype=jnp.int32),
+        )
+        _, _, _, _, _, second_timers = second_result
+        assert int(second_timers[0]) == 11
+
     def _setup_full_pot(self, env, state, timer_value):
         """Helper: set pot 0 to 3 onions with a given timer."""
         from jaxmarl.environments.overcooked_v3.common import DynamicObject

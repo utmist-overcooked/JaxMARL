@@ -27,6 +27,7 @@ from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts, La
 from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
+    POT_COOK_TIMES,
     POT_BURN_TIME,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
@@ -191,6 +192,7 @@ class OvercookedV3(MultiAgentEnv):
         # Pot settings
         pot_cook_time: int = POT_COOK_TIME,
         pot_burn_time: int = POT_BURN_TIME,
+        pot_cook_times: List[int] = POT_COOK_TIMES,
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
@@ -277,6 +279,7 @@ class OvercookedV3(MultiAgentEnv):
 
         # Pot settings
         self.pot_cook_time = pot_cook_time
+        self.pot_cook_times = jnp.array(pot_cook_times, dtype=jnp.int32)
         self.pot_burn_time = pot_burn_time
 
         # Order queue settings
@@ -607,6 +610,14 @@ class OvercookedV3(MultiAgentEnv):
         recipe = self.possible_recipes[recipe_idx]
         return DynamicObject.get_recipe_encoding(recipe)
 
+    def _sample_pot_cook_time(self, key: chex.PRNGKey) -> chex.Array:
+        """Sample an episode pot cook time or fall back to the default."""
+        if self.pot_cook_times.size == 0:
+            return jnp.array(self.pot_cook_time, dtype=jnp.int32)
+
+        cook_time_idx = jax.random.randint(key, (), 0, self.pot_cook_times.shape[0])
+        return self.pot_cook_times[cook_time_idx]
+
     @staticmethod
     def _is_agent_walkable(static_object, pos, state):
         # Check if destination is a barrier and if it's active
@@ -826,7 +837,10 @@ class OvercookedV3(MultiAgentEnv):
             is_interact = action == Actions.interact
 
             def _interact(carry, agent):
-                grid, correct_delivery, reward, pot_timers = carry
+                grid, correct_delivery, reward, pot_timers, key = carry
+
+                key, subkey = jax.random.split(key)
+                pot_cook_time = self._sample_pot_cook_time(subkey)
 
                 (
                     new_grid,
@@ -843,6 +857,7 @@ class OvercookedV3(MultiAgentEnv):
                     pot_timers,
                     state.pot_positions,
                     state.pot_active_mask,
+                    pot_cook_time,
                 )
 
                 carry = (
@@ -850,6 +865,7 @@ class OvercookedV3(MultiAgentEnv):
                     correct_delivery | new_correct_delivery,
                     reward + interact_reward,
                     new_pot_timers,
+                    key,
                 )
                 return carry, (new_agent, shaped_reward)
 
@@ -857,10 +873,10 @@ class OvercookedV3(MultiAgentEnv):
                 is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
             )
 
-        carry = (grid, False, 0.0, state.pot_cooking_timer)
+        carry = (grid, False, 0.0, state.pot_cooking_timer, key)
         xs = (new_agents, actions)
         (
-            (new_grid, new_correct_delivery, reward, new_pot_timers),
+            (new_grid, new_correct_delivery, reward, new_pot_timers, _key),
             (new_agents, shaped_rewards),
         ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
@@ -1125,6 +1141,7 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
+        pot_cook_time: chex.Array,
     ):
         """Process an interact action for an agent."""
         inventory = agent.inventory
@@ -1170,18 +1187,20 @@ class OvercookedV3(MultiAgentEnv):
 
         merged_ingredients = interact_ingredients + inventory
 
-        # Pot state
+        # Pot state. Timers live in State, not the grid's extra channel.
+        def _timer_for_pot(pot_idx):
+            pot_y, pot_x = pot_positions[pot_idx]
+            is_this_pot = (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
+            return jax.lax.select(is_this_pot, pot_timers[pot_idx], 0)
+
+        current_pot_timer = jnp.max(jax.vmap(_timer_for_pot)(jnp.arange(MAX_POTS)))
         pot_is_cooked = object_is_pot * (
             (interact_ingredients & DynamicObject.COOKED) != 0
         )
-        pot_is_cooking = object_is_pot * (interact_extra > 0) * ~pot_is_cooked
-        pot_is_burned = object_is_pot * (
-            (interact_ingredients & DynamicObject.BURNED) != 0
-        )
-        pot_is_idle = object_is_pot * ~pot_is_cooking * ~pot_is_cooked * ~pot_is_burned
+        pot_is_cooking = object_is_pot * (current_pot_timer > 0) * ~pot_is_cooked
+        pot_is_idle = object_is_pot * (current_pot_timer == 0) * ~pot_is_cooked
 
-        # Check if pot is ready (in burning window)
-        # In V3: dish_ready when cooking_timer is between 1 and burn_time
+        # Check if pot is ready.
         pot_is_ready = pot_is_cooked
 
         # Pickup success conditions
@@ -1256,7 +1275,7 @@ class OvercookedV3(MultiAgentEnv):
                 (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
             )
             new_timer = jax.lax.select(
-                is_this_pot & auto_cook, self.pot_cook_time, pot_timers[pot_idx]
+                is_this_pot & auto_cook, pot_cook_time, pot_timers[pot_idx]
             )
             # Reset timer on successful dish pickup
             new_timer = jax.lax.select(
