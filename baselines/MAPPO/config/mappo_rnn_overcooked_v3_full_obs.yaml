@@ -1,48 +1,3 @@
-metadata: >
-  hydra:
-    run:
-      dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_full_obs/${now:%Y-%m-%d}/${now:%H-%M-%S}
-
-  "ENV_KWARGS":
-    "layout": "cramped_room"
-    "agent_view_size": null
-    "shaped_rewards": True
-    "random_agent_positions": True
-    "max_steps": 400
-
-  "LR": 0.00025
-  "ANNEAL_LR": True
-  "LR_WARMUP": 0.05
-
-  "NUM_ENVS": 256
-  "NUM_STEPS": 256
-  "UPDATE_EPOCHS": 4
-  "NUM_MINIBATCHES": 64
-
-  "TOTAL_TIMESTEPS": 3e7
-  "REW_SHAPING_HORIZON": 1.5e7
-  "SHAPED_REWARD_SCALE": 1.0
-
-  "FC_DIM_SIZE": 64
-  "GRU_HIDDEN_DIM": 128
-
-  "CLIP_EPS": 0.2
-  "ENT_COEF": 0.04
-  "GAMMA": 0.99
-  "GAE_LAMBDA": 0.95
-  "VF_COEF": 0.5
-  "MAX_GRAD_NORM": 0.5
-  "ACTIVATION": "relu"
-  "SEED": 0
-  "NUM_SEEDS": 1
-
-  "ENTITY": ""
-  "PROJECT": ""
-  "WANDB_MODE": "disabled"
-  "WANDB_RUN_NAME": ""
-  "WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
-  "USE_RICH_MONITOR": True
-
 hydra:
   run:
     dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_full_obs/${now:%Y-%m-%d}/${now:%H-%M-%S}
@@ -65,17 +20,17 @@ hydra:
 "UPDATE_EPOCHS": 4
 "NUM_MINIBATCHES": 4             # Halved from 8. Minibatch size remains (128 * 128) / 4 = 4,096
 
-"TOTAL_TIMESTEPS": 6e7
-"REW_SHAPING_HORIZON": 3e7
+"TOTAL_TIMESTEPS": 2e7            # REDUCED from 6e7: observed ~7.16 updates/min means 6e7 steps would take ~8.5h; 2e7 is a realistic checkpoint (~2.8h) to validate CROSS_INTO_ZONE before committing to a longer run
+"REW_SHAPING_HORIZON": 1.2e7      # REDUCED from 1.6e7 (80% of run): anneals shaping out at 60% of training, giving agents ~800K steps of sparse-only practice to consolidate CROSS_INTO_ZONE before the run ends
 "SHAPED_REWARD_SCALE": 1.0
 
 "FC_DIM_SIZE": 64
 "GRU_HIDDEN_DIM": 128
 
 "CLIP_EPS": 0.2
-"ENT_COEF": 0.08      # UPDATED FOR GATED ZONES
-"GAMMA": 0.995        # UPDATED FOR GATED ZONES                     
-"GAE_LAMBDA": 0.95                 
+"ENT_COEF": 0.12      # RAISED from 0.08: entropy plot shows a hard collapse (~1.6 -> 0.6-1.4) right as reward first spikes around step 450, i.e. premature convergence onto local shaped-reward behavior before the agent discovers button-press-then-cross. More entropy bonus keeps exploration alive long enough for CROSS_INTO_ZONE to be discovered.
+"GAMMA": 0.995        # UPDATED FOR GATED ZONES
+"GAE_LAMBDA": 0.95
 "VF_COEF": 0.5
 "MAX_GRAD_NORM": 0.5
 "ACTIVATION": "relu"
@@ -87,4 +42,4 @@ hydra:
 "WANDB_MODE": "online"
 "WANDB_RUN_NAME": "button_gated_zones_mappo_full_obs"
 "WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
-"USE_RICH_MONITOR": True
+"USE_RICH_MONITOR": False

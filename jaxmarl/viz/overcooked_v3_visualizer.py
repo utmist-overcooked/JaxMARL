@@ -138,14 +138,30 @@ class OvercookedV3Visualizer:
         # VMAP the renderer over the stacked state sequence. Result is a JAX
         # DeviceArray on device; copy to host and write frames explicitly to
         # avoid backend-level optimizations that may drop/merge frames.
-        frame_seq = jax.vmap(self._render_state, in_axes=(0, None))(
-            state_seq, agent_view_size
-        )
+        
+        ##########################
+        # FIX FOR LOW VRAM BELOW #
+        ##########################
 
-        # Move to host and ensure uint8 numpy arrays for the writer.
-        frame_seq_np = jax.device_get(frame_seq)
-        if frame_seq_np.dtype != np.uint8:
-            frame_seq_np = np.clip(frame_seq_np, 0, 255).astype(np.uint8)
+        # 1. Determine how many frames we have
+        num_frames = jax.tree_util.tree_leaves(state_seq)[0].shape[0]
+        frame_seq_np = []
+        
+        # 2. JIT compile the render function for a single frame so it stays fast
+        render_fn = jax.jit(lambda s: self._render_state(s, agent_view_size))
+        
+        # 3. Process one frame at a time to prevent massive memory spikes
+        for i in range(num_frames):
+            # Extract the state for just this specific step
+            single_state = jax.tree_util.tree_map(lambda x: x[i], state_seq)
+            
+            # Render the frame in JAX
+            frame_jax = render_fn(single_state)
+            
+            # Fetch to CPU and immediately cast to uint8 (8-bit image) to save 75% of RAM
+            frame_np = np.array(jax.device_get(frame_jax), dtype=np.uint8)
+            
+            frame_seq_np.append(frame_np)
 
         # Ensure shape is (N, H, W, C). Convert grayscale frames to RGB if needed.
         with imageio.get_writer(filename, mode="I", duration=0.5) as writer:

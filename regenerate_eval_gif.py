@@ -13,6 +13,12 @@ Usage:
 This re-imports the training script as a module to reuse run_eval_episode,
 ActorRNN, OvercookedV3, and OvercookedV3Visualizer exactly as defined there,
 so the eval logic stays in sync with whatever's in the main script.
+
+python regenerate_eval_gif.py \
+        --actor_path /home/raiyan/JaxMARL/jaxmarl/mappo_overcooked_v3_full_obs/models/button_gated_zones_mappo_full_obs_20260617/1098_actor.safetensors \
+        --config_yaml /home/raiyan/JaxMARL/jaxmarl/mappo_overcooked_v3_full_obs/wandb/latest-run/files/config.yaml \
+        --seed_index 0 \
+        --out_dir /home/raiyan/JaxMARL/jaxmarl/mappo_overcooked_v3_full_obs/models
 """
 
 import argparse
@@ -32,7 +38,7 @@ def load_params(filename):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--script_path", default="mappo_rnn_overcooked_v3_full_obs.py")
+    parser.add_argument("--script_path", default="/home/raiyan/JaxMARL/baselines/MAPPO/mappo_rnn_overcooked_v3_full_obs.py")
     parser.add_argument("--actor_path", required=True)
     parser.add_argument("--config_yaml", required=True)
     parser.add_argument("--seed_index", type=int, default=0)
@@ -55,6 +61,12 @@ def main():
     print(f"[2/6] loading config from {args.config_yaml}...", flush=True)
     config = OmegaConf.load(args.config_yaml)
     config = OmegaConf.to_container(config, resolve=True)
+
+    # Unwrap W&B 'value' nesting
+    config = {
+        k: (v["value"] if isinstance(v, dict) and "value" in v else v) 
+        for k, v in config.items()
+    }
 
     print(f"[3/6] loading actor params from {args.actor_path}...", flush=True)
     actor_params = load_params(args.actor_path)
