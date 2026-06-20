@@ -656,7 +656,7 @@ def run(config: dict, env_vec: OvercookedV3,
         min_length=config["LEARNING_STARTS"],
         sample_batch_size=config["BATCH_SIZE"],
         add_sequences=False,
-        add_batch_size=num_envs,
+        add_batch_size=1,
     )
 
     # Init — lives entirely on GPU
