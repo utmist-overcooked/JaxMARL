@@ -152,7 +152,7 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         "NUM_ENVS":         args.num_envs,
         "MAX_STEPS":        args.max_steps,
         "BATCH_SIZE":       512,
-        "BUFFER_SIZE":      100_000,
+        "BUFFER_SIZE":      200_000,
         "LEARNING_STARTS":  5_000,
         "UPDATE_EVERY":     1,
         "UPDATES_PER_STEP": 2,
@@ -643,35 +643,35 @@ def run(config: dict, env_vec: OvercookedV3,
     # ------------------------------------------------------------------
     # 2. Buffer
     # ------------------------------------------------------------------
-    # buffer_state = buffer_init(
-    #     capacity=config["BUFFER_SIZE"],
-    #     num_agents=num_agents,
-    #     obs_dim=obs_dim,
-    #     act_dim=act_dim,
-    #     msg_dim=msg_dim,
-    # )
-
-    buffer = fbx.make_flat_buffer(
-        max_length=config["BUFFER_SIZE"],
-        min_length=config["LEARNING_STARTS"],
-        sample_batch_size=config["BATCH_SIZE"],
-        add_sequences=False,
-        add_batch_size=num_envs,
+    buffer_state = buffer_init(
+        capacity=config["BUFFER_SIZE"],
+        num_agents=num_agents,
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        msg_dim=msg_dim,
     )
 
-    # Init — lives entirely on GPU
-    dummy_transition = {
-        "obs": jnp.zeros((num_agents, obs_dim), dtype=jnp.int32),
-        "prev_msgs": jnp.zeros((num_agents, msg_dim)),
-        "actions": jnp.zeros((num_agents, act_dim)),
-        "msgs": jnp.zeros((num_agents, msg_dim)),
-        "rewards": jnp.zeros((num_agents,)),
-        # "next_obs": jnp.zeros((num_agents, obs_dim), dtype=jnp.int32),
-        # "next_prev_msgs": jnp.zeros((num_agents, msg_dim)),
-        "dones": jnp.zeros(()),
-    }
+    # buffer = fbx.make_flat_buffer(
+    #     max_length=config["BUFFER_SIZE"],
+    #     min_length=config["LEARNING_STARTS"],
+    #     sample_batch_size=config["BATCH_SIZE"],
+    #     add_sequences=False,
+    #     add_batch_size=num_envs,
+    # )
 
-    buffer_state = buffer.init(dummy_transition)
+    # # Init — lives entirely on GPU
+    # dummy_transition = {
+    #     "obs": jnp.zeros((num_agents, obs_dim), dtype=jnp.int32),
+    #     "prev_msgs": jnp.zeros((num_agents, msg_dim)),
+    #     "actions": jnp.zeros((num_agents, act_dim)),
+    #     "msgs": jnp.zeros((num_agents, msg_dim)),
+    #     "rewards": jnp.zeros((num_agents,)),
+    #     # "next_obs": jnp.zeros((num_agents, obs_dim), dtype=jnp.int32),
+    #     # "next_prev_msgs": jnp.zeros((num_agents, msg_dim)),
+    #     "dones": jnp.zeros(()),
+    # }
+
+    # buffer_state = buffer.init(dummy_transition)
 
     # ------------------------------------------------------------------
     # 3. JIT-compile train_step with lax.scan over epochs
@@ -780,1007 +780,784 @@ def run(config: dict, env_vec: OvercookedV3,
     else:
         print("  [WARNING] No save_path set — checkpoints will NOT be saved.", flush=True)
 
-    # ------------------------------------------------------------------
-    # Runner state — everything that crosses scan iterations
-    # ------------------------------------------------------------------
-    RunnerState = namedtuple("RunnerState", [
-        "train_state",
-        "buffer_state",
-        "obs_dict",
-        "prev_msgs",
-        "env_states",
-        "rng",
+    # # ------------------------------------------------------------------
+    # # Runner state — everything that crosses scan iterations
+    # # ------------------------------------------------------------------
+    # RunnerState = namedtuple("RunnerState", [
+    #     "train_state",
+    #     "buffer_state",
+    #     "obs_dict",
+    #     "prev_msgs",
+    #     "env_states",
+    #     "rng",
 
-        # episode tracking
-        "ep_returns",
-        "ep_lengths",
-        "ep_deliveries",
+    #     # episode tracking
+    #     "ep_returns",
+    #     "ep_lengths",
+    #     "ep_deliveries",
 
-        "ep_ingredient_pickup",
-        "ep_plate_pickup",
-        "ep_placement_in_pot",
-        "ep_soup_in_dish",
-        "ep_delivery",
-    ])
+    #     "ep_ingredient_pickup",
+    #     "ep_plate_pickup",
+    #     "ep_placement_in_pot",
+    #     "ep_soup_in_dish",
+    #     "ep_delivery",
+    # ])
 
-    runner_state = RunnerState(
-        train_state=train_state,
-        buffer_state=buffer_state,
-        obs_dict=obs_dict,
-        prev_msgs=jnp.zeros((num_envs, num_agents, msg_dim)),
-        env_states=env_states,
-        rng=rng,
+    # runner_state = RunnerState(
+    #     train_state=train_state,
+    #     buffer_state=buffer_state,
+    #     obs_dict=obs_dict,
+    #     prev_msgs=jnp.zeros((num_envs, num_agents, msg_dim)),
+    #     env_states=env_states,
+    #     rng=rng,
 
-        ep_returns=jnp.zeros(num_envs),
-        ep_lengths=jnp.zeros(num_envs, dtype=jnp.int32),
-        ep_deliveries=jnp.zeros(num_envs),
+    #     ep_returns=jnp.zeros(num_envs),
+    #     ep_lengths=jnp.zeros(num_envs, dtype=jnp.int32),
+    #     ep_deliveries=jnp.zeros(num_envs),
 
-        ep_ingredient_pickup=jnp.zeros(num_envs),
-        ep_plate_pickup=jnp.zeros(num_envs),
-        ep_placement_in_pot=jnp.zeros(num_envs),
-        ep_soup_in_dish=jnp.zeros(num_envs),
-        ep_delivery=jnp.zeros(num_envs),
-    )
+    #     ep_ingredient_pickup=jnp.zeros(num_envs),
+    #     ep_plate_pickup=jnp.zeros(num_envs),
+    #     ep_placement_in_pot=jnp.zeros(num_envs),
+    #     ep_soup_in_dish=jnp.zeros(num_envs),
+    #     ep_delivery=jnp.zeros(num_envs),
+    # )
 
-    from typing import NamedTuple
-    class Batch(NamedTuple):
-        obs: jnp.ndarray
-        prev_msgs: jnp.ndarray
-        actions: jnp.ndarray
-        msgs: jnp.ndarray
-        rewards: jnp.ndarray
-        dones: jnp.ndarray
-        next_obs: jnp.ndarray
-        next_prev_msgs: jnp.ndarray
+    # from typing import NamedTuple
+    # class Batch(NamedTuple):
+    #     obs: jnp.ndarray
+    #     prev_msgs: jnp.ndarray
+    #     actions: jnp.ndarray
+    #     msgs: jnp.ndarray
+    #     rewards: jnp.ndarray
+    #     dones: jnp.ndarray
+    #     next_obs: jnp.ndarray
+    #     next_prev_msgs: jnp.ndarray
 
-    # ------------------------------------------------------------------
-    # Single compiled update step (replaces the entire Python for-loop)
-    # ------------------------------------------------------------------
-    @jax.jit
-    def _update_step(runner_state, step_idx):
-        train_state  = runner_state.train_state
-        buffer_state = runner_state.buffer_state
-        obs_dict     = runner_state.obs_dict
-        prev_msgs    = runner_state.prev_msgs
-        env_states   = runner_state.env_states
-        rng          = runner_state.rng
+    # # ------------------------------------------------------------------
+    # # Single compiled update step (replaces the entire Python for-loop)
+    # # ------------------------------------------------------------------
+    # @jax.jit
+    # def _update_step(runner_state, step_idx):
+    #     train_state  = runner_state.train_state
+    #     buffer_state = runner_state.buffer_state
+    #     obs_dict     = runner_state.obs_dict
+    #     prev_msgs    = runner_state.prev_msgs
+    #     env_states   = runner_state.env_states
+    #     rng          = runner_state.rng
 
-        ep_returns = runner_state.ep_returns
-        ep_lengths = runner_state.ep_lengths
-        ep_deliveries = runner_state.ep_deliveries
+    #     ep_returns = runner_state.ep_returns
+    #     ep_lengths = runner_state.ep_lengths
+    #     ep_deliveries = runner_state.ep_deliveries
 
-        ep_ingredient_pickup = runner_state.ep_ingredient_pickup
-        ep_plate_pickup = runner_state.ep_plate_pickup
-        ep_placement_in_pot = runner_state.ep_placement_in_pot
-        ep_soup_in_dish = runner_state.ep_soup_in_dish
-        ep_delivery = runner_state.ep_delivery
+    #     ep_ingredient_pickup = runner_state.ep_ingredient_pickup
+    #     ep_plate_pickup = runner_state.ep_plate_pickup
+    #     ep_placement_in_pot = runner_state.ep_placement_in_pot
+    #     ep_soup_in_dish = runner_state.ep_soup_in_dish
+    #     ep_delivery = runner_state.ep_delivery
 
-        global_step = step_idx * num_envs
-        frac    = jnp.clip(global_step / max(1, eps_decay), 0.0, 1.0)
-        epsilon = eps_start + frac * (eps_end - eps_start)
-
-        # ── Action selection ─────────────────────────────────────────
-        rng, act_rng = jax.random.split(rng)
-        obs_jax = jnp.stack(
-            [obs_dict[aid].reshape(num_envs, obs_dim) for aid in agent_ids],
-            axis=1,
-        )
-        actions_idx, actions_onehot, msgs, _ = select_and_explore(
-            train_state.actor_params, actor, obs_jax, prev_msgs, num_agents, num_envs, act_dim, act_rng, gumbel_tau, epsilon
-        )
-
-        # ── Env step ─────────────────────────────────────────────────
-        rng, step_rng = jax.random.split(rng)
-        step_rngs = jax.random.split(step_rng, num_envs)
-        action_dict = {
-            f"agent_{i}": actions_idx[:, i] for i in range(num_agents)
-        }
-        next_obs_dict, env_states, rewards_dict, dones_dict, info = jax.vmap(
-            env_vec.step_env
-        )(step_rngs, env_states, action_dict)
-
-        # ── Rewards ──────────────────────────────────────────────────
-        next_obs_jax = jnp.stack(
-            [next_obs_dict[aid].reshape(num_envs, obs_dim) for aid in agent_ids],
-            axis=1,
-        )
-        raw_rewards = jnp.stack(
-            [rewards_dict[aid] for aid in agent_ids], axis=1
-        )
-        shaped_rewards = jnp.stack(
-            [info["shaped_reward"][aid] for aid in agent_ids], axis=1
-        )
-        rewards_all = raw_rewards + shaped_rewards
-
-        step_reward = rewards_all.sum(axis=1)
-
-        delivery_event = (
-            (raw_rewards >= 20.0)
-            .any(axis=1)
-            .astype(jnp.float32)
-        )
-
-        ep_returns = ep_returns + step_reward
-        ep_lengths = ep_lengths + 1
-        ep_deliveries = ep_deliveries + delivery_event
-
-        sv = shaped_rewards[:, 0]
-
-        ep_ingredient_pickup = (
-            ep_ingredient_pickup +
-            (sv == 3.0).astype(jnp.float32)
-        )
-
-        ep_plate_pickup = (
-            ep_plate_pickup +
-            (sv == 4.0).astype(jnp.float32)
-        )
-
-        ep_placement_in_pot = (
-            ep_placement_in_pot +
-            (sv == 6.0).astype(jnp.float32)
-        )
-
-        ep_soup_in_dish = (
-            ep_soup_in_dish +
-            (sv == 12.0).astype(jnp.float32)
-        )
-
-        ep_delivery = ep_delivery + delivery_event           
-
-        dones = jnp.stack(
-            [dones_dict[aid] for aid in agent_ids], axis=1
-        ).all(axis=1).astype(jnp.float32)  # (num_envs,)
-
-        completed_returns = jnp.where(
-            dones.astype(bool),
-            ep_returns,
-            0.0,
-        )
-
-        completed_lengths = jnp.where(
-            dones.astype(bool),
-            ep_lengths,
-            0,
-        )
-
-        completed_deliveries = jnp.where(
-            dones.astype(bool),
-            ep_deliveries,
-            0.0,
-        )
-
-        completed_ingredient_pickup = jnp.where(
-            dones.astype(bool),
-            ep_ingredient_pickup,
-            0.0,
-        )
-
-        completed_plate_pickup = jnp.where(
-            dones.astype(bool),
-            ep_plate_pickup,
-            0.0,
-        )
-
-        completed_placement_in_pot = jnp.where(
-            dones.astype(bool),
-            ep_placement_in_pot,
-            0.0,
-        )
-
-        completed_soup_in_dish = jnp.where(
-            dones.astype(bool),
-            ep_soup_in_dish,
-            0.0,
-        )
-
-        completed_delivery = jnp.where(
-            dones.astype(bool),
-            ep_delivery,
-            0.0,
-        )        
-
-        # ── Buffer add ───────────────────────────────────────────────
-        transition = {
-            "obs":            obs_jax,
-            "prev_msgs":      prev_msgs,
-            "actions":        actions_onehot,
-            "msgs":           msgs,
-            "rewards":        rewards_all,
-            # "next_obs":       next_obs_jax,
-            # "next_prev_msgs": msgs,
-            "dones":          dones,
-        }
-        buffer_state = buffer.add(buffer_state, transition)
-
-        # ── Auto-reset done envs ──────────────────────────────────────
-        rng, reset_rng = jax.random.split(rng)
-        reset_rngs = jax.random.split(reset_rng, num_envs)
-        new_obs, new_states = jit_reset(reset_rngs)
-
-        done_mask = dones.astype(bool)
-        env_states = jax.tree_util.tree_map(
-            lambda new, old: jnp.where(
-                done_mask.reshape([-1] + [1] * (new.ndim - 1)), new, old
-            ),
-            new_states, env_states,
-        )
-
-        next_obs_stacked = jnp.stack(
-            [next_obs_dict[aid] for aid in agent_ids], axis=1
-        )  # (num_envs, N, H, W, C)
-        new_obs_stacked = jnp.stack(
-            [new_obs[aid] for aid in agent_ids], axis=1
-        )
-        merged = jnp.where(
-            done_mask[:, None, None, None, None],  # broadcast over N,H,W,C
-            new_obs_stacked,
-            next_obs_stacked,
-        )
-        # Rebuild dict
-        next_obs_dict = {
-            aid: merged[:, i] for i, aid in enumerate(agent_ids)
-        }
-
-        # Reset messages for done envs
-        prev_msgs = jnp.where(
-            done_mask[:, None, None],
-            jnp.zeros_like(msgs),
-            msgs,
-        )
-
-        ep_returns = jnp.where(
-            done_mask,
-            0.0,
-            ep_returns,
-        )
-
-        ep_lengths = jnp.where(
-            done_mask,
-            0,
-            ep_lengths,
-        )
-
-        ep_deliveries = jnp.where(
-            done_mask,
-            0.0,
-            ep_deliveries,
-        )
-
-        ep_ingredient_pickup = jnp.where(
-            done_mask,
-            0.0,
-            ep_ingredient_pickup,
-        )
-
-        ep_plate_pickup = jnp.where(
-            done_mask,
-            0.0,
-            ep_plate_pickup,
-        )
-
-        ep_placement_in_pot = jnp.where(
-            done_mask,
-            0.0,
-            ep_placement_in_pot,
-        )
-
-        ep_soup_in_dish = jnp.where(
-            done_mask,
-            0.0,
-            ep_soup_in_dish,
-        )
-
-        ep_delivery = jnp.where(
-            done_mask,
-            0.0,
-            ep_delivery,
-        )
-
-        # ── Train step (conditional on buffer ready) ──────────────────
-        rng, sample_rng = jax.random.split(rng)
-
-        def do_train(args):
-            train_state, buffer_state, rng = args
-            sample = buffer.sample(buffer_state, rng)
-            pair = sample.experience
-
-            batch = Batch(
-                obs=pair.first["obs"],
-                prev_msgs=pair.first["prev_msgs"],
-                actions=pair.first["actions"],
-                msgs=pair.first["msgs"],
-                rewards=pair.first["rewards"],
-                dones=pair.first["dones"],
-                next_obs=pair.second["obs"],
-                next_prev_msgs=pair.second["prev_msgs"],
-            )
-
-            train_state, metrics = jit_train_step(train_state, batch)
-            return train_state, metrics
-
-        def skip_train(args):
-            train_state, buffer_state, rng = args
-            return train_state, UpdateMetrics(
-                critic_loss=jnp.zeros(()),
-                actor_loss= jnp.zeros(()),
-                pred_loss=  jnp.zeros(()),
-                q_mean=     jnp.zeros(()),
-            )
-
-        train_state, metrics = jax.lax.cond(
-            buffer.can_sample(buffer_state),
-            do_train,
-            skip_train,
-            (train_state, buffer_state, sample_rng),
-        )
-
-        # ── Metrics for logging ───────────────────────────────────────
-        step_metrics = {
-            "rewards": step_reward.mean(),
-            "deliveries": delivery_event.mean(),
-
-            "critic_loss": metrics.critic_loss,
-            "actor_loss": metrics.actor_loss,
-            "pred_loss": metrics.pred_loss,
-            "q_mean": metrics.q_mean,
-
-            "completed_returns": completed_returns,
-            "completed_lengths": completed_lengths,
-            "completed_deliveries": completed_deliveries,
-
-            "completed_ingredient_pickup": completed_ingredient_pickup,
-            "completed_plate_pickup": completed_plate_pickup,
-            "completed_placement_in_pot": completed_placement_in_pot,
-            "completed_soup_in_dish": completed_soup_in_dish,
-            "completed_delivery": completed_delivery,
-        }
-
-        new_runner_state = RunnerState(
-            train_state=train_state,
-            buffer_state=buffer_state,
-            obs_dict=next_obs_dict,
-            prev_msgs=prev_msgs,
-            env_states=env_states,
-            rng=rng,
-
-            ep_returns=ep_returns,
-            ep_lengths=ep_lengths,
-            ep_deliveries=ep_deliveries,
-
-            ep_ingredient_pickup=ep_ingredient_pickup,
-            ep_plate_pickup=ep_plate_pickup,
-            ep_placement_in_pot=ep_placement_in_pot,
-            ep_soup_in_dish=ep_soup_in_dish,
-            ep_delivery=ep_delivery,
-        )
-        return new_runner_state, step_metrics
-
-    # ── Run entire training as one compiled scan ──────────────────────
-    print("JIT compiling full training loop (first run takes several minutes)...")
-    t_compile = time.time()
-    runner_state, all_metrics = jax.lax.scan(
-        _update_step,
-        runner_state,
-        jnp.arange(total_steps_target),
-        length=total_steps_target,
-    )
-    jax.block_until_ready(all_metrics)
-    print(f"Training complete. Compile+run took {time.time()-t_compile:.1f}s")
-
-
-
-    # for t in range(1, total_steps_target + 1):
-    #     t_loop_start = time.time()
-    #     global_step = t * num_envs 
-
-    #     # ── Epsilon schedule ─────────────────────────────────────────
-    #     frac    = min(1.0, global_step / max(1, eps_decay))
+    #     global_step = step_idx * num_envs
+    #     frac    = jnp.clip(global_step / max(1, eps_decay), 0.0, 1.0)
     #     epsilon = eps_start + frac * (eps_end - eps_start)
-
-    #     # ── Obs ──────────────────────────────────────────────────────
-    #     obs_all = obs_dict_to_array(obs_dict, agent_ids, num_envs, obs_dim)
 
     #     # ── Action selection ─────────────────────────────────────────
     #     rng, act_rng = jax.random.split(rng)
-    #     logits_all, msgs = select_actions_jit(
-    #         train_state.actor_params,
-    #         actor,
-    #         jnp.array(obs_all),
-    #         jnp.array(prev_msgs),
-    #         num_agents = num_agents,
-    #         gumbel_tau = config["GUMBEL_TAU"],
-    #         rng = act_rng,
-    #     )    
-
-    #     actions_idx, actions_onehot = apply_epsilon_greedy(
-    #         logits_all,
-    #         act_rng,
-    #         epsilon,
-    #         num_agents,
-    #         num_envs,
-    #         act_dim,
+    #     obs_jax = jnp.stack(
+    #         [obs_dict[aid].reshape(num_envs, obs_dim) for aid in agent_ids],
+    #         axis=1,
+    #     )
+    #     actions_idx, actions_onehot, msgs, _ = select_and_explore(
+    #         train_state.actor_params, actor, obs_jax, prev_msgs, num_agents, num_envs, act_dim, act_rng, gumbel_tau, epsilon
     #     )
 
-    #     # Keep as JAX arrays until buffer write — no numpy conversion
-    #     msgs = np.array(msgs.transpose(1, 0, 2))        # (num_envs, N, msg_dim)
-    #     actions_idx = np.array(actions_idx)                # only convert for env.step
-    #     actions_onehot = np.array(actions_onehot)       # only convert for buffer
-
-    #     # ── Step envs ────────────────────────────────────────────────
+    #     # ── Env step ─────────────────────────────────────────────────
     #     rng, step_rng = jax.random.split(rng)
     #     step_rngs = jax.random.split(step_rng, num_envs)
     #     action_dict = {
-    #         f"agent_{i}": jnp.array(actions_idx[:, i])
-    #         for i in range(num_agents)
+    #         f"agent_{i}": actions_idx[:, i] for i in range(num_agents)
     #     }
-    #     t0 = time.time()
-    #     next_obs_dict, env_states, rewards_dict, dones_dict, info = jit_step(
-    #     step_rngs, env_states, action_dict
+    #     next_obs_dict, env_states, rewards_dict, dones_dict, info = jax.vmap(
+    #         env_vec.step_env
+    #     )(step_rngs, env_states, action_dict)
+
+    #     # ── Rewards ──────────────────────────────────────────────────
+    #     next_obs_jax = jnp.stack(
+    #         [next_obs_dict[aid].reshape(num_envs, obs_dim) for aid in agent_ids],
+    #         axis=1,
     #     )
-    #     # jax.block_until_ready(next_obs_dict)   # force sync for accurate timing
-    #     t_step += time.time() - t0
-    #     # print(f"First jit_step: {time.time()-t0:.1f}s (includes compilation)")
+    #     raw_rewards = jnp.stack(
+    #         [rewards_dict[aid] for aid in agent_ids], axis=1
+    #     )
+    #     shaped_rewards = jnp.stack(
+    #         [info["shaped_reward"][aid] for aid in agent_ids], axis=1
+    #     )
+    #     rewards_all = raw_rewards + shaped_rewards
 
-    #     # check rewards used
-    #     if t == 1:
-    #         print("rewards_dict sample:")
-    #         for k, v in rewards_dict.items():
-    #             print(f"  {k}: {jnp.array(v)[:3]}")
-    #         print("info keys:", list(info.keys()))
-    #         if "shaped_reward" in info:
-    #             print("shaped_rewards sample:", {k: jnp.array(v)[:3] for k, v in info["shaped_reward"].items()})
+    #     step_reward = rewards_all.sum(axis=1)
 
-    #     # ── Convert ───────────────────────────────────────────────────
-    #     next_obs_all = obs_dict_to_array(next_obs_dict, agent_ids, num_envs, obs_dim)
-    #     dones_all = dones_dict_to_array(dones_dict, agent_ids, num_envs)
-
-    #     # Raw rewards always needed for delivery tracking
-    #     raw_rewards = rewards_dict_to_array(rewards_dict, agent_ids, num_envs)        
-
-    #     # Use shaped rewards for training signal, sparse for logging
-    #     if config.get("USE_SHAPED_REWARDS", True) and "shaped_reward" in info:
-    #         shaped = info["shaped_reward"]
-    #         # Combine: sparse delivery + shaped intermediate rewards
-    #         combined_rewards = {
-    #             aid: jnp.array(rewards_dict[aid]) + jnp.array(shaped[aid])
-    #             for aid in agent_ids
-    #         }
-    #         rewards_all = rewards_dict_to_array(combined_rewards, agent_ids, num_envs)
-    #     else:
-    #         rewards_all = raw_rewards
-        
-    #     # Make sure they are np arrays before adding to the buffer
-    #     rewards_all=np.asarray(rewards_all)
-    #     next_obs_all=np.asarray(next_obs_all)
-    #     obs_all=np.asarray(obs_all)
-
-    #     # Track deliveries from raw rewards
-    #     ep_deliveries += (raw_rewards >= 20.0).any(axis=1).astype(np.float32)          
-
-    #     # ── Buffer ───────────────────────────────────────────────────
-    #     t0 = time.time()
-    #     # for e in range(num_envs):
-    #     #     buffer_state = buffer_add(
-    #     #         buffer_state,
-    #     #         obs=           obs_all[e],
-    #     #         prev_msgs=     prev_msgs[e],
-    #     #         actions=       actions_onehot[e],
-    #     #         msgs=          msgs[e],
-    #     #         rewards=       rewards_all[e],
-    #     #         next_obs=      next_obs_all[e],
-    #     #         next_prev_msgs=msgs[e],
-    #     #         done=          bool(dones_all[e]),
-    #         # )
-
-    #     buffer_state = buffer_add_batch(
-    #         buffer_state,
-    #         obs=np.asarray(obs_all),
-    #         prev_msgs=prev_msgs,
-    #         actions=np.asarray(actions_onehot),
-    #         msgs=msgs,
-    #         rewards=np.asarray(rewards_all),
-    #         next_obs=np.asarray(next_obs_all),
-    #         next_prev_msgs=msgs,
-    #         dones=dones_all,
+    #     delivery_event = (
+    #         (raw_rewards >= 20.0)
+    #         .any(axis=1)
+    #         .astype(jnp.float32)
     #     )
 
-    #     t_buffer += time.time() - t0
+    #     ep_returns = ep_returns + step_reward
+    #     ep_lengths = ep_lengths + 1
+    #     ep_deliveries = ep_deliveries + delivery_event
 
-    #     # ── Reward type tracking ──────────────────────────────────────
-    #     # Prefer explicit event flags if provided by the environment via
-    #     # info["reward_events"]. Fall back to shaped-reward inference.
-    #     if "reward_events" in info:
-    #         re = info["reward_events"]
-    #         for e in range(num_envs):
-    #             for ev in list(reward_type_counts.keys()):
-    #                 count = 0.0
-    #                 # Case A: re is mapping agent_id -> {event: array}
-    #                 try:
-    #                     if isinstance(re, dict) and agent_ids[0] in re:
-    #                         for aid in agent_ids:
-    #                             sub = re.get(aid, {})
-    #                             if isinstance(sub, dict) and ev in sub:
-    #                                 count += float(jnp.array(sub[ev])[e])
-    #                     # Case B: re is mapping event -> agent mapping or event -> array
-    #                     elif isinstance(re, dict) and ev in re:
-    #                         val = re[ev]
-    #                         if isinstance(val, dict):
-    #                             for aid in agent_ids:
-    #                                 if aid in val:
-    #                                     count += float(jnp.array(val[aid])[e])
-    #                         else:
-    #                             # val might be per-agent array or per-env scalar array
-    #                             try:
-    #                                 arr = jnp.array(val)
-    #                                 # If arr has agent axis, try summing across agents
-    #                                 if arr.ndim == 2:
-    #                                     count += float(arr[:, :][e].sum())
-    #                                 else:
-    #                                     count += float(arr[e])
-    #                             except Exception:
-    #                                 pass
-    #                 except Exception:
-    #                     count = 0.0
+    #     sv = shaped_rewards[:, 0]
 
-    #                 ep_reward_types[ev][e] += count
+    #     ep_ingredient_pickup = (
+    #         ep_ingredient_pickup +
+    #         (sv == 3.0).astype(jnp.float32)
+    #     )
 
-    #     elif "shaped_reward" in info:
-    #         shaped = info["shaped_reward"]
-    #         for e in range(num_envs):
-    #             aid0 = agent_ids[0]
-    #             sv = float(jnp.array(shaped[aid0])[e])
-    #             rv = float(jnp.array(rewards_dict[aid0])[e])
+    #     ep_plate_pickup = (
+    #         ep_plate_pickup +
+    #         (sv == 4.0).astype(jnp.float32)
+    #     )
 
-    #             # Infer reward type from shaped value
-    #             if sv == 12.0:
-    #                 ep_reward_types["soup_in_dish"][e] += 1
-    #             elif sv == 3.0:
-    #                 ep_reward_types["ingredient_pickup"][e] += 1
-    #             elif sv == 6.0:
-    #                 ep_reward_types["placement_in_pot"][e] += 1
-    #             elif sv == 4.0:
-    #                 ep_reward_types["plate_pickup"][e] += 1
+    #     ep_placement_in_pot = (
+    #         ep_placement_in_pot +
+    #         (sv == 6.0).astype(jnp.float32)
+    #     )
 
-    #             if rv >= 20.0:
-    #                 ep_reward_types["delivery"][e] += 1
+    #     ep_soup_in_dish = (
+    #         ep_soup_in_dish +
+    #         (sv == 12.0).astype(jnp.float32)
+    #     )
 
-    #     # ── Episode tracking ─────────────────────────────────────────
-    #     ep_returns += rewards_all
-    #     ep_lengths += 1
-    #     for e in range(num_envs):
-    #         if dones_all[e]:
-    #             all_returns.append(float(ep_returns[e].sum()))
-    #             all_lengths.append(int(ep_lengths[e]))
-    #             all_deliveries.append(float(ep_deliveries[e]))  # deliveries this episode
-    #             ep_returns[e]   = 0.0
-    #             ep_deliveries[e] = 0.0
-    #             ep_lengths[e] = 0
-    #             for k in reward_type_counts:
-    #                 reward_type_history[k].append(float(ep_reward_types[k][e]))
-    #                 reward_type_counts[k] += ep_reward_types[k][e]
-    #                 ep_reward_types[k][e] = 0.0
+    #     ep_delivery = ep_delivery + delivery_event           
+
+    #     dones = jnp.stack(
+    #         [dones_dict[aid] for aid in agent_ids], axis=1
+    #     ).all(axis=1).astype(jnp.float32)  # (num_envs,)
+
+    #     completed_returns = jnp.where(
+    #         dones.astype(bool),
+    #         ep_returns,
+    #         0.0,
+    #     )
+
+    #     completed_lengths = jnp.where(
+    #         dones.astype(bool),
+    #         ep_lengths,
+    #         0,
+    #     )
+
+    #     completed_deliveries = jnp.where(
+    #         dones.astype(bool),
+    #         ep_deliveries,
+    #         0.0,
+    #     )
+
+    #     completed_ingredient_pickup = jnp.where(
+    #         dones.astype(bool),
+    #         ep_ingredient_pickup,
+    #         0.0,
+    #     )
+
+    #     completed_plate_pickup = jnp.where(
+    #         dones.astype(bool),
+    #         ep_plate_pickup,
+    #         0.0,
+    #     )
+
+    #     completed_placement_in_pot = jnp.where(
+    #         dones.astype(bool),
+    #         ep_placement_in_pot,
+    #         0.0,
+    #     )
+
+    #     completed_soup_in_dish = jnp.where(
+    #         dones.astype(bool),
+    #         ep_soup_in_dish,
+    #         0.0,
+    #     )
+
+    #     completed_delivery = jnp.where(
+    #         dones.astype(bool),
+    #         ep_delivery,
+    #         0.0,
+    #     )        
+
+    #     # ── Buffer add ───────────────────────────────────────────────
+    #     transition = {
+    #         "obs":            obs_jax,
+    #         "prev_msgs":      prev_msgs,
+    #         "actions":        actions_onehot,
+    #         "msgs":           msgs,
+    #         "rewards":        rewards_all,
+    #         # "next_obs":       next_obs_jax,
+    #         # "next_prev_msgs": msgs,
+    #         "dones":          dones,
+    #     }
+    #     buffer_state = buffer.add(buffer_state, transition)
 
     #     # ── Auto-reset done envs ──────────────────────────────────────
-    #     # JaxMARL does NOT auto-reset — when an env is done it stays
-    #     # in terminal state returning done=True every subsequent step
-    #     # until manually reset. This is why dones_all stays [1,1,1,1].
-    #     if jnp.any(dones_all):
-    #         rng, reset_rng = jax.random.split(rng)
-    #         reset_rngs = jax.random.split(reset_rng, num_envs)
+    #     rng, reset_rng = jax.random.split(rng)
+    #     reset_rngs = jax.random.split(reset_rng, num_envs)
+    #     new_obs, new_states = jit_reset(reset_rngs)
 
-    #         # Reset ALL envs that are done
-    #         # new_obs, new_states = jax.vmap(env_vec.reset)(reset_rngs)
-    #         new_obs, new_states = jit_reset(reset_rngs)
-
-
-    #         # Only replace done envs — keep running envs as-is
-    #         done_mask = jnp.array(dones_all, dtype=jnp.bool_)  # (num_envs,)
-
-    #         # Merge: use new state for done envs, keep old state for running envs
-    #         env_states = jax.tree_util.tree_map(
-    #             lambda new, old: jnp.where(
-    #                 done_mask.reshape([-1] + [1] * (new.ndim - 1)),
-    #                 new,
-    #                 old,
-    #             ),
-    #             new_states,
-    #             env_states,
-    #         )
-
-    #         # Update obs for done envs
-    #         for aid in agent_ids:
-    #             obs_dict[aid] = jnp.where(
-    #                 done_mask.reshape([-1] + [1] * (jnp.array(obs_dict[aid]).ndim - 1)),
-    #                 new_obs[aid],
-    #                 obs_dict[aid],
-    #             )   
-
-    #     # ── Advance state ─────────────────────────────────────────────
-    #     obs_dict  = next_obs_dict   # contains reset obs for done envs
-    #     prev_msgs = msgs
-    #     # for e in range(num_envs):
-    #     #     if dones_all[e]:
-    #     #         prev_msgs[e] = 0.0
-    #     done_mask_np = dones_all.astype(bool)  # (num_envs,)
-    #     prev_msgs[done_mask_np] = 0.0          # one numpy op
-
-    #     # ── Gradient updates ─────────────────────────────────────────
-    #     if (buffer_is_ready(buffer_state, batch_size)
-    #             and global_step >= learn_start
-    #             and t % update_every == 0):
-
-    #         for _ in range(updates_per):
-    #             # Warn once that JIT compilation is about to happen
-    #             if not first_update_done:
-    #                 print(
-    #                     f"  [step={global_step:,}] Buffer ready — "
-    #                     f"JIT compiling train_step (may take 1-3 min)..."
-    #                 )
-    #                 compile_start = time.time()
-                
-    #             t0 = time.time()
-    #             # batch, rng = buffer_sample_prioritized(buffer_state, batch_size, rng, priority_reward_weight=10.0)
-    #             batch, rng = buffer_sample(buffer_state, batch_size, rng)
-    #             train_state, last_metrics = jit_train_step(train_state, batch)
-    #             # jax.block_until_ready(train_state.actor_params)  # force sync
-    #             t_train += time.time() - t0
-
-    #             if not first_update_done:
-    #                 # block_until_ready forces JAX to finish compilation
-    #                 # before we print the compile time
-    #                 jax.block_until_ready(train_state.actor_params)
-    #                 compile_secs = time.time() - compile_start
-    #                 print(f"  [JIT done] Compilation took {compile_secs:.1f}s — training now running.")
-    #                 first_update_done = True
-
-    #             total_updates += 1
-
-    #             # NaN guard — stop immediately with diagnostics
-    #             if jnp.isnan(last_metrics.critic_loss):
-    #                 print(
-    #                     f"\n[NaN detected at step={global_step}, update={total_updates}]"
-    #                     f"\n  critic_loss : {last_metrics.critic_loss}"
-    #                     f"\n  actor_loss  : {last_metrics.actor_loss}"
-    #                     f"\n  pred_loss   : {last_metrics.pred_loss}"
-    #                     f"\n  q_mean      : {last_metrics.q_mean}"
-    #                     f"\n  Check: learning rates too high, grad_clip too loose,"
-    #                     f"\n         or reward scale mismatch."
-    #                 )
-    #                 raise ValueError("NaN in training metrics — see above for diagnostics.")                
-
-    #     # ── Progress every 100 steps before first log_every ──────────
-    #     # Shows the loop is alive during buffer fill and compilation
-    #     if t % 100 == 0 and total_updates == 0:
-    #         buf_pct = 100.0 * buffer_state.size / config["BUFFER_SIZE"]
-    #         print(
-    #             f"  [step={global_step:>7,}] filling buffer "
-    #             f"{buffer_state.size:>6,}/{config['BUFFER_SIZE']:,} "
-    #             f"({buf_pct:.1f}%)  eps={epsilon:.3f}",
-    #             flush=True,
-    #         )
-        
-    #     # Print breakdown every 500 steps
-    #     if t % 1000 == 0 and t > 0:
-    #         total = t_step + t_buffer + t_train
-    #         print(f"\n[t={t}] Time breakdown:")
-    #         print(f"  env step    : {t_step:.1f}s  ({100*t_step/total:.0f}%)")
-    #         print(f"  buffer add  : {t_buffer:.1f}s  ({100*t_buffer/total:.0f}%)")
-    #         print(f"  train step  : {t_train:.1f}s  ({100*t_train/total:.0f}%)")
-    #         t_step = t_buffer = t_train = 0.0
-
-    #     # ── Logging every log_every steps ────────────────────────────
-    #     if t % log_every == 0 and first_update_done:
-    #         recent = all_returns[-100:] if all_returns else [0.0]
-    #         recent_deliveries = all_deliveries[-100:] if all_deliveries else [0.0]
-    #         sps    = global_step / max(1.0, time.time() - t_start)
-
-    #         metrics_log = {
-    #             "env_step":    global_step,
-    #             "update_step": total_updates,
-    #             "epsilon":     epsilon,
-    #             "return_mean": float(np.mean(recent)),
-    #             "return_std":  float(np.std(recent)) if len(recent) > 1 else 0.0,
-    #             "critic_loss": float(last_metrics.critic_loss) if last_metrics else 0.0,
-    #             "actor_loss":  float(last_metrics.actor_loss)  if last_metrics else 0.0,
-    #             "pred_loss":   float(last_metrics.pred_loss)   if last_metrics else 0.0,
-    #             "q_mean":      float(last_metrics.q_mean)      if last_metrics else 0.0,
-    #             "steps_per_sec": sps,
-    #         }
-
-    #         if monitor is not None:
-    #             monitor.update(total_updates, metrics_log)
-    #         else:
-    #             print(
-    #                 f"  step={global_step:>8,} "
-    #                 f"upd={total_updates:>5d} "
-    #                 f"episodes={len(all_returns):>4d} "
-    #                 f"ret={metrics_log['return_mean']:>7.2f}±{metrics_log['return_std']:.2f} "
-    #                 f"deliveries={np.mean(recent_deliveries):.2f} "  # avg deliveries per episode
-    #                 f"c_loss={metrics_log['critic_loss']:>7.4f} "
-    #                 f"a_loss={metrics_log['actor_loss']:>7.4f} "
-    #                 f"pred={metrics_log['pred_loss']:>7.4f} "
-    #                 f"q={metrics_log['q_mean']:>7.4f} "
-    #                 f"eps={epsilon:.3f} "
-    #                 f"sps={sps:>6.0f}",
-    #                 flush=True,
-    #             )
-
-    #         if config["WANDB_MODE"] != "disabled":
-    #             wandb.log(metrics_log, step=global_step)
-
-    #     # ── Checkpoint every CKPT_INTERVAL loop iterations ────────────
-    #     if (ckpt_dir is not None
-    #             and t > 0
-    #             and t % CKPT_INTERVAL == 0):
-    #         ckpt_path = os.path.join(
-    #             ckpt_dir,
-    #             f"is_maddpg_{config['LAYOUT']}_step{t:08d}.zip"
-    #         )
-    #         save_checkpoint_zip(train_state, ckpt_path, config, t)
-    #         print(f"\nCheckpoint saved → {ckpt_path}", flush=True)        
-
-    
-    # # ── Post-training summary + plots ───────────────────────────────────────────────
-    # import matplotlib.pyplot as plt
-
-    # print("\n" + "="*60)
-    # print("TRAINING SUMMARY")
-    # print("="*60)
-    # print(f"  Total env steps      : {config['TOTAL_TIMESTEPS']:,}")
-    # print(f"  Total grad updates   : {total_updates:,}")
-    # print(f"  Episodes completed   : {len(all_returns)}")
-    # if all_returns:
-    #     print(f"  Best episode return  : {max(all_returns):.2f}")
-    #     print(f"  Final 100-ep mean   : {np.mean(all_returns[-100:]):.2f}")
-    #     print(f"  Final 100-ep std    : {np.std(all_returns[-100:]):.2f}")
-    # print("="*60)
-
-    # if all_returns:
-    #     plot_dir = ckpt_dir if ckpt_dir else "."
-    #     os.makedirs(plot_dir, exist_ok=True)
-
-    #     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
-
-    #     # --- Episode returns ---
-    #     ax = axes[0]
-    #     ax.plot(all_returns, alpha=0.3, color="steelblue", label="raw")
-    #     # Smooth with a rolling window
-    #     window = min(50, len(all_returns))
-    #     if len(all_returns) >= window:
-    #         smoothed = np.convolve(
-    #             all_returns,
-    #             np.ones(window) / window,
-    #             mode="valid",
-    #         )
-    #         ax.plot(
-    #             range(window - 1, len(all_returns)),
-    #             smoothed,
-    #             color="steelblue",
-    #             linewidth=2,
-    #             label=f"{window}-ep moving avg",
-    #         )
-    #     ax.set_xlabel("Episode")
-    #     ax.set_ylabel("Return")
-    #     ax.set_title(f"IS-MADDPG — OvercookedV3 / {config['LAYOUT']}")
-    #     ax.legend()
-    #     ax.grid(alpha=0.3)
-
-    #     # --- Steps per episode (proxy for episode length / efficiency) ---
-    #     ax = axes[1]
-    #     ax.hist(all_returns, bins=30, color="steelblue", alpha=0.7, edgecolor="white")
-    #     ax.set_xlabel("Episode Return")
-    #     ax.set_ylabel("Count")
-    #     ax.set_title("Return Distribution (all episodes)")
-    #     ax.grid(alpha=0.3)
-
-    #     plt.tight_layout()
-    #     plot_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_returns.png")
-    #     plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-    #     print(f"\nPlot saved → {plot_path}")
-    #     plt.show()
-
-    # # --- Per-episode event counts (non-cumulative) ---
-    # if all_lengths:
-    #     hist_dir = ckpt_dir if ckpt_dir else "."
-    #     os.makedirs(hist_dir, exist_ok=True)
-
-    #     # Events to include (match DEBUG_HISTOGRAM.md semantics)
-    #     event_cols = ["ingredient_pickup", "placement_in_pot", "plate_pickup", "soup_in_dish", "delivery"]
-
-    #     csv_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.csv")
-    #     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-    #         writer = csv.writer(f)
-    #         writer.writerow(["episode", *event_cols])
-    #         n_eps = len(all_lengths)
-    #         # prepare per-event lists (pad with zeros if necessary)
-    #         per_event = {}
-    #         for ev in event_cols:
-    #             vals = reward_type_history.get(ev, [])
-    #             if len(vals) < n_eps:
-    #                 vals = vals + [0.0] * (n_eps - len(vals))
-    #             per_event[ev] = vals
-
-    #         for i in range(n_eps):
-    #             row = [i + 1]
-    #             row += [int(per_event[ev][i]) for ev in event_cols]
-    #             writer.writerow(row)
-
-    #     try:
-    #         fig, ax = plt.subplots(figsize=(10, 5))
-    #         episodes = np.arange(1, len(all_lengths) + 1)
-
-    #         # plot each event as a line (per-episode counts, non-cumulative)
-    #         for ev in event_cols:
-    #             vals = reward_type_history.get(ev, [])
-    #             if len(vals) < len(episodes):
-    #                 vals = vals + [0.0] * (len(episodes) - len(vals))
-    #             ax.plot(episodes, vals, marker="o", linewidth=1.2, label=ev.replace("_", " "))
-
-    #         ax.set_title(f"Per-episode event counts — IS-MADDPG / {config['LAYOUT']}")
-    #         ax.set_xlabel("Episode")
-    #         ax.set_ylabel("Count (per episode)")
-    #         ax.grid(alpha=0.3)
-    #         ax.legend()
-    #         fig.tight_layout()
-    #         png_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.png")
-    #         fig.savefig(png_path, dpi=150, bbox_inches="tight")
-    #         print(f"Saved episode-event CSV to {csv_path} and {png_path}")
-    #         plt.show()
-    #     except Exception as exc:
-    #         print(f"Saved episode-event CSV to {csv_path}; plot skipped: {exc}")
-    
-    # # ---------------------------------------------------------------------------
-    # # Reward type histograms
-    # # ---------------------------------------------------------------------------
-    # reward_labels = {
-    #     "ingredient_pickup": f"Ingredient Pickup (+2)",
-    #     "delivery":          f"Delivery (+20)",
-    #     "placement_in_pot":  f"Placement in Pot (+6)",
-    #     "plate_pickup":      f"Plate Pickup (+4)",
-    #     # "pot_start_cooking": f"Pot Start Cooking (+4)",
-    #     "ingredient_pickup":      f"Onion Pickup (+3)",
-    #     "soup_in_dish":      f"Soup in Dish (+12)",
-    #     # "burn_penalty":      f"Burn Penalty (-5)",
-    # }
-    # colors = {
-    #     "ingredient_pickup": "orange",
-    #     "delivery":          "green",
-    #     "placement_in_pot":  "steelblue",
-    #     "plate_pickup":      "yellow",
-    #     # "pot_start_cooking": "orange",
-    #     "ingredient_pickup": "pink",
-    #     # "pot_start_cooking": "black",
-    #     "soup_in_dish":      "purple",
-    #     # "burn_penalty":      "red",
-    # }
-
-    # if any(len(v) > 0 for v in reward_type_history.values()):
-    #     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-    #     axes = axes.flatten()
-
-    #     for idx, (key, label) in enumerate(reward_labels.items()):
-    #         ax = axes[idx]
-    #         data = reward_type_history[key]
-    #         if data:
-    #             ax.hist(data, bins=20, color=colors[key], alpha=0.7, edgecolor="white")
-    #             ax.set_title(label)
-    #             ax.set_xlabel("Count per episode")
-    #             ax.set_ylabel("Episodes")
-    #             ax.grid(alpha=0.3)
-    #             ax.axvline(np.mean(data), color="black", linestyle="--",
-    #                        linewidth=1.5, label=f"mean={np.mean(data):.2f}")
-    #             ax.legend(fontsize=8)
-    #         else:
-    #             ax.text(0.5, 0.5, "No data", ha="center", va="center",
-    #                     transform=ax.transAxes)
-    #             ax.set_title(label)
-
-    #     # Summary bar chart
-    #     summary_idx = len(reward_labels)
-    #     ax = axes[summary_idx]
-
-    #     # turn off any remaining unused axes
-    #     for i in range(summary_idx + 1, len(axes)):
-    #         axes[i].axis("off")
-            
-    #     keys   = list(reward_labels.keys())
-    #     totals = [reward_type_counts[k] for k in keys]
-    #     bars   = ax.bar(range(len(keys)), totals,
-    #                     color=[colors[k] for k in keys], alpha=0.7, edgecolor="white")
-    #     ax.set_xticks(range(len(keys)))
-    #     ax.set_xticklabels([k.replace("_", "\n") for k in keys], fontsize=7)
-    #     ax.set_title("Total reward events (all episodes)")
-    #     ax.set_ylabel("Count")
-    #     ax.grid(alpha=0.3, axis="y")
-    #     for bar, total in zip(bars, totals):
-    #         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-    #                 f"{int(total)}", ha="center", va="bottom", fontsize=8)
-
-    #     plt.suptitle(f"IS-MADDPG Reward Breakdown — {config['LAYOUT']}", fontsize=13)
-    #     plt.tight_layout()
-
-    #     hist_path = os.path.join(
-    #         ckpt_dir if ckpt_dir else ".",
-    #         f"is_maddpg_{config['LAYOUT']}_reward_breakdown.png",
+    #     done_mask = dones.astype(bool)
+    #     env_states = jax.tree_util.tree_map(
+    #         lambda new, old: jnp.where(
+    #             done_mask.reshape([-1] + [1] * (new.ndim - 1)), new, old
+    #         ),
+    #         new_states, env_states,
     #     )
-    #     os.makedirs(os.path.dirname(hist_path) if os.path.dirname(hist_path) else ".", exist_ok=True)
-    #     plt.savefig(hist_path, dpi=150, bbox_inches="tight")
-    #     print(f"Reward breakdown plot saved → {hist_path}")
-    #     plt.show()
 
-    # # Print summary table
-    # print("\nReward event totals across all episodes:")
-    # print(f"  {'Event':<25} {'Total':>8}  {'Per Episode':>12}")
-    # print("  " + "-" * 48)
-    # n_eps = max(1, len(all_returns))
-    # for k, label in reward_labels.items():
-    #     total = reward_type_counts[k]
-    #     per_ep = total / n_eps
-    #     print(f"  {label:<25} {int(total):>8}  {per_ep:>11.2f}")
+    #     next_obs_stacked = jnp.stack(
+    #         [next_obs_dict[aid] for aid in agent_ids], axis=1
+    #     )  # (num_envs, N, H, W, C)
+    #     new_obs_stacked = jnp.stack(
+    #         [new_obs[aid] for aid in agent_ids], axis=1
+    #     )
+    #     merged = jnp.where(
+    #         done_mask[:, None, None, None, None],  # broadcast over N,H,W,C
+    #         new_obs_stacked,
+    #         next_obs_stacked,
+    #     )
+    #     # Rebuild dict
+    #     next_obs_dict = {
+    #         aid: merged[:, i] for i, aid in enumerate(agent_ids)
+    #     }
 
-    # return {
-    #     "train_state":   train_state,
-    #     "returns":       all_returns,
-    #     "total_updates": total_updates,
-    # }
+    #     # Reset messages for done envs
+    #     prev_msgs = jnp.where(
+    #         done_mask[:, None, None],
+    #         jnp.zeros_like(msgs),
+    #         msgs,
+    #     )
 
-    # ── Post-processing of scan outputs ───────────────────────────────
-    def extract_completed(metric_2d):
-        """Flatten (total_steps, num_envs) and keep only completed episodes."""
-        flat = np.asarray(metric_2d).reshape(-1)
-        mask = np.asarray(all_metrics["completed_lengths"]).reshape(-1) > 0
-        return flat[mask]
+    #     ep_returns = jnp.where(
+    #         done_mask,
+    #         0.0,
+    #         ep_returns,
+    #     )
 
-    all_returns    = extract_completed(all_metrics["completed_returns"])
-    all_lengths    = extract_completed(all_metrics["completed_lengths"])
-    all_deliveries = extract_completed(all_metrics["completed_deliveries"])
+    #     ep_lengths = jnp.where(
+    #         done_mask,
+    #         0,
+    #         ep_lengths,
+    #     )
 
-    reward_type_history = {
-        "ingredient_pickup": extract_completed(all_metrics["completed_ingredient_pickup"]),
-        "plate_pickup":      extract_completed(all_metrics["completed_plate_pickup"]),
-        "placement_in_pot":  extract_completed(all_metrics["completed_placement_in_pot"]),
-        "soup_in_dish":      extract_completed(all_metrics["completed_soup_in_dish"]),
-        "delivery":          extract_completed(all_metrics["completed_delivery"]),
-    }
-    reward_type_counts = {k: int(v.sum()) for k, v in reward_type_history.items()}
+    #     ep_deliveries = jnp.where(
+    #         done_mask,
+    #         0.0,
+    #         ep_deliveries,
+    #     )
 
-    # Total gradient updates = steps where buffer was ready
-    # Approximate from scan length minus learning_starts buffer fill
-    total_updates = int(np.asarray(all_metrics["critic_loss"] != 0).sum())
+    #     ep_ingredient_pickup = jnp.where(
+    #         done_mask,
+    #         0.0,
+    #         ep_ingredient_pickup,
+    #     )
 
-    # ── Post-training summary ──────────────────────────────────────────
+    #     ep_plate_pickup = jnp.where(
+    #         done_mask,
+    #         0.0,
+    #         ep_plate_pickup,
+    #     )
+
+    #     ep_placement_in_pot = jnp.where(
+    #         done_mask,
+    #         0.0,
+    #         ep_placement_in_pot,
+    #     )
+
+    #     ep_soup_in_dish = jnp.where(
+    #         done_mask,
+    #         0.0,
+    #         ep_soup_in_dish,
+    #     )
+
+    #     ep_delivery = jnp.where(
+    #         done_mask,
+    #         0.0,
+    #         ep_delivery,
+    #     )
+
+    #     # ── Train step (conditional on buffer ready) ──────────────────
+    #     rng, sample_rng = jax.random.split(rng)
+
+    #     def do_train(args):
+    #         train_state, buffer_state, rng = args
+    #         sample = buffer.sample(buffer_state, rng)
+    #         pair = sample.experience
+
+    #         batch = Batch(
+    #             obs=pair.first["obs"],
+    #             prev_msgs=pair.first["prev_msgs"],
+    #             actions=pair.first["actions"],
+    #             msgs=pair.first["msgs"],
+    #             rewards=pair.first["rewards"],
+    #             dones=pair.first["dones"],
+    #             next_obs=pair.second["obs"],
+    #             next_prev_msgs=pair.second["prev_msgs"],
+    #         )
+
+    #         train_state, metrics = jit_train_step(train_state, batch)
+    #         return train_state, metrics
+
+    #     def skip_train(args):
+    #         train_state, buffer_state, rng = args
+    #         return train_state, UpdateMetrics(
+    #             critic_loss=jnp.zeros(()),
+    #             actor_loss= jnp.zeros(()),
+    #             pred_loss=  jnp.zeros(()),
+    #             q_mean=     jnp.zeros(()),
+    #         )
+
+    #     train_state, metrics = jax.lax.cond(
+    #         buffer.can_sample(buffer_state),
+    #         do_train,
+    #         skip_train,
+    #         (train_state, buffer_state, sample_rng),
+    #     )
+
+    #     # ── Metrics for logging ───────────────────────────────────────
+    #     step_metrics = {
+    #         "rewards": step_reward.mean(),
+    #         "deliveries": delivery_event.mean(),
+
+    #         "critic_loss": metrics.critic_loss,
+    #         "actor_loss": metrics.actor_loss,
+    #         "pred_loss": metrics.pred_loss,
+    #         "q_mean": metrics.q_mean,
+
+    #         "completed_returns": completed_returns,
+    #         "completed_lengths": completed_lengths,
+    #         "completed_deliveries": completed_deliveries,
+
+    #         "completed_ingredient_pickup": completed_ingredient_pickup,
+    #         "completed_plate_pickup": completed_plate_pickup,
+    #         "completed_placement_in_pot": completed_placement_in_pot,
+    #         "completed_soup_in_dish": completed_soup_in_dish,
+    #         "completed_delivery": completed_delivery,
+    #     }
+
+    #     new_runner_state = RunnerState(
+    #         train_state=train_state,
+    #         buffer_state=buffer_state,
+    #         obs_dict=next_obs_dict,
+    #         prev_msgs=prev_msgs,
+    #         env_states=env_states,
+    #         rng=rng,
+
+    #         ep_returns=ep_returns,
+    #         ep_lengths=ep_lengths,
+    #         ep_deliveries=ep_deliveries,
+
+    #         ep_ingredient_pickup=ep_ingredient_pickup,
+    #         ep_plate_pickup=ep_plate_pickup,
+    #         ep_placement_in_pot=ep_placement_in_pot,
+    #         ep_soup_in_dish=ep_soup_in_dish,
+    #         ep_delivery=ep_delivery,
+    #     )
+    #     return new_runner_state, step_metrics
+
+    # # ── Run entire training as one compiled scan ──────────────────────
+    # print("JIT compiling full training loop (first run takes several minutes)...")
+    # t_compile = time.time()
+    # runner_state, all_metrics = jax.lax.scan(
+    #     _update_step,
+    #     runner_state,
+    #     jnp.arange(total_steps_target),
+    #     length=total_steps_target,
+    # )
+    # jax.block_until_ready(all_metrics)
+    # print(f"Training complete. Compile+run took {time.time()-t_compile:.1f}s")
+
+
+
+    for t in range(1, total_steps_target + 1):
+        t_loop_start = time.time()
+        global_step = t * num_envs 
+
+        # ── Epsilon schedule ─────────────────────────────────────────
+        frac    = min(1.0, global_step / max(1, eps_decay))
+        epsilon = eps_start + frac * (eps_end - eps_start)
+
+        # ── Obs ──────────────────────────────────────────────────────
+        obs_all = obs_dict_to_array(obs_dict, agent_ids, num_envs, obs_dim)
+
+        # ── Action selection ─────────────────────────────────────────
+        rng, act_rng = jax.random.split(rng)
+        logits_all, msgs = select_actions_jit(
+            train_state.actor_params,
+            actor,
+            jnp.array(obs_all),
+            jnp.array(prev_msgs),
+            num_agents = num_agents,
+            gumbel_tau = config["GUMBEL_TAU"],
+            rng = act_rng,
+        )    
+
+        actions_idx, actions_onehot = apply_epsilon_greedy(
+            logits_all,
+            act_rng,
+            epsilon,
+            num_agents,
+            num_envs,
+            act_dim,
+        )
+
+        # Keep as JAX arrays until buffer write — no numpy conversion
+        msgs = np.array(msgs.transpose(1, 0, 2))        # (num_envs, N, msg_dim)
+        actions_idx = np.array(actions_idx)                # only convert for env.step
+        actions_onehot = np.array(actions_onehot)       # only convert for buffer
+
+        # ── Step envs ────────────────────────────────────────────────
+        rng, step_rng = jax.random.split(rng)
+        step_rngs = jax.random.split(step_rng, num_envs)
+        action_dict = {
+            f"agent_{i}": jnp.array(actions_idx[:, i])
+            for i in range(num_agents)
+        }
+        t0 = time.time()
+        next_obs_dict, env_states, rewards_dict, dones_dict, info = jit_step(
+        step_rngs, env_states, action_dict
+        )
+        # jax.block_until_ready(next_obs_dict)   # force sync for accurate timing
+        t_step += time.time() - t0
+        # print(f"First jit_step: {time.time()-t0:.1f}s (includes compilation)")
+
+        # check rewards used
+        if t == 1:
+            print("rewards_dict sample:")
+            for k, v in rewards_dict.items():
+                print(f"  {k}: {jnp.array(v)[:3]}")
+            print("info keys:", list(info.keys()))
+            if "shaped_reward" in info:
+                print("shaped_rewards sample:", {k: jnp.array(v)[:3] for k, v in info["shaped_reward"].items()})
+
+        # ── Convert ───────────────────────────────────────────────────
+        next_obs_all = obs_dict_to_array(next_obs_dict, agent_ids, num_envs, obs_dim)
+        dones_all = dones_dict_to_array(dones_dict, agent_ids, num_envs)
+
+        # Raw rewards always needed for delivery tracking
+        raw_rewards = rewards_dict_to_array(rewards_dict, agent_ids, num_envs)        
+
+        # Use shaped rewards for training signal, sparse for logging
+        if config.get("USE_SHAPED_REWARDS", True) and "shaped_reward" in info:
+            shaped = info["shaped_reward"]
+            # Combine: sparse delivery + shaped intermediate rewards
+            combined_rewards = {
+                aid: jnp.array(rewards_dict[aid]) + jnp.array(shaped[aid])
+                for aid in agent_ids
+            }
+            rewards_all = rewards_dict_to_array(combined_rewards, agent_ids, num_envs)
+        else:
+            rewards_all = raw_rewards
+        
+        # Make sure they are np arrays before adding to the buffer
+        rewards_all=np.asarray(rewards_all)
+        next_obs_all=np.asarray(next_obs_all)
+        obs_all=np.asarray(obs_all)
+
+        # Track deliveries from raw rewards
+        ep_deliveries += (raw_rewards >= 20.0).any(axis=1).astype(np.float32)          
+
+        # ── Buffer ───────────────────────────────────────────────────
+        t0 = time.time()
+        # for e in range(num_envs):
+        #     buffer_state = buffer_add(
+        #         buffer_state,
+        #         obs=           obs_all[e],
+        #         prev_msgs=     prev_msgs[e],
+        #         actions=       actions_onehot[e],
+        #         msgs=          msgs[e],
+        #         rewards=       rewards_all[e],
+        #         next_obs=      next_obs_all[e],
+        #         next_prev_msgs=msgs[e],
+        #         done=          bool(dones_all[e]),
+            # )
+
+        buffer_state = buffer_add_batch(
+            buffer_state,
+            obs=np.asarray(obs_all),
+            prev_msgs=prev_msgs,
+            actions=np.asarray(actions_onehot),
+            msgs=msgs,
+            rewards=np.asarray(rewards_all),
+            next_obs=np.asarray(next_obs_all),
+            next_prev_msgs=msgs,
+            dones=dones_all,
+        )
+
+        t_buffer += time.time() - t0
+
+        # ── Reward type tracking ──────────────────────────────────────
+        # Prefer explicit event flags if provided by the environment via
+        # info["reward_events"]. Fall back to shaped-reward inference.
+        if "reward_events" in info:
+            re = info["reward_events"]
+            for e in range(num_envs):
+                for ev in list(reward_type_counts.keys()):
+                    count = 0.0
+                    # Case A: re is mapping agent_id -> {event: array}
+                    try:
+                        if isinstance(re, dict) and agent_ids[0] in re:
+                            for aid in agent_ids:
+                                sub = re.get(aid, {})
+                                if isinstance(sub, dict) and ev in sub:
+                                    count += float(jnp.array(sub[ev])[e])
+                        # Case B: re is mapping event -> agent mapping or event -> array
+                        elif isinstance(re, dict) and ev in re:
+                            val = re[ev]
+                            if isinstance(val, dict):
+                                for aid in agent_ids:
+                                    if aid in val:
+                                        count += float(jnp.array(val[aid])[e])
+                            else:
+                                # val might be per-agent array or per-env scalar array
+                                try:
+                                    arr = jnp.array(val)
+                                    # If arr has agent axis, try summing across agents
+                                    if arr.ndim == 2:
+                                        count += float(arr[:, :][e].sum())
+                                    else:
+                                        count += float(arr[e])
+                                except Exception:
+                                    pass
+                    except Exception:
+                        count = 0.0
+
+                    ep_reward_types[ev][e] += count
+
+        elif "shaped_reward" in info:
+            shaped = info["shaped_reward"]
+            for e in range(num_envs):
+                aid0 = agent_ids[0]
+                sv = float(jnp.array(shaped[aid0])[e])
+                rv = float(jnp.array(rewards_dict[aid0])[e])
+
+                # Infer reward type from shaped value
+                if sv == 12.0:
+                    ep_reward_types["soup_in_dish"][e] += 1
+                elif sv == 3.0:
+                    ep_reward_types["ingredient_pickup"][e] += 1
+                elif sv == 6.0:
+                    ep_reward_types["placement_in_pot"][e] += 1
+                elif sv == 4.0:
+                    ep_reward_types["plate_pickup"][e] += 1
+
+                if rv >= 20.0:
+                    ep_reward_types["delivery"][e] += 1
+
+        # ── Episode tracking ─────────────────────────────────────────
+        ep_returns += rewards_all
+        ep_lengths += 1
+        for e in range(num_envs):
+            if dones_all[e]:
+                all_returns.append(float(ep_returns[e].sum()))
+                all_lengths.append(int(ep_lengths[e]))
+                all_deliveries.append(float(ep_deliveries[e]))  # deliveries this episode
+                ep_returns[e]   = 0.0
+                ep_deliveries[e] = 0.0
+                ep_lengths[e] = 0
+                for k in reward_type_counts:
+                    reward_type_history[k].append(float(ep_reward_types[k][e]))
+                    reward_type_counts[k] += ep_reward_types[k][e]
+                    ep_reward_types[k][e] = 0.0
+
+        # ── Auto-reset done envs ──────────────────────────────────────
+        # JaxMARL does NOT auto-reset — when an env is done it stays
+        # in terminal state returning done=True every subsequent step
+        # until manually reset. This is why dones_all stays [1,1,1,1].
+        if jnp.any(dones_all):
+            rng, reset_rng = jax.random.split(rng)
+            reset_rngs = jax.random.split(reset_rng, num_envs)
+
+            # Reset ALL envs that are done
+            # new_obs, new_states = jax.vmap(env_vec.reset)(reset_rngs)
+            new_obs, new_states = jit_reset(reset_rngs)
+
+
+            # Only replace done envs — keep running envs as-is
+            done_mask = jnp.array(dones_all, dtype=jnp.bool_)  # (num_envs,)
+
+            # Merge: use new state for done envs, keep old state for running envs
+            env_states = jax.tree_util.tree_map(
+                lambda new, old: jnp.where(
+                    done_mask.reshape([-1] + [1] * (new.ndim - 1)),
+                    new,
+                    old,
+                ),
+                new_states,
+                env_states,
+            )
+
+            # Update obs for done envs
+            for aid in agent_ids:
+                obs_dict[aid] = jnp.where(
+                    done_mask.reshape([-1] + [1] * (jnp.array(obs_dict[aid]).ndim - 1)),
+                    new_obs[aid],
+                    obs_dict[aid],
+                )   
+
+        # ── Advance state ─────────────────────────────────────────────
+        obs_dict  = next_obs_dict   # contains reset obs for done envs
+        prev_msgs = msgs
+        # for e in range(num_envs):
+        #     if dones_all[e]:
+        #         prev_msgs[e] = 0.0
+        done_mask_np = dones_all.astype(bool)  # (num_envs,)
+        prev_msgs[done_mask_np] = 0.0          # one numpy op
+
+        # ── Gradient updates ─────────────────────────────────────────
+        if (buffer_is_ready(buffer_state, batch_size)
+                and global_step >= learn_start
+                and t % update_every == 0):
+
+            for _ in range(updates_per):
+                # Warn once that JIT compilation is about to happen
+                if not first_update_done:
+                    print(
+                        f"  [step={global_step:,}] Buffer ready — "
+                        f"JIT compiling train_step (may take 1-3 min)..."
+                    )
+                    compile_start = time.time()
+                
+                t0 = time.time()
+                # batch, rng = buffer_sample_prioritized(buffer_state, batch_size, rng, priority_reward_weight=10.0)
+                batch, rng = buffer_sample(buffer_state, batch_size, rng)
+                train_state, last_metrics = jit_train_step(train_state, batch)
+                # jax.block_until_ready(train_state.actor_params)  # force sync
+                t_train += time.time() - t0
+
+                if not first_update_done:
+                    # block_until_ready forces JAX to finish compilation
+                    # before we print the compile time
+                    jax.block_until_ready(train_state.actor_params)
+                    compile_secs = time.time() - compile_start
+                    print(f"  [JIT done] Compilation took {compile_secs:.1f}s — training now running.")
+                    first_update_done = True
+
+                total_updates += 1
+
+                # NaN guard — stop immediately with diagnostics
+                if jnp.isnan(last_metrics.critic_loss):
+                    print(
+                        f"\n[NaN detected at step={global_step}, update={total_updates}]"
+                        f"\n  critic_loss : {last_metrics.critic_loss}"
+                        f"\n  actor_loss  : {last_metrics.actor_loss}"
+                        f"\n  pred_loss   : {last_metrics.pred_loss}"
+                        f"\n  q_mean      : {last_metrics.q_mean}"
+                        f"\n  Check: learning rates too high, grad_clip too loose,"
+                        f"\n         or reward scale mismatch."
+                    )
+                    raise ValueError("NaN in training metrics — see above for diagnostics.")                
+
+        # ── Progress every 100 steps before first log_every ──────────
+        # Shows the loop is alive during buffer fill and compilation
+        if t % 100 == 0 and total_updates == 0:
+            buf_pct = 100.0 * buffer_state.size / config["BUFFER_SIZE"]
+            print(
+                f"  [step={global_step:>7,}] filling buffer "
+                f"{buffer_state.size:>6,}/{config['BUFFER_SIZE']:,} "
+                f"({buf_pct:.1f}%)  eps={epsilon:.3f}",
+                flush=True,
+            )
+        
+        # Print breakdown every 500 steps
+        if t % 1000 == 0 and t > 0:
+            total = t_step + t_buffer + t_train
+            print(f"\n[t={t}] Time breakdown:")
+            print(f"  env step    : {t_step:.1f}s  ({100*t_step/total:.0f}%)")
+            print(f"  buffer add  : {t_buffer:.1f}s  ({100*t_buffer/total:.0f}%)")
+            print(f"  train step  : {t_train:.1f}s  ({100*t_train/total:.0f}%)")
+            t_step = t_buffer = t_train = 0.0
+
+        # ── Logging every log_every steps ────────────────────────────
+        if t % log_every == 0 and first_update_done:
+            recent = all_returns[-100:] if all_returns else [0.0]
+            recent_deliveries = all_deliveries[-100:] if all_deliveries else [0.0]
+            sps    = global_step / max(1.0, time.time() - t_start)
+
+            metrics_log = {
+                "env_step":    global_step,
+                "update_step": total_updates,
+                "epsilon":     epsilon,
+                "return_mean": float(np.mean(recent)),
+                "return_std":  float(np.std(recent)) if len(recent) > 1 else 0.0,
+                "critic_loss": float(last_metrics.critic_loss) if last_metrics else 0.0,
+                "actor_loss":  float(last_metrics.actor_loss)  if last_metrics else 0.0,
+                "pred_loss":   float(last_metrics.pred_loss)   if last_metrics else 0.0,
+                "q_mean":      float(last_metrics.q_mean)      if last_metrics else 0.0,
+                "steps_per_sec": sps,
+            }
+
+            if monitor is not None:
+                monitor.update(total_updates, metrics_log)
+            else:
+                print(
+                    f"  step={global_step:>8,} "
+                    f"upd={total_updates:>5d} "
+                    f"episodes={len(all_returns):>4d} "
+                    f"ret={metrics_log['return_mean']:>7.2f}±{metrics_log['return_std']:.2f} "
+                    f"deliveries={np.mean(recent_deliveries):.2f} "  # avg deliveries per episode
+                    f"c_loss={metrics_log['critic_loss']:>7.4f} "
+                    f"a_loss={metrics_log['actor_loss']:>7.4f} "
+                    f"pred={metrics_log['pred_loss']:>7.4f} "
+                    f"q={metrics_log['q_mean']:>7.4f} "
+                    f"eps={epsilon:.3f} "
+                    f"sps={sps:>6.0f}",
+                    flush=True,
+                )
+
+            if config["WANDB_MODE"] != "disabled":
+                wandb.log(metrics_log, step=global_step)
+
+        # ── Checkpoint every CKPT_INTERVAL loop iterations ────────────
+        if (ckpt_dir is not None
+                and t > 0
+                and t % CKPT_INTERVAL == 0):
+            ckpt_path = os.path.join(
+                ckpt_dir,
+                f"is_maddpg_{config['LAYOUT']}_step{t:08d}.zip"
+            )
+            save_checkpoint_zip(train_state, ckpt_path, config, t)
+            print(f"\nCheckpoint saved → {ckpt_path}", flush=True)        
+
+    
+    # ── Post-training summary + plots ───────────────────────────────────────────────
+    import matplotlib.pyplot as plt
+
     print("\n" + "="*60)
     print("TRAINING SUMMARY")
     print("="*60)
     print(f"  Total env steps      : {config['TOTAL_TIMESTEPS']:,}")
-    print(f"  Approx grad updates  : {total_updates:,}")
+    print(f"  Total grad updates   : {total_updates:,}")
     print(f"  Episodes completed   : {len(all_returns)}")
-    if len(all_returns) > 0:
-        print(f"  Best episode return  : {float(np.max(all_returns)):.2f}")
-        print(f"  Final 100-ep mean   : {float(np.mean(all_returns[-100:])):.2f}")
-        print(f"  Final 100-ep std    : {float(np.std(all_returns[-100:])):.2f}")
-        print(f"  Total deliveries    : {reward_type_counts['delivery']:,}")
+    if all_returns:
+        print(f"  Best episode return  : {max(all_returns):.2f}")
+        print(f"  Final 100-ep mean   : {np.mean(all_returns[-100:]):.2f}")
+        print(f"  Final 100-ep std    : {np.std(all_returns[-100:]):.2f}")
     print("="*60)
 
-    plot_dir = ckpt_dir if ckpt_dir else "."
-    os.makedirs(plot_dir, exist_ok=True)
+    if all_returns:
+        plot_dir = ckpt_dir if ckpt_dir else "."
+        os.makedirs(plot_dir, exist_ok=True)
 
-    # ── Plot 1: Returns over episodes + distribution ───────────────────
-    if len(all_returns) > 0:
         fig, axes = plt.subplots(1, 2, figsize=(14, 4))
 
+        # --- Episode returns ---
         ax = axes[0]
         ax.plot(all_returns, alpha=0.3, color="steelblue", label="raw")
+        # Smooth with a rolling window
         window = min(50, len(all_returns))
         if len(all_returns) >= window:
             smoothed = np.convolve(
-                all_returns, np.ones(window) / window, mode="valid"
+                all_returns,
+                np.ones(window) / window,
+                mode="valid",
             )
             ax.plot(
                 range(window - 1, len(all_returns)),
                 smoothed,
-                color="steelblue", linewidth=2,
+                color="steelblue",
+                linewidth=2,
                 label=f"{window}-ep moving avg",
             )
         ax.set_xlabel("Episode")
@@ -1789,161 +1566,384 @@ def run(config: dict, env_vec: OvercookedV3,
         ax.legend()
         ax.grid(alpha=0.3)
 
+        # --- Steps per episode (proxy for episode length / efficiency) ---
         ax = axes[1]
         ax.hist(all_returns, bins=30, color="steelblue", alpha=0.7, edgecolor="white")
-        ax.axvline(float(np.mean(all_returns)), color="red", linestyle="--",
-                   linewidth=1.5, label=f"mean={np.mean(all_returns):.1f}")
         ax.set_xlabel("Episode Return")
         ax.set_ylabel("Count")
         ax.set_title("Return Distribution (all episodes)")
-        ax.legend()
         ax.grid(alpha=0.3)
 
         plt.tight_layout()
         plot_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_returns.png")
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-        print(f"\nReturn plot saved → {plot_path}")
+        print(f"\nPlot saved → {plot_path}")
         plt.show()
-        plt.close()
 
-    # ── Plot 2: Per-episode event counts over time ─────────────────────
-    event_cols = ["ingredient_pickup", "placement_in_pot", "plate_pickup",
-                  "soup_in_dish", "delivery"]
-    event_colors = {
-        "ingredient_pickup": "orange",
-        "placement_in_pot":  "steelblue",
-        "plate_pickup":      "yellow",
-        "soup_in_dish":      "purple",
-        "delivery":          "green",
-    }
-    event_labels = {
-        "ingredient_pickup": "Ingredient Pickup (+3)",
-        "placement_in_pot":  "Placement in Pot (+6)",
-        "plate_pickup":      "Plate Pickup (+4)",
-        "soup_in_dish":      "Soup in Dish (+12)",
-        "delivery":          "Delivery (+20)",
-    }
+    # --- Per-episode event counts (non-cumulative) ---
+    if all_lengths:
+        hist_dir = ckpt_dir if ckpt_dir else "."
+        os.makedirs(hist_dir, exist_ok=True)
 
-    if len(all_lengths) > 0:
-        # Save CSV
-        csv_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.csv")
+        # Events to include (match DEBUG_HISTOGRAM.md semantics)
+        event_cols = ["ingredient_pickup", "placement_in_pot", "plate_pickup", "soup_in_dish", "delivery"]
+
+        csv_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["episode", "return", "length", "deliveries", *event_cols])
-            for i in range(len(all_lengths)):
-                row = [
-                    i + 1,
-                    float(all_returns[i]) if i < len(all_returns) else 0.0,
-                    int(all_lengths[i]),
-                    int(all_deliveries[i]) if i < len(all_deliveries) else 0,
-                ]
-                row += [int(reward_type_history[ev][i])
-                        if i < len(reward_type_history[ev]) else 0
-                        for ev in event_cols]
+            writer.writerow(["episode", *event_cols])
+            n_eps = len(all_lengths)
+            # prepare per-event lists (pad with zeros if necessary)
+            per_event = {}
+            for ev in event_cols:
+                vals = reward_type_history.get(ev, [])
+                if len(vals) < n_eps:
+                    vals = vals + [0.0] * (n_eps - len(vals))
+                per_event[ev] = vals
+
+            for i in range(n_eps):
+                row = [i + 1]
+                row += [int(per_event[ev][i]) for ev in event_cols]
                 writer.writerow(row)
-        print(f"Episode CSV saved → {csv_path}")
 
-        # Per-episode line plot
-        fig, ax = plt.subplots(figsize=(12, 5))
-        episodes = np.arange(1, len(all_lengths) + 1)
+        try:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            episodes = np.arange(1, len(all_lengths) + 1)
 
-        for ev in event_cols:
-            vals = reward_type_history[ev]
-            if len(vals) > 0:
-                # Smooth for readability
-                w = min(20, len(vals))
-                smoothed = np.convolve(vals, np.ones(w) / w, mode="valid")
-                ax.plot(
-                    range(w - 1, len(vals)),
-                    smoothed,
-                    linewidth=1.5,
-                    color=event_colors[ev],
-                    label=event_labels[ev],
-                )
+            # plot each event as a line (per-episode counts, non-cumulative)
+            for ev in event_cols:
+                vals = reward_type_history.get(ev, [])
+                if len(vals) < len(episodes):
+                    vals = vals + [0.0] * (len(episodes) - len(vals))
+                ax.plot(episodes, vals, marker="o", linewidth=1.2, label=ev.replace("_", " "))
 
-        ax.set_title(f"Per-episode event counts (smoothed) — IS-MADDPG / {config['LAYOUT']}")
-        ax.set_xlabel("Episode")
-        ax.set_ylabel("Count per episode (smoothed)")
-        ax.grid(alpha=0.3)
-        ax.legend()
-        plt.tight_layout()
-        png_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.png")
-        plt.savefig(png_path, dpi=150, bbox_inches="tight")
-        print(f"Episode events plot saved → {png_path}")
-        plt.show()
-        plt.close()
+            ax.set_title(f"Per-episode event counts — IS-MADDPG / {config['LAYOUT']}")
+            ax.set_xlabel("Episode")
+            ax.set_ylabel("Count (per episode)")
+            ax.grid(alpha=0.3)
+            ax.legend()
+            fig.tight_layout()
+            png_path = os.path.join(hist_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.png")
+            fig.savefig(png_path, dpi=150, bbox_inches="tight")
+            print(f"Saved episode-event CSV to {csv_path} and {png_path}")
+            plt.show()
+        except Exception as exc:
+            print(f"Saved episode-event CSV to {csv_path}; plot skipped: {exc}")
+    
+    # ---------------------------------------------------------------------------
+    # Reward type histograms
+    # ---------------------------------------------------------------------------
+    reward_labels = {
+        "ingredient_pickup": f"Ingredient Pickup (+2)",
+        "delivery":          f"Delivery (+20)",
+        "placement_in_pot":  f"Placement in Pot (+6)",
+        "plate_pickup":      f"Plate Pickup (+4)",
+        # "pot_start_cooking": f"Pot Start Cooking (+4)",
+        "ingredient_pickup":      f"Onion Pickup (+3)",
+        "soup_in_dish":      f"Soup in Dish (+12)",
+        # "burn_penalty":      f"Burn Penalty (-5)",
+    }
+    colors = {
+        "ingredient_pickup": "orange",
+        "delivery":          "green",
+        "placement_in_pot":  "steelblue",
+        "plate_pickup":      "yellow",
+        # "pot_start_cooking": "orange",
+        "ingredient_pickup": "pink",
+        # "pot_start_cooking": "black",
+        "soup_in_dish":      "purple",
+        # "burn_penalty":      "red",
+    }
 
-    # ── Plot 3: Reward breakdown histograms ────────────────────────────
-    has_data = any(len(v) > 0 for v in reward_type_history.values())
-    if has_data:
+    if any(len(v) > 0 for v in reward_type_history.values()):
         fig, axes = plt.subplots(2, 3, figsize=(15, 8))
         axes = axes.flatten()
 
-        for idx, ev in enumerate(event_cols):
-            ax   = axes[idx]
-            data = reward_type_history[ev]
-            lbl  = event_labels[ev]
-            col  = event_colors[ev]
-
-            if len(data) > 0 and data.max() > 0:
-                ax.hist(data, bins=20, color=col, alpha=0.7, edgecolor="white")
-                mean_val = float(np.mean(data))
-                ax.axvline(mean_val, color="black", linestyle="--",
-                           linewidth=1.5, label=f"mean={mean_val:.2f}")
+        for idx, (key, label) in enumerate(reward_labels.items()):
+            ax = axes[idx]
+            data = reward_type_history[key]
+            if data:
+                ax.hist(data, bins=20, color=colors[key], alpha=0.7, edgecolor="white")
+                ax.set_title(label)
+                ax.set_xlabel("Count per episode")
+                ax.set_ylabel("Episodes")
+                ax.grid(alpha=0.3)
+                ax.axvline(np.mean(data), color="black", linestyle="--",
+                           linewidth=1.5, label=f"mean={np.mean(data):.2f}")
                 ax.legend(fontsize=8)
             else:
-                ax.text(0.5, 0.5, "No events recorded",
-                        ha="center", va="center",
-                        transform=ax.transAxes, color="grey")
+                ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                        transform=ax.transAxes)
+                ax.set_title(label)
 
-            ax.set_title(lbl)
-            ax.set_xlabel("Count per episode")
-            ax.set_ylabel("Episodes")
-            ax.grid(alpha=0.3)
+        # Summary bar chart
+        summary_idx = len(reward_labels)
+        ax = axes[summary_idx]
 
-        # Summary bar chart in last panel
-        ax     = axes[5]
-        keys   = event_cols
+        # turn off any remaining unused axes
+        for i in range(summary_idx + 1, len(axes)):
+            axes[i].axis("off")
+            
+        keys   = list(reward_labels.keys())
         totals = [reward_type_counts[k] for k in keys]
-        cols   = [event_colors[k] for k in keys]
-        bars   = ax.bar(range(len(keys)), totals, color=cols, alpha=0.7, edgecolor="white")
+        bars   = ax.bar(range(len(keys)), totals,
+                        color=[colors[k] for k in keys], alpha=0.7, edgecolor="white")
         ax.set_xticks(range(len(keys)))
         ax.set_xticklabels([k.replace("_", "\n") for k in keys], fontsize=7)
         ax.set_title("Total reward events (all episodes)")
         ax.set_ylabel("Count")
         ax.grid(alpha=0.3, axis="y")
         for bar, total in zip(bars, totals):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + max(1, max(totals) * 0.01),
-                f"{int(total):,}",
-                ha="center", va="bottom", fontsize=8,
-            )
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                    f"{int(total)}", ha="center", va="bottom", fontsize=8)
 
         plt.suptitle(f"IS-MADDPG Reward Breakdown — {config['LAYOUT']}", fontsize=13)
         plt.tight_layout()
-        hist_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_reward_breakdown.png")
+
+        hist_path = os.path.join(
+            ckpt_dir if ckpt_dir else ".",
+            f"is_maddpg_{config['LAYOUT']}_reward_breakdown.png",
+        )
+        os.makedirs(os.path.dirname(hist_path) if os.path.dirname(hist_path) else ".", exist_ok=True)
         plt.savefig(hist_path, dpi=150, bbox_inches="tight")
         print(f"Reward breakdown plot saved → {hist_path}")
         plt.show()
-        plt.close()
 
-    # ── Summary table ─────────────────────────────────────────────────
+    # Print summary table
     print("\nReward event totals across all episodes:")
     print(f"  {'Event':<25} {'Total':>8}  {'Per Episode':>12}")
     print("  " + "-" * 48)
     n_eps = max(1, len(all_returns))
-    for ev in event_cols:
-        total  = reward_type_counts[ev]
+    for k, label in reward_labels.items():
+        total = reward_type_counts[k]
         per_ep = total / n_eps
-        print(f"  {event_labels[ev]:<25} {total:>8,}  {per_ep:>11.2f}")
+        print(f"  {label:<25} {int(total):>8}  {per_ep:>11.2f}")
 
     return {
-        "train_state":    runner_state.train_state,
-        "returns":        all_returns,
-        "total_updates":  total_updates,
-        "all_deliveries": all_deliveries,
-    }    
+        "train_state":   train_state,
+        "returns":       all_returns,
+        "total_updates": total_updates,
+    }
+
+    # # ── Post-processing of scan outputs ───────────────────────────────
+    # def extract_completed(metric_2d):
+    #     """Flatten (total_steps, num_envs) and keep only completed episodes."""
+    #     flat = np.asarray(metric_2d).reshape(-1)
+    #     mask = np.asarray(all_metrics["completed_lengths"]).reshape(-1) > 0
+    #     return flat[mask]
+
+    # all_returns    = extract_completed(all_metrics["completed_returns"])
+    # all_lengths    = extract_completed(all_metrics["completed_lengths"])
+    # all_deliveries = extract_completed(all_metrics["completed_deliveries"])
+
+    # reward_type_history = {
+    #     "ingredient_pickup": extract_completed(all_metrics["completed_ingredient_pickup"]),
+    #     "plate_pickup":      extract_completed(all_metrics["completed_plate_pickup"]),
+    #     "placement_in_pot":  extract_completed(all_metrics["completed_placement_in_pot"]),
+    #     "soup_in_dish":      extract_completed(all_metrics["completed_soup_in_dish"]),
+    #     "delivery":          extract_completed(all_metrics["completed_delivery"]),
+    # }
+    # reward_type_counts = {k: int(v.sum()) for k, v in reward_type_history.items()}
+
+    # # Total gradient updates = steps where buffer was ready
+    # # Approximate from scan length minus learning_starts buffer fill
+    # total_updates = int(np.asarray(all_metrics["critic_loss"] != 0).sum())
+
+    # # ── Post-training summary ──────────────────────────────────────────
+    # print("\n" + "="*60)
+    # print("TRAINING SUMMARY")
+    # print("="*60)
+    # print(f"  Total env steps      : {config['TOTAL_TIMESTEPS']:,}")
+    # print(f"  Approx grad updates  : {total_updates:,}")
+    # print(f"  Episodes completed   : {len(all_returns)}")
+    # if len(all_returns) > 0:
+    #     print(f"  Best episode return  : {float(np.max(all_returns)):.2f}")
+    #     print(f"  Final 100-ep mean   : {float(np.mean(all_returns[-100:])):.2f}")
+    #     print(f"  Final 100-ep std    : {float(np.std(all_returns[-100:])):.2f}")
+    #     print(f"  Total deliveries    : {reward_type_counts['delivery']:,}")
+    # print("="*60)
+
+    # plot_dir = ckpt_dir if ckpt_dir else "."
+    # os.makedirs(plot_dir, exist_ok=True)
+
+    # # ── Plot 1: Returns over episodes + distribution ───────────────────
+    # if len(all_returns) > 0:
+    #     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+
+    #     ax = axes[0]
+    #     ax.plot(all_returns, alpha=0.3, color="steelblue", label="raw")
+    #     window = min(50, len(all_returns))
+    #     if len(all_returns) >= window:
+    #         smoothed = np.convolve(
+    #             all_returns, np.ones(window) / window, mode="valid"
+    #         )
+    #         ax.plot(
+    #             range(window - 1, len(all_returns)),
+    #             smoothed,
+    #             color="steelblue", linewidth=2,
+    #             label=f"{window}-ep moving avg",
+    #         )
+    #     ax.set_xlabel("Episode")
+    #     ax.set_ylabel("Return")
+    #     ax.set_title(f"IS-MADDPG — OvercookedV3 / {config['LAYOUT']}")
+    #     ax.legend()
+    #     ax.grid(alpha=0.3)
+
+    #     ax = axes[1]
+    #     ax.hist(all_returns, bins=30, color="steelblue", alpha=0.7, edgecolor="white")
+    #     ax.axvline(float(np.mean(all_returns)), color="red", linestyle="--",
+    #                linewidth=1.5, label=f"mean={np.mean(all_returns):.1f}")
+    #     ax.set_xlabel("Episode Return")
+    #     ax.set_ylabel("Count")
+    #     ax.set_title("Return Distribution (all episodes)")
+    #     ax.legend()
+    #     ax.grid(alpha=0.3)
+
+    #     plt.tight_layout()
+    #     plot_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_returns.png")
+    #     plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    #     print(f"\nReturn plot saved → {plot_path}")
+    #     plt.show()
+    #     plt.close()
+
+    # # ── Plot 2: Per-episode event counts over time ─────────────────────
+    # event_cols = ["ingredient_pickup", "placement_in_pot", "plate_pickup",
+    #               "soup_in_dish", "delivery"]
+    # event_colors = {
+    #     "ingredient_pickup": "orange",
+    #     "placement_in_pot":  "steelblue",
+    #     "plate_pickup":      "yellow",
+    #     "soup_in_dish":      "purple",
+    #     "delivery":          "green",
+    # }
+    # event_labels = {
+    #     "ingredient_pickup": "Ingredient Pickup (+3)",
+    #     "placement_in_pot":  "Placement in Pot (+6)",
+    #     "plate_pickup":      "Plate Pickup (+4)",
+    #     "soup_in_dish":      "Soup in Dish (+12)",
+    #     "delivery":          "Delivery (+20)",
+    # }
+
+    # if len(all_lengths) > 0:
+    #     # Save CSV
+    #     csv_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.csv")
+    #     with open(csv_path, "w", newline="", encoding="utf-8") as f:
+    #         writer = csv.writer(f)
+    #         writer.writerow(["episode", "return", "length", "deliveries", *event_cols])
+    #         for i in range(len(all_lengths)):
+    #             row = [
+    #                 i + 1,
+    #                 float(all_returns[i]) if i < len(all_returns) else 0.0,
+    #                 int(all_lengths[i]),
+    #                 int(all_deliveries[i]) if i < len(all_deliveries) else 0,
+    #             ]
+    #             row += [int(reward_type_history[ev][i])
+    #                     if i < len(reward_type_history[ev]) else 0
+    #                     for ev in event_cols]
+    #             writer.writerow(row)
+    #     print(f"Episode CSV saved → {csv_path}")
+
+    #     # Per-episode line plot
+    #     fig, ax = plt.subplots(figsize=(12, 5))
+    #     episodes = np.arange(1, len(all_lengths) + 1)
+
+    #     for ev in event_cols:
+    #         vals = reward_type_history[ev]
+    #         if len(vals) > 0:
+    #             # Smooth for readability
+    #             w = min(20, len(vals))
+    #             smoothed = np.convolve(vals, np.ones(w) / w, mode="valid")
+    #             ax.plot(
+    #                 range(w - 1, len(vals)),
+    #                 smoothed,
+    #                 linewidth=1.5,
+    #                 color=event_colors[ev],
+    #                 label=event_labels[ev],
+    #             )
+
+    #     ax.set_title(f"Per-episode event counts (smoothed) — IS-MADDPG / {config['LAYOUT']}")
+    #     ax.set_xlabel("Episode")
+    #     ax.set_ylabel("Count per episode (smoothed)")
+    #     ax.grid(alpha=0.3)
+    #     ax.legend()
+    #     plt.tight_layout()
+    #     png_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_episode_events.png")
+    #     plt.savefig(png_path, dpi=150, bbox_inches="tight")
+    #     print(f"Episode events plot saved → {png_path}")
+    #     plt.show()
+    #     plt.close()
+
+    # # ── Plot 3: Reward breakdown histograms ────────────────────────────
+    # has_data = any(len(v) > 0 for v in reward_type_history.values())
+    # if has_data:
+    #     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    #     axes = axes.flatten()
+
+    #     for idx, ev in enumerate(event_cols):
+    #         ax   = axes[idx]
+    #         data = reward_type_history[ev]
+    #         lbl  = event_labels[ev]
+    #         col  = event_colors[ev]
+
+    #         if len(data) > 0 and data.max() > 0:
+    #             ax.hist(data, bins=20, color=col, alpha=0.7, edgecolor="white")
+    #             mean_val = float(np.mean(data))
+    #             ax.axvline(mean_val, color="black", linestyle="--",
+    #                        linewidth=1.5, label=f"mean={mean_val:.2f}")
+    #             ax.legend(fontsize=8)
+    #         else:
+    #             ax.text(0.5, 0.5, "No events recorded",
+    #                     ha="center", va="center",
+    #                     transform=ax.transAxes, color="grey")
+
+    #         ax.set_title(lbl)
+    #         ax.set_xlabel("Count per episode")
+    #         ax.set_ylabel("Episodes")
+    #         ax.grid(alpha=0.3)
+
+    #     # Summary bar chart in last panel
+    #     ax     = axes[5]
+    #     keys   = event_cols
+    #     totals = [reward_type_counts[k] for k in keys]
+    #     cols   = [event_colors[k] for k in keys]
+    #     bars   = ax.bar(range(len(keys)), totals, color=cols, alpha=0.7, edgecolor="white")
+    #     ax.set_xticks(range(len(keys)))
+    #     ax.set_xticklabels([k.replace("_", "\n") for k in keys], fontsize=7)
+    #     ax.set_title("Total reward events (all episodes)")
+    #     ax.set_ylabel("Count")
+    #     ax.grid(alpha=0.3, axis="y")
+    #     for bar, total in zip(bars, totals):
+    #         ax.text(
+    #             bar.get_x() + bar.get_width() / 2,
+    #             bar.get_height() + max(1, max(totals) * 0.01),
+    #             f"{int(total):,}",
+    #             ha="center", va="bottom", fontsize=8,
+    #         )
+
+    #     plt.suptitle(f"IS-MADDPG Reward Breakdown — {config['LAYOUT']}", fontsize=13)
+    #     plt.tight_layout()
+    #     hist_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_reward_breakdown.png")
+    #     plt.savefig(hist_path, dpi=150, bbox_inches="tight")
+    #     print(f"Reward breakdown plot saved → {hist_path}")
+    #     plt.show()
+    #     plt.close()
+
+    # # ── Summary table ─────────────────────────────────────────────────
+    # print("\nReward event totals across all episodes:")
+    # print(f"  {'Event':<25} {'Total':>8}  {'Per Episode':>12}")
+    # print("  " + "-" * 48)
+    # n_eps = max(1, len(all_returns))
+    # for ev in event_cols:
+    #     total  = reward_type_counts[ev]
+    #     per_ep = total / n_eps
+    #     print(f"  {event_labels[ev]:<25} {total:>8,}  {per_ep:>11.2f}")
+
+    # return {
+    #     "train_state":    runner_state.train_state,
+    #     "returns":        all_returns,
+    #     "total_updates":  total_updates,
+    #     "all_deliveries": all_deliveries,
+    # }    
 
 
 # ---------------------------------------------------------------------------
