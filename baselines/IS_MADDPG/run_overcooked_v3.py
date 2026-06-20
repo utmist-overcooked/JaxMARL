@@ -151,7 +151,7 @@ def make_overcooked_config(layout: str, args: argparse.Namespace, env_info: dict
         "TOTAL_TIMESTEPS":  args.total_timesteps,
         "NUM_ENVS":         args.num_envs,
         "MAX_STEPS":        args.max_steps,
-        "BATCH_SIZE":       512,
+        "BATCH_SIZE":       256,
         "BUFFER_SIZE":      200_000,
         "LEARNING_STARTS":  5_000,
         "UPDATE_EVERY":     1,
@@ -656,7 +656,7 @@ def run(config: dict, env_vec: OvercookedV3,
         min_length=config["LEARNING_STARTS"],
         sample_batch_size=config["BATCH_SIZE"],
         add_sequences=False,
-        add_batch_size=1,
+        add_batch_size=num_envs,
     )
 
     # Init — lives entirely on GPU
