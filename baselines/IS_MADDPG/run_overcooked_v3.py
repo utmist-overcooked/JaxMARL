@@ -666,8 +666,8 @@ def run(config: dict, env_vec: OvercookedV3,
         "actions": jnp.zeros((num_agents, act_dim)),
         "msgs": jnp.zeros((num_agents, msg_dim)),
         "rewards": jnp.zeros((num_agents,)),
-        "next_obs": jnp.zeros((num_agents, obs_dim), dtype=jnp.int32),
-        "next_prev_msgs": jnp.zeros((num_agents, msg_dim)),
+        # "next_obs": jnp.zeros((num_agents, obs_dim), dtype=jnp.int32),
+        # "next_prev_msgs": jnp.zeros((num_agents, msg_dim)),
         "dones": jnp.zeros(()),
     }
 
@@ -987,8 +987,8 @@ def run(config: dict, env_vec: OvercookedV3,
             "actions":        actions_onehot,
             "msgs":           msgs,
             "rewards":        rewards_all,
-            "next_obs":       next_obs_jax,
-            "next_prev_msgs": msgs,
+            # "next_obs":       next_obs_jax,
+            # "next_prev_msgs": msgs,
             "dones":          dones,
         }
         buffer_state = buffer.add(buffer_state, transition)
