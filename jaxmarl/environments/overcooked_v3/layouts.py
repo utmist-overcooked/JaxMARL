@@ -135,7 +135,7 @@ B          W
 coordinated_temporal_conveyor = """
 >>>>>>v    X
       v   A 
-      v    
+      v     
       v   PB
   A   vWWWWW
 01    v>>>>W
