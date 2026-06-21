@@ -123,12 +123,21 @@ A       WXW
 B          W
 """
 
+# coordinated_temporal_conveyor = """
+# >>>>>>vW   X
+#       vW  A 
+#      WvW    
+#      Wv   PB
+#   A  WvWWWWW
+# 01    v>>>>W
+# """
+
 coordinated_temporal_conveyor = """
->>>>>>vW   X
-      vW  A 
-     WvW    
-     Wv   PB
-  A  WvWWWWW
+>>>>>>v    X
+      v   A 
+      v    
+      v   PB
+  A   vWWWWW
 01    v>>>>W
 """
 
@@ -194,7 +203,7 @@ W  A     W
 WWWWWWW  X
 W  A     W
 W        W
-WWWPWWWWWW
+WWWPWBWWWW
 """
 
 single_file = """
