@@ -19,7 +19,7 @@ body {
 
 header {
   display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 1fr)) minmax(260px, 2fr);
+  grid-template-columns: repeat(3, minmax(180px, 1fr)) minmax(260px, 2fr) auto;
   gap: 12px;
   align-items: end;
   padding: 14px 18px;
@@ -49,6 +49,25 @@ select {
   padding: 6px 8px;
   border: 1px solid #bfbfb8;
   background: #fff;
+}
+
+button {
+  font: inherit;
+  min-height: 33px;
+  padding: 6px 12px;
+  border: 1px solid #b8b8b0;
+  background: #ffffff;
+  color: #202124;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #f4f4f1;
+}
+
+button:disabled {
+  color: #777;
+  cursor: progress;
 }
 
 #meta {

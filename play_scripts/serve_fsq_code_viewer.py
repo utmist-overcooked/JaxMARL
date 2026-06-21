@@ -70,7 +70,8 @@ def iter_usage_paths(roots: list[Path]):
             yield resolved
 
 
-def infer_run_name(viewer_dir: Path, metadata: dict) -> str:
+def infer_run_name(viewer_dir: Path, metadata: dict | None = None) -> str:
+    metadata = metadata or {}
     run_name = metadata.get("run_name")
     if run_name:
         return str(run_name)
@@ -79,10 +80,13 @@ def infer_run_name(viewer_dir: Path, metadata: dict) -> str:
         idx = parts.index("checkpoint_rollouts")
         if idx + 1 < len(parts):
             return parts[idx + 1]
+    if viewer_dir.name.startswith("update_") and viewer_dir.parent.name:
+        return viewer_dir.parent.name
     return viewer_dir.name
 
 
-def infer_checkpoint(viewer_dir: Path, metadata: dict) -> int | str:
+def infer_checkpoint(viewer_dir: Path, metadata: dict | None = None) -> int | str:
+    metadata = metadata or {}
     update = metadata.get("checkpoint_update")
     if update is not None:
         return int(update)
@@ -92,10 +96,15 @@ def infer_checkpoint(viewer_dir: Path, metadata: dict) -> int | str:
     return "unknown"
 
 
-def infer_recipe(metadata: dict) -> tuple[int | None, str]:
+def infer_recipe(viewer_dir: Path | None = None, metadata: dict | None = None) -> tuple[int | None, str]:
+    metadata = metadata or {}
     recipe_index = metadata.get("recipe_index")
     recipe = metadata.get("recipe") or "sampled"
     if recipe_index is None:
+        if viewer_dir is not None:
+            match = re.search(r"recipe(\d+)_([^_]+)", viewer_dir.name)
+            if match:
+                return int(match.group(1)), match.group(2)
         return None, str(recipe)
     return int(recipe_index), str(recipe)
 
@@ -103,28 +112,16 @@ def infer_recipe(metadata: dict) -> tuple[int | None, str]:
 def load_artifacts(roots: list[Path]) -> list[dict]:
     artifacts = []
     for usage_path in iter_usage_paths(roots):
-        try:
-            data = json.loads(usage_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
         viewer_dir = usage_path.parent
-        metadata = data.get("metadata") or {}
-        recipe_index, recipe = infer_recipe(metadata)
-        checkpoint = infer_checkpoint(viewer_dir, metadata)
+        recipe_index, recipe = infer_recipe(viewer_dir)
+        checkpoint = infer_checkpoint(viewer_dir)
         artifacts.append(
             {
-                "run": infer_run_name(viewer_dir, metadata),
+                "run": infer_run_name(viewer_dir),
                 "checkpoint": checkpoint,
                 "recipe_index": recipe_index,
                 "recipe": recipe,
-                "layout": data.get("layout"),
-                "levels": data.get("levels"),
-                "total_samples": data.get("total_samples", 0),
-                "nonzero_codes": sum(
-                    1 for code in data.get("codes", []) if code.get("count", 0)
-                ),
                 "path": str(viewer_dir),
-                "metadata": metadata,
             }
         )
 
@@ -148,6 +145,7 @@ class FSQViewerHandler(BaseHTTPRequestHandler):
     artifacts: list[dict] = []
     artifact_dirs: dict[str, Path] = {}
     allowed_roots: list[Path] = []
+    roots: list[Path] = []
     viewer_dir: Path = VIEWER_DIR
 
     def do_GET(self):
@@ -159,6 +157,7 @@ class FSQViewerHandler(BaseHTTPRequestHandler):
     def _handle_request(self, *, send_body: bool):
         parsed = urlparse(self.path)
         if parsed.path == "/api/artifacts":
+            self._refresh_artifacts()
             payload = json.dumps({"artifacts": self.artifacts}).encode()
             self._send_bytes(payload, "application/json", send_body=send_body)
             return
@@ -166,6 +165,14 @@ class FSQViewerHandler(BaseHTTPRequestHandler):
             self._serve_artifact_path(parsed.path, send_body=send_body)
             return
         self._serve_viewer_path(parsed.path, send_body=send_body)
+
+    @classmethod
+    def _refresh_artifacts(cls):
+        cls.artifacts = load_artifacts(cls.roots)
+        cls.artifact_dirs = {
+            artifact["id"]: Path(artifact["path"]).resolve()
+            for artifact in cls.artifacts
+        }
 
     def _send_bytes(self, payload: bytes, content_type: str, *, send_body: bool):
         self.send_response(HTTPStatus.OK)
@@ -233,6 +240,7 @@ def main() -> None:
         artifact["id"]: Path(artifact["path"]).resolve() for artifact in artifacts
     }
     FSQViewerHandler.allowed_roots = [root.resolve() for root in roots]
+    FSQViewerHandler.roots = [root.resolve() for root in roots]
     FSQViewerHandler.viewer_dir = VIEWER_DIR.resolve()
 
     print("Scanning roots:")

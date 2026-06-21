@@ -7,6 +7,8 @@ The critic remains centralized over concatenated partial observations only.
 """
 
 import datetime
+import inspect
+import shutil
 import time
 from pathlib import Path
 import jax
@@ -34,8 +36,20 @@ import functools
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from .fsq import FSQ
+    from .fsq_viewer import (
+        build_viewer_data,
+        index_to_coord,
+        state_summary,
+        write_viewer_artifacts,
+    )
 except ImportError:
     from fsq import FSQ
+    from fsq_viewer import (
+        build_viewer_data,
+        index_to_coord,
+        state_summary,
+        write_viewer_artifacts,
+    )
 from jaxmarl.wrappers.baselines import load_params
 
 try:
@@ -320,16 +334,59 @@ def _overcooked_env_kwargs(config: Dict) -> Dict:
     return dict(config["ENV_KWARGS"])
 
 
+def _filter_overcooked_env_kwargs(env_kwargs: Dict) -> Dict:
+    signature = inspect.signature(OvercookedV3.__init__)
+    allowed = set(signature.parameters) - {"self"}
+    return {key: value for key, value in env_kwargs.items() if key in allowed}
+
+
 def _sanitize_name(value: str) -> str:
     safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
     return safe.strip("._") or "run"
+
+
+def _checkpoint_gif_namespace(config: Dict) -> str:
+    return (
+        config.get("CHECKPOINT_GIF_NAMESPACE")
+        or "checkpoint_rollouts_by_recipe"
+    ).strip("/")
+
+
+def _recipe_label(recipe: Sequence[int] | None) -> str:
+    if recipe is None:
+        return "sampled"
+    return "-".join(str(int(ingredient)) for ingredient in recipe)
+
+
+def _checkpoint_recipe_variants(config: Dict) -> list[dict[str, Any]]:
+    env_kwargs = _filter_overcooked_env_kwargs(_overcooked_env_kwargs(config))
+    order_queue_enabled = bool(env_kwargs.get("enable_order_queue", False))
+    if order_queue_enabled:
+        return [{"recipe": None, "recipe_index": None, "recipe_label": "sampled"}]
+
+    env = OvercookedV3(**env_kwargs)
+    recipes = [
+        tuple(int(ingredient) for ingredient in recipe)
+        for recipe in env.layout.possible_recipes
+    ]
+    if len(recipes) <= 1:
+        return [{"recipe": None, "recipe_index": None, "recipe_label": "sampled"}]
+
+    return [
+        {
+            "recipe": recipe,
+            "recipe_index": recipe_index,
+            "recipe_label": _recipe_label(recipe),
+        }
+        for recipe_index, recipe in enumerate(recipes)
+    ]
 
 
 def _checkpoint_policy_step(network: CommActorRNN, action_dim: int):
     @jax.jit
     def policy_step(params, hstate, obs_batch, done_batch, rng, epsilon):
         ac_in = (obs_batch[None, :], done_batch[None, :])
-        hstate, pi, _, _ = network.apply(params, hstate, ac_in)
+        hstate, pi, comm_code, comm_index = network.apply(params, hstate, ac_in)
         greedy_action = jnp.argmax(pi.logits, axis=-1).squeeze(0)
         rng_random, rng_mask = jax.random.split(rng)
         random_action = jax.random.randint(
@@ -340,7 +397,7 @@ def _checkpoint_policy_step(network: CommActorRNN, action_dim: int):
         )
         explore = jax.random.uniform(rng_mask, greedy_action.shape) < epsilon
         action = jnp.where(explore, random_action, greedy_action)
-        return hstate, action
+        return hstate, action, comm_code.squeeze(axis=0), comm_index.squeeze(axis=0)
 
     return policy_step
 
@@ -388,14 +445,16 @@ def _annotate_checkpoint_frame(
     step: int,
     reward: float,
     epsilon: float,
+    recipe_label: str | None = None,
 ):
     from PIL import Image, ImageDraw
 
     image = Image.fromarray(frame)
     draw = ImageDraw.Draw(image)
+    recipe_text = f" | recipe {recipe_label}" if recipe_label else ""
     text = (
         f"{layout} | update {update} | step {step:03d} | "
-        f"eps {epsilon:g} | reward {reward:.0f}"
+        f"eps {epsilon:g} | reward {reward:.0f}{recipe_text}"
     )
     bbox = draw.textbbox((0, 0), text)
     x1 = min(image.width, bbox[2] + 12)
@@ -405,12 +464,88 @@ def _annotate_checkpoint_frame(
     return image
 
 
+def _checkpoint_gif_grid_shape(count: int) -> tuple[int, int]:
+    if count <= 0:
+        raise ValueError("Cannot tile zero checkpoint GIFs")
+    columns = int(np.ceil(np.sqrt(count)))
+    rows = int(np.ceil(count / columns))
+    return rows, columns
+
+
+def _combine_checkpoint_gifs(
+    *,
+    gif_paths: Sequence[os.PathLike | str],
+    output_file: os.PathLike | str,
+    fps: int,
+) -> dict[str, Any]:
+    from PIL import Image, ImageSequence
+
+    if not gif_paths:
+        raise ValueError("Cannot combine an empty checkpoint GIF list")
+
+    gif_frames = []
+    cell_width = 0
+    cell_height = 0
+    max_frame_count = 0
+    for gif_path in gif_paths:
+        with Image.open(gif_path) as image:
+            frames = [
+                frame.convert("RGB").copy()
+                for frame in ImageSequence.Iterator(image)
+            ]
+        if not frames:
+            raise ValueError(f"Checkpoint GIF has no frames: {gif_path}")
+        gif_frames.append(frames)
+        max_frame_count = max(max_frame_count, len(frames))
+        cell_width = max(cell_width, max(frame.width for frame in frames))
+        cell_height = max(cell_height, max(frame.height for frame in frames))
+
+    rows, columns = _checkpoint_gif_grid_shape(len(gif_frames))
+    combined_frames = []
+    for frame_index in range(max_frame_count):
+        canvas = Image.new(
+            "RGB",
+            (columns * cell_width, rows * cell_height),
+            color=(0, 0, 0),
+        )
+        for gif_index, frames in enumerate(gif_frames):
+            row = gif_index // columns
+            column = gif_index % columns
+            frame = frames[min(frame_index, len(frames) - 1)]
+            canvas.paste(frame, (column * cell_width, row * cell_height))
+        combined_frames.append(canvas)
+
+    output_file = Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    combined_frames[0].save(
+        output_file,
+        save_all=True,
+        append_images=combined_frames[1:],
+        duration=int(1000 / fps),
+        loop=0,
+    )
+    return {
+        "gif": str(output_file),
+        "rows": rows,
+        "columns": columns,
+        "frame_count": max_frame_count,
+        "cell_width": cell_width,
+        "cell_height": cell_height,
+    }
+
+
 def render_checkpoint_gif(
     *,
     actor_params: Dict,
     config: Dict,
     update: int,
     output_file: os.PathLike | str,
+    run_name: str | None = None,
+    forced_recipe: Sequence[int] | None = None,
+    recipe_index: int | None = None,
+    fsq_output_dir: os.PathLike | str | None = None,
+    actor_path: os.PathLike | str | None = None,
+    config_path: os.PathLike | str | None = None,
 ) -> dict[str, Any]:
     from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 
@@ -427,6 +562,7 @@ def render_checkpoint_gif(
     tile_size = int(config.get("CHECKPOINT_GIF_TILE_SIZE", 32))
 
     env_kwargs["max_steps"] = max_steps
+    env_kwargs = _filter_overcooked_env_kwargs(env_kwargs)
     env = OvercookedV3(**env_kwargs)
     action_dim = env.action_space(env.agents[0]).n
     network_config = {
@@ -443,6 +579,13 @@ def render_checkpoint_gif(
     rng = jax.random.PRNGKey(seed + update)
     rng, reset_rng = jax.random.split(rng)
     obs, state = env.reset(reset_rng)
+    recipe_label = _recipe_label(forced_recipe) if forced_recipe is not None else None
+    if forced_recipe is not None:
+        recipe_encoding = DynamicObject.get_recipe_encoding(
+            jnp.asarray(forced_recipe, dtype=jnp.int32)
+        )
+        state = state.replace(recipe=recipe_encoding)
+        obs = env.get_obs(state)
     hstate = ScannedRNN.initialize_carry(
         env.num_agents,
         network_config["GRU_HIDDEN_DIM"],
@@ -461,14 +604,35 @@ def render_checkpoint_gif(
             step=0,
             reward=total_reward,
             epsilon=epsilon,
+            recipe_label=recipe_label,
         )
     )
 
+    fsq_enabled = (
+        bool(config.get("CHECKPOINT_FSQ_VIEWER", True))
+        and not bool(config.get("DISABLE_FSQ_COMM", False))
+        and fsq_output_dir is not None
+    )
+    fsq = FSQ(levels=tuple(config["FSQ_LEVELS"]))
+    fsq_counts = np.zeros((fsq.codebook_size,), dtype=np.int64)
+    fsq_dim_counts = np.zeros(
+        (fsq.num_dimensions, max(config["FSQ_LEVELS"])), dtype=np.int64
+    )
+    fsq_examples = {i: [] for i in range(fsq.codebook_size)}
+    fsq_examples_dir = None
+    if fsq_enabled:
+        fsq_output_dir = Path(fsq_output_dir)
+        fsq_examples_dir = fsq_output_dir / "examples"
+        fsq_examples_dir.mkdir(parents=True, exist_ok=True)
+
     steps = 0
     for step in range(1, max_steps + 1):
+        pre_action_state = state
+        pre_action_frame = np.array(viz.render_state(pre_action_state))
+        message_step = step - 1
         obs_batch = jnp.stack([obs[agent] for agent in env.agents])
         rng, act_rng = jax.random.split(rng)
-        hstate, action = policy_step(
+        hstate, action, comm_code, comm_index = policy_step(
             actor_params,
             hstate,
             obs_batch,
@@ -477,6 +641,38 @@ def render_checkpoint_gif(
             jnp.asarray(epsilon, dtype=jnp.float32),
         )
         env_action = {agent: int(action[idx]) for idx, agent in enumerate(env.agents)}
+
+        if fsq_enabled and fsq_examples_dir is not None:
+            comm_code_np = np.asarray(comm_code)
+            comm_index_np = np.asarray(comm_index).astype(int)
+            action_np = np.asarray(action).astype(int)
+            for agent_idx, code_index in enumerate(comm_index_np.tolist()):
+                fsq_counts[code_index] += 1
+                coord = index_to_coord(code_index, list(config["FSQ_LEVELS"]))
+                for dim, value in enumerate(coord):
+                    fsq_dim_counts[dim, value] += 1
+                image_name = (
+                    f"code_{code_index:03d}_ep000_"
+                    f"step{message_step:04d}_agent{agent_idx}.png"
+                )
+                image_path = fsq_examples_dir / image_name
+                from PIL import Image
+
+                Image.fromarray(pre_action_frame).save(image_path)
+                fsq_examples[code_index].append(
+                    {
+                        "episode": 0,
+                        "step": message_step,
+                        "agent": int(agent_idx),
+                        "image": f"examples/{image_name}",
+                        "summary": state_summary(
+                            pre_action_state,
+                            agent_idx,
+                            int(action_np[agent_idx]),
+                        ),
+                        "raw_code": comm_code_np[agent_idx].astype(float).tolist(),
+                    }
+                )
 
         rng, step_rng = jax.random.split(rng)
         obs, state, rewards, dones, _ = env.step(step_rng, state, env_action)
@@ -493,6 +689,7 @@ def render_checkpoint_gif(
                 step=step,
                 reward=total_reward,
                 epsilon=epsilon,
+                recipe_label=recipe_label,
             )
         )
 
@@ -509,7 +706,7 @@ def render_checkpoint_gif(
         loop=0,
     )
 
-    return {
+    row = {
         "update": update,
         "steps": steps,
         "reward": total_reward,
@@ -517,7 +714,59 @@ def render_checkpoint_gif(
         "layout": layout,
         "max_steps": max_steps,
         "epsilon": epsilon,
+        "recipe": recipe_label or "sampled",
+        "recipe_index": recipe_index,
     }
+
+    if fsq_enabled and fsq_output_dir is not None:
+        fsq_output_dir = Path(fsq_output_dir)
+        gif_copy = fsq_output_dir / output_file.name
+        if gif_copy.resolve() != output_file.resolve():
+            shutil.copy2(output_file, gif_copy)
+        metadata = {
+            "schema_version": 1,
+            "artifact_type": "checkpoint_fsq_viewer",
+            "run_name": run_name,
+            "checkpoint_update": int(update),
+            "actor_path": None if actor_path is None else str(actor_path),
+            "config_path": None if config_path is None else str(config_path),
+            "gif": gif_copy.name,
+            "layout": layout,
+            "max_steps": int(max_steps),
+            "steps": int(steps),
+            "reward": float(total_reward),
+            "epsilon": float(epsilon),
+            "seed": int(seed),
+            "recipe": recipe_label or "sampled",
+            "recipe_index": recipe_index,
+            "forced_recipe": (
+                None
+                if forced_recipe is None
+                else [int(ingredient) for ingredient in forced_recipe]
+            ),
+            "fsq_levels": [int(level) for level in config["FSQ_LEVELS"]],
+        }
+        data = build_viewer_data(
+            layout=layout,
+            levels=tuple(config["FSQ_LEVELS"]),
+            codebook=np.asarray(fsq.codebook),
+            counts=fsq_counts,
+            examples=fsq_examples,
+            dim_counts=fsq_dim_counts,
+            metadata=metadata,
+        )
+        viewer_paths = write_viewer_artifacts(fsq_output_dir, data)
+        row.update(
+            {
+                "fsq_viewer_dir": viewer_paths["viewer_dir"],
+                "fsq_usage_json": viewer_paths["usage_json"],
+                "fsq_index_html": viewer_paths["index_html"],
+                "fsq_total_samples": int(fsq_counts.sum()),
+                "fsq_nonzero_codes": int(np.count_nonzero(fsq_counts)),
+            }
+        )
+
+    return row
 
 
 def render_and_log_checkpoint_gif(
@@ -528,6 +777,8 @@ def render_and_log_checkpoint_gif(
     run_name: str,
     checkpoint_interval: int,
     rollout_index: int | None = None,
+    actor_path: os.PathLike | str | None = None,
+    config_path: os.PathLike | str | None = None,
 ) -> None:
     checkpoint_gif = config.get("CHECKPOINT_GIF", False)
     assert isinstance(checkpoint_gif, bool), (
@@ -542,40 +793,106 @@ def render_and_log_checkpoint_gif(
     )
     epsilon = float(config.get("CHECKPOINT_GIF_EPSILON", 0.0))
     max_steps = int(config.get("CHECKPOINT_GIF_MAX_STEPS", 300))
-    output_file = (
+    recipe_variants = _checkpoint_recipe_variants(config)
+
+    if rollout_index is None:
+        rollout_index = max(update // checkpoint_interval - 1, 0)
+    namespace = _checkpoint_gif_namespace(config)
+    media_key = config.get("CHECKPOINT_GIF_MEDIA_KEY") or f"{namespace}/rollout"
+
+    rows = []
+    for variant in recipe_variants:
+        recipe_suffix = ""
+        if variant["recipe"] is not None:
+            recipe_suffix = (
+                f"_recipe{variant['recipe_index']}_"
+                f"{_sanitize_name(variant['recipe_label'])}"
+            )
+        output_file = (
+            Path(output_root)
+            / _sanitize_name(run_name)
+            / f"update_{update:06d}{recipe_suffix}_eps{epsilon:g}_{max_steps}steps.gif"
+        )
+        fsq_output_dir = None
+        if bool(config.get("CHECKPOINT_FSQ_VIEWER", True)) and not bool(
+            config.get("DISABLE_FSQ_COMM", False)
+        ):
+            fsq_output_dir = output_file.parent / f"{output_file.stem}_fsq"
+
+        row = render_checkpoint_gif(
+            actor_params=actor_params,
+            config=config,
+            update=update,
+            output_file=output_file,
+            run_name=run_name,
+            forced_recipe=variant["recipe"],
+            recipe_index=variant["recipe_index"],
+            fsq_output_dir=fsq_output_dir,
+            actor_path=actor_path,
+            config_path=config_path,
+        )
+        print(
+            "Checkpoint GIF saved: "
+            f"update={row['update']} recipe={row['recipe']} "
+            f"reward={row['reward']:.1f} steps={row['steps']} gif={row['gif']}"
+        )
+        if "fsq_viewer_dir" in row:
+            print(
+                "FSQ viewer saved: "
+                f"samples={row['fsq_total_samples']} "
+                f"nonzero_codes={row['fsq_nonzero_codes']} "
+                f"dir={row['fsq_viewer_dir']}"
+            )
+
+        rows.append(row)
+
+    if not rows:
+        return
+
+    combined_output_file = (
         Path(output_root)
         / _sanitize_name(run_name)
-        / f"update_{update:06d}_eps{epsilon:g}_{max_steps}steps.gif"
+        / f"update_{update:06d}_combined_eps{epsilon:g}_{max_steps}steps.gif"
     )
-
-    row = render_checkpoint_gif(
-        actor_params=actor_params,
-        config=config,
-        update=update,
-        output_file=output_file,
+    fps = int(config.get("CHECKPOINT_GIF_FPS", 8))
+    combined = _combine_checkpoint_gifs(
+        gif_paths=[row["gif"] for row in rows],
+        output_file=combined_output_file,
+        fps=fps,
     )
     print(
-        "Checkpoint GIF saved: "
-        f"update={row['update']} reward={row['reward']:.1f} "
-        f"steps={row['steps']} gif={row['gif']}"
+        "Combined checkpoint GIF saved: "
+        f"update={update} variants={len(rows)} "
+        f"grid={combined['columns']}x{combined['rows']} gif={combined['gif']}"
     )
 
     if config["WANDB_MODE"] == "disabled" or wandb.run is None:
         return
 
-    if rollout_index is None:
-        rollout_index = max(update // checkpoint_interval - 1, 0)
-    media_key = config.get("CHECKPOINT_GIF_MEDIA_KEY") or "checkpoint_rollouts/rollout"
     wandb.log(
         {
-            media_key: wandb.Video(row["gif"], format="gif"),
-            "checkpoint_rollouts/rollout_index": rollout_index,
-            "checkpoint_rollouts/checkpoint_update": int(row["update"]),
-            "checkpoint_rollouts/episode_reward": float(row["reward"]),
-            "checkpoint_rollouts/episode_steps": int(row["steps"]),
-            "checkpoint_rollouts/layout": row["layout"],
-            "checkpoint_rollouts/max_steps": int(row["max_steps"]),
-            "checkpoint_rollouts/epsilon": float(row["epsilon"]),
+            media_key: wandb.Video(combined["gif"], format="gif"),
+            f"{namespace}/rollout_index": rollout_index,
+            f"{namespace}/checkpoint_update": int(update),
+            f"{namespace}/episode_reward": float(
+                np.mean([row["reward"] for row in rows])
+            ),
+            f"{namespace}/episode_steps": int(max(row["steps"] for row in rows)),
+            f"{namespace}/layout": rows[0]["layout"],
+            f"{namespace}/max_steps": int(rows[0]["max_steps"]),
+            f"{namespace}/epsilon": float(rows[0]["epsilon"]),
+            f"{namespace}/recipe": ",".join(str(row["recipe"]) for row in rows),
+            f"{namespace}/recipe_index": -1,
+            f"{namespace}/variant_count": len(rows),
+            f"{namespace}/grid_rows": int(combined["rows"]),
+            f"{namespace}/grid_columns": int(combined["columns"]),
+            f"{namespace}/fsq_viewer_dir": "",
+            f"{namespace}/fsq_total_samples": int(
+                sum(row.get("fsq_total_samples", 0) for row in rows)
+            ),
+            f"{namespace}/fsq_nonzero_codes": int(
+                max(row.get("fsq_nonzero_codes", 0) for row in rows)
+            ),
         }
     )
 
@@ -676,9 +993,13 @@ def make_train(config, monitor=None):
         return code_counts, dim_hist, unique_codes, entropy, max_frac
 
     checkpoint_count = int(config.get("CHECKPOINT_GIF_COUNT", 10))
-    checkpoint_update_set = set(
-        checkpoint_updates(int(config["NUM_UPDATES"]), checkpoint_count)
+    checkpoint_update_tuple = checkpoint_updates(
+        int(config["NUM_UPDATES"]), checkpoint_count
     )
+    checkpoint_update_set = set(checkpoint_update_tuple)
+    checkpoint_update_to_rollout_index = {
+        update: idx for idx, update in enumerate(checkpoint_update_tuple)
+    }
     checkpoint_dir = os.path.join(config["WANDB_DIR"], "models")
     layout_name = config["ENV_KWARGS"]["layout"]
 
@@ -1235,15 +1556,24 @@ def make_train(config, monitor=None):
                     date_str = datetime.datetime.now().strftime("%Y%m%d")
                     ckpt_subdir = os.path.join(checkpoint_dir, f"{run_name}_{date_str}")
                     os.makedirs(ckpt_subdir, exist_ok=True)
-                    save_params(
-                        actor_params,
-                        os.path.join(ckpt_subdir, f"{updates}_actor.safetensors"),
+                    actor_checkpoint_path = os.path.join(
+                        ckpt_subdir, f"{updates}_actor.safetensors"
                     )
-                    save_params(
-                        critic_params,
-                        os.path.join(ckpt_subdir, f"{updates}_critic.safetensors"),
+                    critic_checkpoint_path = os.path.join(
+                        ckpt_subdir, f"{updates}_critic.safetensors"
                     )
+                    save_params(actor_params, actor_checkpoint_path)
+                    save_params(critic_params, critic_checkpoint_path)
                     print(f"Checkpoint saved: {ckpt_subdir}/{updates}_*.safetensors")
+                    render_and_log_checkpoint_gif(
+                        actor_params=actor_params,
+                        config=config,
+                        update=updates,
+                        run_name=run_name,
+                        checkpoint_interval=max(int(config["NUM_UPDATES"]), 1),
+                        rollout_index=checkpoint_update_to_rollout_index[updates],
+                        actor_path=actor_checkpoint_path,
+                    )
 
             update_step = update_step + 1
             loss_info = jax.tree_util.tree_map(lambda x: x.mean(), loss_info)
@@ -1335,10 +1665,11 @@ def single_run(config):
         or f"mappo_rnn_overcooked_v3_fsq_distill_{layout_name}",
     )
     if checkpoint_gif and config["WANDB_MODE"] != "disabled":
-        wandb.define_metric("checkpoint_rollouts/rollout_index")
+        checkpoint_gif_namespace = _checkpoint_gif_namespace(config)
+        wandb.define_metric(f"{checkpoint_gif_namespace}/rollout_index")
         wandb.define_metric(
-            "checkpoint_rollouts/*",
-            step_metric="checkpoint_rollouts/rollout_index",
+            f"{checkpoint_gif_namespace}/*",
+            step_metric=f"{checkpoint_gif_namespace}/rollout_index",
         )
 
     num_updates = int(
@@ -1379,9 +1710,6 @@ def single_run(config):
 
     actor_state, critic_state = out["runner_state"][0]
     run_name = wandb.run.name if wandb.run else "offline"
-    gif_checkpoint_count = int(config.get("CHECKPOINT_GIF_COUNT", 10))
-    gif_checkpoint_updates = checkpoint_updates(num_updates, gif_checkpoint_count)
-
     OmegaConf.save(
         config,
         os.path.join(
@@ -1405,39 +1733,6 @@ def single_run(config):
         save_params(critic_params, critic_path)
         print(f"Saved actor params to {actor_path}")
         print(f"Saved critic params to {critic_path}")
-        if checkpoint_gif:
-            gif_run_name = f"{run_name}_vmap{i}" if num_seeds > 1 else run_name
-            checkpoint_paths = checkpoint_actor_paths(
-                wandb_dir=wandb_dir,
-                run_name=run_name,
-                updates=gif_checkpoint_updates,
-            )
-            if checkpoint_paths:
-                for rollout_index, (update, checkpoint_path) in enumerate(
-                    checkpoint_paths
-                ):
-                    checkpoint_actor_params = load_params(checkpoint_path)
-                    render_and_log_checkpoint_gif(
-                        actor_params=checkpoint_actor_params,
-                        config=config,
-                        update=update,
-                        run_name=gif_run_name,
-                        checkpoint_interval=max(num_updates, 1),
-                        rollout_index=rollout_index,
-                    )
-            else:
-                print(
-                    "No periodic checkpoint actors found for GIF rendering; "
-                    "rendering the final actor only."
-                )
-                render_and_log_checkpoint_gif(
-                    actor_params=actor_params,
-                    config=config,
-                    update=num_updates,
-                    run_name=gif_run_name,
-                    checkpoint_interval=max(num_updates, 1),
-                    rollout_index=0,
-                )
 
 
 def tune(config):

@@ -2,6 +2,7 @@ const runSelect = document.getElementById("run");
 const checkpointSelect = document.getElementById("checkpoint");
 const recipeSelect = document.getElementById("recipe");
 const meta = document.getElementById("meta");
+const reloadButton = document.getElementById("reload");
 const svg = document.getElementById("plot");
 const rollout = document.getElementById("rollout");
 const title = document.getElementById("code-title");
@@ -11,6 +12,7 @@ const examples = document.getElementById("examples");
 let artifacts = [];
 let currentArtifact = null;
 let data = null;
+let loadToken = 0;
 
 const selected = { value: null };
 const rotation = { x: -0.55, y: 0.72 };
@@ -46,6 +48,27 @@ function recipeLabel(item) {
 
 function assetUrl(path) {
   return `${currentArtifact.asset_url}${path}`;
+}
+
+function artifactLabel(item) {
+  return [
+    item.run,
+    checkpointLabel(item.checkpoint),
+    recipeLabel(item),
+  ].join(" | ");
+}
+
+function loadedMetaText(item, usage) {
+  const codes = usage.codes || [];
+  const levels = usage.levels || [];
+  const nonzeroCodes = codes.filter(code => code.count > 0).length;
+  return [
+    usage.layout || "unknown layout",
+    `levels=${levels.join("x") || "unknown"}`,
+    `samples=${usage.total_samples || 0}`,
+    `nonzero=${nonzeroCodes}`,
+    item.path,
+  ].join(" | ");
 }
 
 function setOptions(select, items, label, value) {
@@ -89,7 +112,25 @@ function renderSelectors() {
   loadSelectedArtifact();
 }
 
+async function reloadArtifacts() {
+  reloadButton.disabled = true;
+  reloadButton.textContent = "Reloading";
+  try {
+    const response = await fetch("/api/artifacts", { cache: "no-store" });
+    const payload = await response.json();
+    artifacts = payload.artifacts;
+    meta.textContent = `Found ${artifacts.length} FSQ artifacts.`;
+    renderSelectors();
+  } catch (error) {
+    meta.textContent = `Reload failed: ${error}`;
+  } finally {
+    reloadButton.disabled = false;
+    reloadButton.textContent = "Reload";
+  }
+}
+
 async function loadSelectedArtifact() {
+  const token = ++loadToken;
   const item = artifacts.find(artifact => artifact.id === recipeSelect.value);
   if (!item) {
     currentArtifact = null;
@@ -104,20 +145,38 @@ async function loadSelectedArtifact() {
   }
 
   currentArtifact = item;
-  meta.textContent = [
-    item.layout,
-    `levels=${item.levels.join("x")}`,
-    `samples=${item.total_samples}`,
-    `nonzero=${item.nonzero_codes}`,
-    item.path,
-  ].join(" | ");
-
-  const response = await fetch(item.usage_url);
-  data = await response.json();
+  data = null;
   selected.value = null;
-  renderRollout();
-  draw();
+  meta.textContent = `Loading ${artifactLabel(item)}.`;
+  rollout.innerHTML = "";
+  svg.innerHTML = "";
   clearDetails();
+
+  try {
+    const response = await fetch(item.usage_url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+    const usage = await response.json();
+    if (token !== loadToken) {
+      return;
+    }
+    data = usage;
+    meta.textContent = loadedMetaText(item, usage);
+    renderRollout();
+    draw();
+    clearDetails();
+  } catch (error) {
+    if (token !== loadToken) {
+      return;
+    }
+    currentArtifact = null;
+    data = null;
+    rollout.innerHTML = "";
+    svg.innerHTML = "";
+    clearDetails();
+    meta.textContent = `Failed to load ${artifactLabel(item)}: ${error}`;
+  }
 }
 
 function renderRollout() {
@@ -323,6 +382,7 @@ function draw() {
 runSelect.addEventListener("change", renderSelectors);
 checkpointSelect.addEventListener("change", renderSelectors);
 recipeSelect.addEventListener("change", loadSelectedArtifact);
+reloadButton.addEventListener("click", reloadArtifacts);
 svg.addEventListener("pointerdown", event => {
   drag.active = true;
   drag.x = event.clientX;
@@ -375,10 +435,4 @@ svg.addEventListener(
 );
 window.addEventListener("resize", draw);
 
-fetch("/api/artifacts")
-  .then(response => response.json())
-  .then(payload => {
-    artifacts = payload.artifacts;
-    meta.textContent = `Found ${artifacts.length} FSQ artifacts.`;
-    renderSelectors();
-  });
+reloadArtifacts();
