@@ -522,6 +522,12 @@ class LevelEditor:
         # Wiring panel state
         self.wiring_cell: Optional[Tuple[int, int]] = None  # (x, y) being wired
 
+        # Hit-test rects populated by _draw_wiring_panel / _draw_barrier_panel each frame
+        # so that _handle_info_panel_click always uses the exact rendered positions.
+        self._wiring_action_rects: List[pygame.Rect] = []   # index → action_type
+        self._wiring_barrier_rects: List[pygame.Rect] = []  # index → barrier checkbox
+        self._barrier_toggle_rect: Optional[pygame.Rect] = None
+
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
@@ -601,7 +607,7 @@ class LevelEditor:
                 self.painting = True
                 self.paint_button = 1
                 self.last_paint_cell = (cell_x, cell_y)
-                # Open wiring panel for interactive elements
+                # Open wiring/config panel for interactive elements
                 so = self.state.static_objects[cell_y, cell_x]
                 if self._is_wireable(so, cell_x, cell_y):
                     self.wiring_cell = (cell_x, cell_y)
@@ -612,58 +618,54 @@ class LevelEditor:
                 self.last_paint_cell = (cell_x, cell_y)
 
     def _is_wireable(self, static_obj: int, x: int, y: int) -> bool:
-        """True if this cell is a button or pressure plate."""
+        """True if this cell has a button, pressure plate, or barrier (all have config panels)."""
         if self.state.button_at(x, y) is not None:
             return True
         if self.state.pressure_plate_at(x, y) is not None:
             return True
+        if self.state.barrier_at(x, y) is not None:
+            return True
         return False
 
     def _handle_info_panel_click(self, mx: int, my: int, button: int):
-        """Handle clicks in the right info / wiring panel."""
+        """Handle clicks in the right info / wiring panel.
+
+        All hit-test rectangles are captured by the draw methods each frame,
+        so the click handler never has to recompute positions independently.
+        """
         if button != 1:
             return
         if self.wiring_cell is None:
             return
+
         wx, wy = self.wiring_cell
         btn_idx = self.state.button_at(wx, wy)
-        pp_idx = self.state.pressure_plate_at(wx, wy)
-        if btn_idx is None and pp_idx is None:
-            return
-
-        obj = self.state.buttons[btn_idx] if btn_idx is not None else self.state.pressure_plates[pp_idx]
-
-        panel_x = TOOLBAR_WIDTH + self.state.width * self.tile_size
-        rel_y = my - TOP_MENU_HEIGHT
-
-        # Action type buttons (rendered at fixed offsets in draw_wiring_panel)
-        action_y_start = 120
-        for i, label in enumerate(BUTTON_ACTION_LABELS):
-            row_y = action_y_start + i * 28
-            btn_rect = pygame.Rect(panel_x + 10, row_y, 200, 24)
-            if btn_rect.collidepoint(mx, my):
-                obj.action_type = i
-                return
-
-        # Barrier toggle rows
-        barrier_y_start = action_y_start + len(BUTTON_ACTION_LABELS) * 28 + 30
-        for i, barrier in enumerate(self.state.barriers):
-            row_y = barrier_y_start + i * 26
-            checkbox_rect = pygame.Rect(panel_x + 10, row_y + 2, 18, 18)
-            if checkbox_rect.collidepoint(mx, my):
-                if i in obj.target_barrier_idxs:
-                    obj.target_barrier_idxs.remove(i)
-                else:
-                    obj.target_barrier_idxs.append(i)
-                return
-
-        # Initially-active toggle for barrier cell selected (if wiring_cell is a barrier)
+        pp_idx  = self.state.pressure_plate_at(wx, wy)
         bar_idx = self.state.barrier_at(wx, wy)
-        if bar_idx is not None:
-            toggle_rect = pygame.Rect(panel_x + 10, 80, 200, 28)
-            if toggle_rect.collidepoint(mx, my):
+
+        # --- Wiring panel (button or pressure plate selected) ---
+        if btn_idx is not None or pp_idx is not None:
+            obj = self.state.buttons[btn_idx] if btn_idx is not None else self.state.pressure_plates[pp_idx]
+
+            # Action type rows
+            for i, rect in enumerate(self._wiring_action_rects):
+                if rect.collidepoint(mx, my):
+                    obj.action_type = i
+                    return
+
+            # Barrier checkbox rows
+            for i, rect in enumerate(self._wiring_barrier_rects):
+                if rect.collidepoint(mx, my):
+                    if i in obj.target_barrier_idxs:
+                        obj.target_barrier_idxs.remove(i)
+                    else:
+                        obj.target_barrier_idxs.append(i)
+                    return
+
+        # --- Barrier panel (barrier tile selected) ---
+        if bar_idx is not None and self._barrier_toggle_rect is not None:
+            if self._barrier_toggle_rect.collidepoint(mx, my):
                 self.state.barriers[bar_idx].initially_active = not self.state.barriers[bar_idx].initially_active
-                return
 
     def _handle_paint_drag(self, pos: Tuple[int, int]):
         mx, my = pos
@@ -1555,7 +1557,13 @@ pygame.quit()
                 y += 20
 
     def _draw_wiring_panel(self, panel_x, panel_width, y, btn_idx, pp_idx):
-        """Draw the wiring configuration panel for a selected button or pressure plate."""
+        """Draw the wiring configuration panel for a selected button or pressure plate.
+        Populates self._wiring_action_rects and self._wiring_barrier_rects so that
+        _handle_info_panel_click can use the exact rendered positions for hit-testing.
+        """
+        self._wiring_action_rects = []
+        self._wiring_barrier_rects = []
+
         wx, wy = self.wiring_cell
         is_button = btn_idx is not None
         obj = self.state.buttons[btn_idx] if is_button else self.state.pressure_plates[pp_idx]
@@ -1579,18 +1587,19 @@ pygame.quit()
         self.screen.blit(act_lbl, (panel_x + 10, y))
         y += 24
 
-        action_y_start = y
         for i, label in enumerate(BUTTON_ACTION_LABELS):
-            row_y = action_y_start + i * 28
             selected = (obj.action_type == i)
             bg = COLOR_TEAL if selected else COLOR_GRAY
-            btn_rect = pygame.Rect(panel_x + 10, row_y, panel_width - 25, 24)
+            btn_rect = pygame.Rect(panel_x + 10, y, panel_width - 25, 24)
+            self._wiring_action_rects.append(btn_rect)          # ← store for click handler
             pygame.draw.rect(self.screen, bg, btn_rect)
             pygame.draw.rect(self.screen, COLOR_WHITE, btn_rect, 1)
             tag = " ✓" if selected else ""
             txt = self.small_font.render(f"{i}: {label}{tag}", True, COLOR_WHITE)
-            self.screen.blit(txt, (panel_x + 14, row_y + 3))
-        y = action_y_start + len(BUTTON_ACTION_LABELS) * 28 + 14
+            self.screen.blit(txt, (panel_x + 14, y + 3))
+            y += 28
+
+        y += 14
 
         # Separator
         pygame.draw.line(self.screen, COLOR_LIGHT_GRAY, (panel_x + 5, y), (panel_x + panel_width - 5, y), 1)
@@ -1601,32 +1610,37 @@ pygame.quit()
         self.screen.blit(bar_lbl, (panel_x + 10, y))
         y += 24
 
-        barrier_y_start = y
         if not self.state.barriers:
             no_bar = self.small_font.render("No barriers placed yet.", True, COLOR_LIGHT_GRAY)
             self.screen.blit(no_bar, (panel_x + 14, y))
             y += 22
         else:
             for i, barrier in enumerate(self.state.barriers):
-                row_y = barrier_y_start + i * 26
                 linked = i in obj.target_barrier_idxs
-                # Checkbox
-                cb_rect = pygame.Rect(panel_x + 10, row_y + 2, 18, 18)
+                # Checkbox — store full row rect for easier clicking
+                row_rect = pygame.Rect(panel_x + 10, y, panel_width - 25, 22)
+                cb_rect  = pygame.Rect(panel_x + 10, y + 2, 18, 18)
+                self._wiring_barrier_rects.append(row_rect)     # ← store for click handler
                 pygame.draw.rect(self.screen, COLOR_WHITE, cb_rect)
                 pygame.draw.rect(self.screen, COLOR_BLACK, cb_rect, 1)
                 if linked:
                     pygame.draw.line(self.screen, COLOR_TEAL, cb_rect.topleft, cb_rect.bottomright, 3)
                     pygame.draw.line(self.screen, COLOR_TEAL, cb_rect.topright, cb_rect.bottomleft, 3)
-                # Label
                 state_str = "●" if barrier.initially_active else "○"
                 txt = self.small_font.render(f"[{i}] {state_str} ({barrier.y},{barrier.x})", True, COLOR_WHITE)
-                self.screen.blit(txt, (panel_x + 34, row_y + 3))
-            y = barrier_y_start + len(self.state.barriers) * 26 + 8
+                self.screen.blit(txt, (panel_x + 34, y + 3))
+                y += 26
+
+            y += 8
 
         return y
 
     def _draw_barrier_panel(self, panel_x, panel_width, y, bar_idx):
-        """Draw the configuration panel for a selected barrier tile."""
+        """Draw the configuration panel for a selected barrier tile.
+        Populates self._barrier_toggle_rect for _handle_info_panel_click.
+        """
+        self._barrier_toggle_rect = None
+
         barrier = self.state.barriers[bar_idx]
         title = self.title_font.render(f"Barrier [{bar_idx}]", True, COLOR_MAROON)
         self.screen.blit(title, (panel_x + 10, y))
@@ -1640,6 +1654,7 @@ pygame.quit()
 
         # Toggle initially-active
         toggle_rect = pygame.Rect(panel_x + 10, y, panel_width - 25, 28)
+        self._barrier_toggle_rect = toggle_rect                 # ← store for click handler
         state_str = "ACTIVE (solid wall)" if barrier.initially_active else "INACTIVE (open)"
         bg = COLOR_MAROON if barrier.initially_active else COLOR_GRAY
         pygame.draw.rect(self.screen, bg, toggle_rect)
