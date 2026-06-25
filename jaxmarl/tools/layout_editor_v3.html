@@ -957,12 +957,47 @@
       { group: "player", symbol: "{", name: "Up", color: PALETTE.player, text: "#fff", shortcut: "{" },
       { group: "player", symbol: "}", name: "Down", color: PALETTE.player, text: "#fff", shortcut: "}" },
       { group: "moving", symbol: "e", name: "East", color: PALETTE.moving, text: "#fff", shortcut: "e" },
-      { group: "moving", symbol: "w", name: "West", color: PALETTE.moving, text: "#fff", shortcut: "w" },
+      { group: "moving", symbol: "w", name: "West", color: PALETTE.moving, text: "#fff", shortcut: "W" },
       { group: "moving", symbol: "n", name: "North", color: PALETTE.moving, text: "#fff", shortcut: "n" },
       { group: "moving", symbol: "s", name: "South", color: PALETTE.moving, text: "#fff", shortcut: "s" },
       { group: "control", symbol: "!", name: "Button", color: PALETTE.button, text: "#1b1608", shortcut: "!" },
       { group: "control", symbol: "#", name: "Barrier", color: PALETTE.barrier, text: "#fff", shortcut: "#" },
       { group: "control", symbol: " ", name: "Erase (Right click)", color: PALETTE.erase, text: "#17211d", shortcut: "Delete" }
+    ];
+
+    const SUPPORTED_LAYOUT_SYMBOLS = [
+      " ",
+      "W",
+      "A",
+      "X",
+      "B",
+      "P",
+      "R",
+      "O",
+      ">",
+      "<",
+      "^",
+      "v",
+      "]",
+      "[",
+      "{",
+      "}",
+      "e",
+      "w",
+      "n",
+      "s",
+      "!",
+      "#",
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9"
     ];
 
     const BUILTIN_LAYOUTS = {
@@ -1161,6 +1196,7 @@ WW1W0WW`
 
     const ctx = els.canvas.getContext("2d");
     const toolBySymbol = new Map(TOOLS.map((tool) => [tool.symbol, tool]));
+    const supportedLayoutSymbols = new Set(SUPPORTED_LAYOUT_SYMBOLS);
     const shortcutToTool = new Map();
     for (const tool of TOOLS) {
       if (!shortcutToTool.has(tool.shortcut)) {
@@ -1179,6 +1215,7 @@ WW1W0WW`
       undo: [],
       redo: [],
       painting: false,
+      draftDirtyDuringPaint: false,
       lastPaintKey: "",
       validation: null
     };
@@ -1525,12 +1562,21 @@ WW1W0WW`
       }
     }
 
-    function invalidateAndRender() {
+    function clearValidation() {
       state.validation = null;
+      renderValidation();
+    }
+
+    function invalidateAndRender() {
+      clearValidation();
       updateOutputs();
       updateStatus();
       render();
-      saveDraft();
+      if (state.painting) {
+        state.draftDirtyDuringPaint = true;
+      } else {
+        saveDraft();
+      }
     }
 
     function canvasCellFromEvent(event) {
@@ -1799,7 +1845,14 @@ ${args.join(",\n")}
     }
 
     function renderValidation() {
-      const validation = state.validation || validateLayout();
+      const validation = state.validation;
+      if (!validation) {
+        els.stats.innerHTML = "";
+        els.messages.innerHTML = "";
+        els.validityPill.textContent = "Not checked";
+        els.validityPill.className = "pill";
+        return;
+      }
       const { counts, errors, warnings } = validation;
 
       els.stats.innerHTML = "";
@@ -1863,10 +1916,9 @@ ${args.join(",\n")}
       if (width < LIMITS.minWidth || width > LIMITS.maxWidth || height < LIMITS.minHeight || height > LIMITS.maxHeight) {
         throw new Error(`Layout dimensions must be ${LIMITS.minWidth}-${LIMITS.maxWidth} by ${LIMITS.minHeight}-${LIMITS.maxHeight}.`);
       }
-      const valid = new Set([" ", "W", "A", "X", "B", "P", "R", "O", ">", "<", "^", "v", "]", "[", "{", "}", "e", "w", "n", "s", "!", "#", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]);
       rows.forEach((row, y) => {
         Array.from(row).forEach((symbol, x) => {
-          if (!valid.has(symbol)) {
+          if (!supportedLayoutSymbols.has(symbol)) {
             throw new Error(`Unknown symbol ${JSON.stringify(symbol)} at row ${y}, col ${x}.`);
           }
         });
@@ -2029,6 +2081,7 @@ ${args.join(",\n")}
         event.preventDefault();
         pushUndo();
         state.painting = true;
+        state.draftDirtyDuringPaint = false;
         state.lastPaintKey = "";
         applyPaint(event);
       });
@@ -2037,9 +2090,14 @@ ${args.join(",\n")}
         applyPaint(event);
       });
       window.addEventListener("mouseup", () => {
+        const wasPainting = state.painting;
         state.painting = false;
         state.lastPaintKey = "";
         updateUndoRedoButtons();
+        if (wasPainting && state.draftDirtyDuringPaint) {
+          saveDraft();
+        }
+        state.draftDirtyDuringPaint = false;
       });
 
       els.canvas.addEventListener("mousemove", (event) => {
@@ -2106,7 +2164,7 @@ ${args.join(",\n")}
 
       [els.layoutName, els.recipesInput, els.movingWallBounceInput, els.buttonConfigInput, els.barrierConfigInput].forEach((input) => {
         input.addEventListener("input", () => {
-          state.validation = null;
+          clearValidation();
           updateOutputs();
           saveDraft();
         });
