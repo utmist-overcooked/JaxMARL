@@ -270,6 +270,48 @@ WWWWWW
         assert not is_valid
         assert any("targets barrier 0" in msg.lower() for msg in messages)
 
+    def test_pressure_plate_tiles_are_valid_walkable_access_tiles(self):
+        """Pressure plates are runtime-walkable, so playable validation should
+        also accept them as agent starts and object access tiles."""
+        layout_str = """
+WWWWW
+WPX W
+W_A0W
+WB# W
+WWWWW
+"""
+        layout = Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0]],
+            pressure_plate_config=[(0, ButtonAction.TOGGLE_BARRIER)],
+            barrier_config=[False],
+        )
+
+        is_valid, messages = layout.validate_playable()
+
+        assert is_valid, messages
+
+    def test_pressure_plate_action_wrong_target_family_fails_validation(self):
+        """Pressure plates can only use barrier actions."""
+        layout_str = """
+WWWWW
+W0A_W
+WP#XW
+WB  W
+WWWWW
+"""
+        layout = Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0]],
+            pressure_plate_config=[(0, ButtonAction.TOGGLE_DIRECTION)],
+            barrier_config=[True],
+        )
+
+        is_valid, messages = layout.validate()
+
+        assert not is_valid
+        assert any("pressure plate 0 action" in msg.lower() for msg in messages)
+
     def test_validate_rejects_too_many_dynamic_mechanics(self):
         """Validation catches layouts that exceed fixed JAX state capacities."""
         width = MAX_MOVING_WALLS + MAX_BUTTONS + MAX_BARRIERS + 4

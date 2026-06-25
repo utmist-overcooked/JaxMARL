@@ -679,6 +679,63 @@ class Layout:
                     f"Barrier {idx} at {(y, x)} is not encoded as a barrier tile"
                 )
 
+        for idx, (y, x, target_idxs, action_type) in enumerate(self.pressure_plate_info):
+            if not _in_bounds(y, x):
+                errors.append(
+                    f"Pressure plate {idx} position {(y, x)} is outside layout bounds"
+                )
+                continue
+            if self.static_objects[y, x] != StaticObject.PRESSURE_PLATE:
+                errors.append(
+                    f"Pressure plate {idx} at {(y, x)} is not encoded as a pressure plate tile"
+                )
+
+            try:
+                action = ButtonAction(action_type)
+            except (TypeError, ValueError):
+                errors.append(
+                    f"Pressure plate {idx} has invalid action type {action_type!r}"
+                )
+                continue
+
+            if action not in barrier_actions:
+                errors.append(
+                    f"Pressure plate {idx} action {action.name} is not supported; "
+                    "pressure plates can only use barrier actions"
+                )
+                continue
+
+            if isinstance(target_idxs, list):
+                target_idxs = tuple(target_idxs)
+            elif not isinstance(target_idxs, tuple):
+                target_idxs = (target_idxs,)
+
+            if len(target_idxs) == 0:
+                errors.append(f"Pressure plate {idx} must target at least one barrier")
+                continue
+
+            if len(target_idxs) > MAX_BARRIERS:
+                errors.append(
+                    f"Pressure plate {idx} targets {len(target_idxs)} barriers, "
+                    f"but at most {MAX_BARRIERS} are supported"
+                )
+                continue
+
+            for target_idx in target_idxs:
+                try:
+                    target_idx = int(target_idx)
+                except (TypeError, ValueError):
+                    errors.append(
+                        f"Pressure plate {idx} target index {target_idx!r} must be an integer"
+                    )
+                    continue
+
+                if target_idx < 0 or target_idx >= len(self.barrier_info):
+                    errors.append(
+                        f"Pressure plate {idx} targets barrier {target_idx}, but only "
+                        f"{len(self.barrier_info)} barriers exist"
+                    )
+
         if self.possible_recipes is None:
             if not info['has_recipe_indicator']:
                 errors.append("Layout has no recipe indicator and no possible_recipes specified")
@@ -714,13 +771,18 @@ class Layout:
 
     @staticmethod
     def _is_agent_walkable_tile(obj) -> bool:
-        return obj in (StaticObject.EMPTY, StaticObject.PLAYER_CONVEYOR)
+        return obj in (
+            StaticObject.EMPTY,
+            StaticObject.PLAYER_CONVEYOR,
+            StaticObject.PRESSURE_PLATE,
+        )
 
     @staticmethod
     def _is_interaction_access_tile(obj) -> bool:
         return obj in (
             StaticObject.EMPTY,
             StaticObject.PLAYER_CONVEYOR,
+            StaticObject.PRESSURE_PLATE,
             StaticObject.BARRIER,
         )
 
