@@ -265,6 +265,18 @@ WWWWWWWW
         with pytest.raises(ValueError, match="recipe_probs length"):
             OvercookedV3(layout=layout, recipe_probs=[1.0])
 
+    def test_recipe_probs_reject_non_distribution(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="sum to 1.0"):
+            OvercookedV3(layout=layout, recipe_probs=[0.25, 0.25])
+
+    def test_recipe_probs_reject_negative_values(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="non-negative"):
+            OvercookedV3(layout=layout, recipe_probs=[1.1, -0.1])
+
     def test_reset_samples_from_recipe_probs(self):
         layout = self._two_recipe_layout()
         env = OvercookedV3(layout=layout, recipe_probs=[0.0, 1.0])

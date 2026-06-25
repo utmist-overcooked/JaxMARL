@@ -362,14 +362,7 @@ class OvercookedV3(MultiAgentEnv):
 
         # Pre-compute possible recipes
         self.possible_recipes = jnp.array(layout.possible_recipes, dtype=jnp.int32)
-        probs_are_valid, recipe_prob_messages = layout.validate_recipe_probabilities(
-            recipe_probs
-        )
-        if not probs_are_valid:
-            formatted_messages = "\n".join(
-                f"- {message}" for message in recipe_prob_messages
-            )
-            raise ValueError(f"Invalid recipe_probs:\n{formatted_messages}")
+        self._validate_recipe_probs(recipe_probs)
         self.recipe_probs = (
             None
             if recipe_probs is None
@@ -634,6 +627,43 @@ class OvercookedV3(MultiAgentEnv):
             )
         recipe = self.possible_recipes[recipe_idx]
         return DynamicObject.get_recipe_encoding(recipe)
+
+    def _validate_recipe_probs(
+        self, recipe_probs: Optional[Union[List[float], np.ndarray, chex.Array]]
+    ) -> None:
+        """Validate the configured recipe sampling distribution."""
+        if recipe_probs is None:
+            return
+
+        messages = []
+        try:
+            probs = np.asarray(recipe_probs, dtype=np.float32)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid recipe_probs:\n- recipe_probs must be numeric")
+
+        if probs.ndim != 1:
+            messages.append("recipe_probs must be a one-dimensional sequence")
+        else:
+            num_recipes = self.possible_recipes.shape[0]
+            if len(probs) != num_recipes:
+                messages.append(
+                    "recipe_probs length "
+                    f"({len(probs)}) must match possible_recipes length "
+                    f"({num_recipes})"
+                )
+
+        if not np.all(np.isfinite(probs)):
+            messages.append("recipe_probs must contain only finite values")
+
+        if np.any(probs < 0):
+            messages.append("recipe_probs must be non-negative")
+
+        if not np.isclose(float(np.sum(probs)), 1.0):
+            messages.append("recipe_probs must sum to 1.0")
+
+        if messages:
+            formatted_messages = "\n".join(f"- {message}" for message in messages)
+            raise ValueError(f"Invalid recipe_probs:\n{formatted_messages}")
 
     @staticmethod
     def _is_agent_walkable(static_object, pos, state):
