@@ -1,8 +1,8 @@
 """Configuration settings for Overcooked V3."""
 
 # Pot timing (matching CoGrid defaults)
-POT_COOK_TIME = 91        # Steps to cook (CoGrid: cooking_time=90)
-POT_BURN_TIME = 90        # Steps in burning window before burned (CoGrid: burning_time=60)
+POT_COOK_TIME = 40        # Steps to cook (CoGrid: cooking_time=90)
+POT_BURN_TIME = 20        # Steps in burning window before burned (CoGrid: burning_time=60)
 
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
