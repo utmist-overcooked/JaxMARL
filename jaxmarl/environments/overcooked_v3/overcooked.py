@@ -229,9 +229,9 @@ class OvercookedV3(MultiAgentEnv):
             max_steps: Maximum steps per episode
             observation_type: Type of observation (default or featurized)
             agent_view_size: Partial observability window size (None for full)
-            pot_cook_time: Steps to cook a full pot (default 90)
+            pot_cook_time: Steps until a full pot becomes cooked/ready
             pot_burn_time: Steps in burning window before pot burns (default 60)
-            pot_cook_time_range: Optional inclusive [min, max] cook-time range.
+            pot_cook_time_range: Optional inclusive [min, max] ready-time range.
                 If omitted or empty, uses the fixed pot_cook_time.
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
@@ -674,7 +674,7 @@ class OvercookedV3(MultiAgentEnv):
         return DynamicObject.get_recipe_encoding(recipe)
 
     def _sample_pot_cook_time(self, key: chex.PRNGKey) -> chex.Array:
-        """Sample a cook time for one cook event or fall back to the default."""
+        """Sample steps until ready for one cook event or fall back to the default."""
         if self.pot_cook_time_range.size == 0:
             return jnp.array(self.pot_cook_time, dtype=jnp.int32)
 
@@ -1414,6 +1414,9 @@ class OvercookedV3(MultiAgentEnv):
         pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
         auto_cook = pot_is_idle & pot_full_after_drop
 
+        # The internal timer includes both the time until ready and the burn window.
+        initial_pot_timer = pot_cook_time + self.pot_burn_time
+
         # Update pot timer
         # Find which pot this is
         def _update_pot_timer(pot_idx):
@@ -1422,7 +1425,7 @@ class OvercookedV3(MultiAgentEnv):
                 (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
             )
             new_timer = jax.lax.select(
-                is_this_pot & auto_cook, pot_cook_time, pot_timers[pot_idx]
+                is_this_pot & auto_cook, initial_pot_timer, pot_timers[pot_idx]
             )
             # Reset timer on successful dish pickup
             new_timer = jax.lax.select(

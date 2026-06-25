@@ -240,7 +240,9 @@ class TestOvercookedV3PotMechanics:
             OvercookedV3(pot_cook_time_range=[9, 7])
 
     def test_process_interact_uses_supplied_pot_cook_time(self):
-        env = OvercookedV3(pot_cook_time=99, pot_cook_time_range=[7, 11])
+        env = OvercookedV3(
+            pot_cook_time=99, pot_cook_time_range=[7, 11], pot_burn_time=5
+        )
         key = jax.random.PRNGKey(0)
         _, state = env.reset(key)
 
@@ -277,7 +279,7 @@ class TestOvercookedV3PotMechanics:
             jnp.array(7, dtype=jnp.int32),
         )
         _, _, _, _, _, first_timers = first_result
-        assert int(first_timers[0]) == 7
+        assert int(first_timers[0]) == 12
 
         second_grid = base_grid
         second_result = env.process_interact(
@@ -294,10 +296,12 @@ class TestOvercookedV3PotMechanics:
             jnp.array(11, dtype=jnp.int32),
         )
         _, _, _, _, _, second_timers = second_result
-        assert int(second_timers[0]) == 11
+        assert int(second_timers[0]) == 16
 
     def test_process_interact_defaults_to_fixed_pot_cook_time(self):
-        env = OvercookedV3(pot_cook_time=99, pot_cook_time_range=[7, 11])
+        env = OvercookedV3(
+            pot_cook_time=99, pot_cook_time_range=[7, 11], pot_burn_time=5
+        )
         key = jax.random.PRNGKey(0)
         _, state = env.reset(key)
 
@@ -330,7 +334,7 @@ class TestOvercookedV3PotMechanics:
             state.pot_active_mask,
         )
         _, _, _, _, _, timers = result
-        assert int(timers[0]) == 99
+        assert int(timers[0]) == 104
 
     def _setup_full_pot(self, env, state, timer_value):
         """Helper: set pot 0 to 3 onions with a given timer."""
@@ -347,6 +351,28 @@ class TestOvercookedV3PotMechanics:
         key, subkey = jax.random.split(key)
         obs, new_state, rewards, dones, info = env.step(subkey, state, actions)
         return new_state, key
+
+    def test_pot_cook_time_is_steps_until_ready(self):
+        """Verify pot_cook_time excludes the post-ready burn window."""
+        env = OvercookedV3(pot_cook_time=4, pot_burn_time=3)
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        state = self._setup_full_pot(
+            env, state, timer_value=env.pot_cook_time + env.pot_burn_time
+        )
+        pot_y, pot_x = state.pot_positions[0]
+
+        for expected_timer in [6, 5, 4]:
+            state, key = self._step_noop(env, state, key)
+            pot_ingredients = state.grid[pot_y, pot_x, 1]
+            assert state.pot_cooking_timer[0] == expected_timer
+            assert (pot_ingredients & DynamicObject.COOKED) == 0
+
+        state, key = self._step_noop(env, state, key)
+        pot_ingredients = state.grid[pot_y, pot_x, 1]
+        assert state.pot_cooking_timer[0] == env.pot_burn_time
+        assert (pot_ingredients & DynamicObject.COOKED) != 0
 
     def test_pot_cooking_timer_decrements(self):
         """Verify pot cooking timer decrements when pot is full."""

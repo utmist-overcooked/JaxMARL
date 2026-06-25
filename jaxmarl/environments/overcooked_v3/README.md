@@ -62,8 +62,8 @@ All tunable parameters with defaults:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `POT_COOK_TIME` | 90 | Steps to cook a full pot |
-| `POT_COOK_TIME_RANGE` | `()` | Optional inclusive `[min, max]` range for random cook times |
+| `POT_COOK_TIME` | 90 | Steps until a full pot becomes cooked/ready |
+| `POT_COOK_TIME_RANGE` | `()` | Optional inclusive `[min, max]` range for random ready times |
 | `POT_BURN_TIME` | 60 | Steps in burning window before contents destroyed |
 | `DELIVERY_REWARD` | 20.0 | Reward for correct soup delivery |
 | `BURN_PENALTY` | -5.0 | Penalty when pot burns |
@@ -76,9 +76,11 @@ All tunable parameters with defaults:
 
 #### Variable Pot Cook Times
 
-`pot_cook_time_range` is an optional `OvercookedV3` constructor argument. When set to `[65, 90]`, each cook event samples uniformly from every integer in that inclusive range: `65, 66, 67, ..., 90`.
+`pot_cook_time_range` is an optional `OvercookedV3` constructor argument. When set to `[65, 90]`, each cook event samples the time until the soup becomes cooked/ready uniformly from every integer in that inclusive range: `65, 66, 67, ..., 90`.
 
 Omit `pot_cook_time_range` or pass `[]` to keep the fixed `pot_cook_time` behavior.
+
+`pot_burn_time` is separate: after the soup becomes ready, it remains in the burn window for `pot_burn_time` steps before burning. Internally, the pot timer starts at `sampled_cook_time + pot_burn_time`, becomes ready when the timer reaches `pot_burn_time`, and burns when the timer reaches `0`.
 
 Direct Python:
 ```python
@@ -351,7 +353,7 @@ env = OvercookedV3(
     layout="cramped_room",
     max_steps=400,
     pot_cook_time=90,
-    # Optional. Omit or pass [] to keep fixed pot_cook_time behavior.
+    # Optional ready-time range. Omit or pass [] to keep fixed pot_cook_time behavior.
     pot_cook_time_range=[65, 90],
     pot_burn_time=60,
     enable_order_queue=False,
