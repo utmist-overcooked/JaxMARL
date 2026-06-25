@@ -313,8 +313,6 @@ WB  # AXW
 WWWWWWWWW
 """
 
-# Older Levels Below
-
 # Moving wall demo - wall moves down, button reverses its direction
 moving_wall_demo = """
 WWWPWWW
@@ -1266,14 +1264,14 @@ overcooked_v3_layouts = {
     "barrier_demo": Layout.from_string(
         barrier_demo,
         possible_recipes=[[0, 0, 0]],
-        barrier_config=[False, True],  # First barrier off, second barrier on initially
+        barrier_config=[False, True],
     ),
 
     # Timed barrier demo with button
     "timed_barrier_demo": Layout.from_string(
         timed_barrier_demo,
         possible_recipes=[[0, 0, 0]],
-        barrier_config=[True, True],  # Barrier starts active
+        barrier_config=[True, True],
         button_config=[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
     ),
 
@@ -1287,9 +1285,9 @@ overcooked_v3_layouts = {
             (0, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
-            True,  # Barrier 0 (Top lane) - initially active
-            True,  # Barrier 1 (Middle lane) - initially active
-            True,  # Barrier 2 (Bottom lane) - initially active
+            True,
+            True,
+            True,
         ],
     ),
 
@@ -1301,8 +1299,8 @@ overcooked_v3_layouts = {
             (1, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
-            True,  # Barrier 0 (Top) - initially active
-            True,  # Barrier 1 (Bottom) - initially active
+            True,
+            True,
         ],
     ),
 
@@ -1316,10 +1314,10 @@ overcooked_v3_layouts = {
             (3, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
-            True,  # Barrier 0 - initially active
-            True,  # Barrier 1 - initially active
-            True,  # Barrier 2 - initially active
-            True,  # Barrier 3 - initially active
+            True,
+            True,
+            True,
+            True,
         ],
     ),
 
@@ -1365,9 +1363,9 @@ overcooked_v3_layouts = {
             (0, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
-            True,  # Barrier 0 (Top lane) - initially active
-            True,  # Barrier 1 (Middle lane) - initially active
-            True,  # Barrier 2 (Bottom lane) - initially active
+            True,
+            True,
+            True,
         ],
     ),
 
@@ -1379,8 +1377,8 @@ overcooked_v3_layouts = {
             (0, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
-            True,  # Barrier 0 (Top) - initially active
-            True,  # Barrier 1 (Bottom) - initially active
+            True,
+            True,
         ],
     ),
 
@@ -1394,10 +1392,10 @@ overcooked_v3_layouts = {
             (3, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
-            True,  # Barrier 0 - initially active
-            True,  # Barrier 1 - initially active
-            True,  # Barrier 2 - initially active
-            True,  # Barrier 3 - initially active
+            True,
+            True,
+            True,
+            True,
         ],
     ),
 
