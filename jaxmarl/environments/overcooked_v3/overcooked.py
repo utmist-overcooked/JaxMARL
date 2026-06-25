@@ -1,7 +1,7 @@
 """Overcooked V3 Environment with pot burning, order queue, and conveyor belts."""
 
 from enum import Enum
-from typing import List, Optional, Union, Tuple, Dict
+from typing import List, Optional, Sequence, Union, Tuple, Dict
 import warnings
 import numpy as np
 import jax
@@ -27,7 +27,7 @@ from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts, La
 from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
-    POT_COOK_TIMES,
+    POT_COOK_TIME_RANGE,
     POT_BURN_TIME,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
@@ -68,7 +68,7 @@ class State:
     # Grid: height x width x 3 channels
     # Channel 0: static objects
     # Channel 1: dynamic items (plates, ingredients, soups)
-    # Channel 2: extra info (pot timers, conveyor directions)
+    # Channel 2: internal extra info (conveyor and moving-wall directions)
     grid: chex.Array
 
     # Pot state (fixed size arrays for JIT compatibility)
@@ -148,8 +148,8 @@ class OvercookedV3(MultiAgentEnv):
             Process agent movement (with collision resolution) and interact actions.
 
         process_interact(grid, agent, all_inventories, recipe, pot_timers,
-            pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery,
-            reward, shaped_reward, pot_timers]:
+            pot_positions, pot_active_mask, pot_cook_time=None) ->
+            Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]:
             Handle a single agent's interact action (pickup, drop, cook, deliver).
 
         is_terminal(state) -> bool:
@@ -192,7 +192,7 @@ class OvercookedV3(MultiAgentEnv):
         # Pot settings
         pot_cook_time: int = POT_COOK_TIME,
         pot_burn_time: int = POT_BURN_TIME,
-        pot_cook_times: List[int] = POT_COOK_TIMES,
+        pot_cook_time_range: Optional[Sequence[int]] = None,
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
@@ -222,6 +222,8 @@ class OvercookedV3(MultiAgentEnv):
             agent_view_size: Partial observability window size (None for full)
             pot_cook_time: Steps to cook a full pot (default 90)
             pot_burn_time: Steps in burning window before pot burns (default 60)
+            pot_cook_time_range: Optional inclusive [min, max] cook-time range.
+                If omitted or empty, uses the fixed pot_cook_time.
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
@@ -279,7 +281,21 @@ class OvercookedV3(MultiAgentEnv):
 
         # Pot settings
         self.pot_cook_time = pot_cook_time
-        self.pot_cook_times = jnp.array(pot_cook_times, dtype=jnp.int32)
+        cook_time_range = (
+            POT_COOK_TIME_RANGE
+            if pot_cook_time_range is None
+            else pot_cook_time_range
+        )
+        cook_time_range = tuple(
+            np.asarray(cook_time_range, dtype=np.int32).reshape(-1).tolist()
+        )
+        if len(cook_time_range) not in (0, 2):
+            raise ValueError(
+                "pot_cook_time_range must be empty or contain exactly [min, max]"
+            )
+        if len(cook_time_range) == 2 and cook_time_range[0] > cook_time_range[1]:
+            raise ValueError("pot_cook_time_range min must be <= max")
+        self.pot_cook_time_range = jnp.array(cook_time_range, dtype=jnp.int32)
         self.pot_burn_time = pot_burn_time
 
         # Order queue settings
@@ -490,7 +506,7 @@ class OvercookedV3(MultiAgentEnv):
                 # - ingredient_pile_layers: num_ing
                 # - ingredients_layers: 2 + num_ing
                 # - recipe_layers: 2 + num_ing
-                # - extra_layers: 1 (pot timer)
+                # - extra_layers: 1 (pot timer, derived from State.pot_cooking_timer)
                 # Total: 29 + 5 * num_ingredients
                 num_layers = 29 + 5 * num_ingredients
                 return (view_height, view_width, num_layers)
@@ -526,7 +542,7 @@ class OvercookedV3(MultiAgentEnv):
                 jnp.zeros_like(static_objects),  # dynamic items
                 jnp.zeros_like(
                     static_objects
-                ),  # extra info (pot timers, conveyor dirs)
+                ),  # internal extra info (conveyor and moving-wall directions)
             ],
             axis=-1,
             dtype=jnp.int32,
@@ -611,12 +627,13 @@ class OvercookedV3(MultiAgentEnv):
         return DynamicObject.get_recipe_encoding(recipe)
 
     def _sample_pot_cook_time(self, key: chex.PRNGKey) -> chex.Array:
-        """Sample an episode pot cook time or fall back to the default."""
-        if self.pot_cook_times.size == 0:
+        """Sample a cook time for one cook event or fall back to the default."""
+        if self.pot_cook_time_range.size == 0:
             return jnp.array(self.pot_cook_time, dtype=jnp.int32)
 
-        cook_time_idx = jax.random.randint(key, (), 0, self.pot_cook_times.shape[0])
-        return self.pot_cook_times[cook_time_idx]
+        min_cook_time = self.pot_cook_time_range[0]
+        max_cook_time = self.pot_cook_time_range[1]
+        return jax.random.randint(key, (), min_cook_time, max_cook_time + 1)
 
     @staticmethod
     def _is_agent_walkable(static_object, pos, state):
@@ -1141,9 +1158,12 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
-        pot_cook_time: chex.Array,
+        pot_cook_time: Optional[chex.Array] = None,
     ):
         """Process an interact action for an agent."""
+        if pot_cook_time is None:
+            pot_cook_time = jnp.array(self.pot_cook_time, dtype=jnp.int32)
+
         inventory = agent.inventory
         fwd_pos, fwd_pos_in_bounds = agent.pos.checked_move(
             agent.dir, self.width, self.height
@@ -1187,10 +1207,14 @@ class OvercookedV3(MultiAgentEnv):
 
         merged_ingredients = interact_ingredients + inventory
 
-        # Pot state. Timers live in State, not the grid's extra channel.
+        # Pot timers live in State and are exposed through derived observation layers.
         def _timer_for_pot(pot_idx):
             pot_y, pot_x = pot_positions[pot_idx]
-            is_this_pot = (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
+            is_this_pot = (
+                (pot_y == fwd_pos.y)
+                & (pot_x == fwd_pos.x)
+                & pot_active_mask[pot_idx]
+            )
             return jax.lax.select(is_this_pot, pot_timers[pot_idx], 0)
 
         current_pot_timer = jnp.max(jax.vmap(_timer_for_pot)(jnp.arange(MAX_POTS)))

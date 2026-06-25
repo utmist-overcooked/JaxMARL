@@ -127,7 +127,7 @@ The `OvercookedV3` class implementing `MultiAgentEnv`:
 | `reset(key) -> Tuple[Dict[str, Array], State]` | Reset the environment and return initial observations and state |
 | `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, orders, and check termination |
 | `step_agents(key, state, actions) -> Tuple[State, float, Array]` | Process agent movement (with collision resolution) and interact actions |
-| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
+| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask, pot_cook_time=None) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
 | `is_terminal(state) -> bool` | Check whether the episode is done (max steps reached) |
 | `get_obs(state) -> Dict[str, Array]` | Get observations for all agents, dispatching by per-agent observation type |
 | `get_obs_for_type(state, obs_type) -> Dict[str, Array]` | Get observations for a specific observation type (default or featurized) |
@@ -322,6 +322,9 @@ env = OvercookedV3(
     layout="cramped_room",
     max_steps=400,
     pot_cook_time=90,
+    # Optional: sample each cook event from every integer in [65, 90].
+    # Omit or pass [] to keep fixed pot_cook_time behavior.
+    pot_cook_time_range=[],
     pot_burn_time=60,
     enable_order_queue=False,
     shaped_rewards=True,
