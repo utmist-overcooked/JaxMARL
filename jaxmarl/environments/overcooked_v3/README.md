@@ -1,6 +1,6 @@
 # Overcooked V3 Environment
 
-A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, order queues, and conveyor belts.
+A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, random active recipes, and conveyor belts.
 
 ## 🎨 Visual Level Editor
 
@@ -155,7 +155,7 @@ The `OvercookedV3` class implementing `MultiAgentEnv`:
 | Method | Description |
 |--------|-------------|
 | `reset(key) -> Tuple[Dict[str, Array], State]` | Reset the environment and return initial observations and state |
-| `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, orders, and check termination |
+| `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, recipes, and check termination |
 | `step_agents(key, state, actions) -> Tuple[State, float, Array]` | Process agent movement (with collision resolution) and interact actions |
 | `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
 | `is_terminal(state) -> bool` | Check whether the episode is done (max steps reached) |
@@ -176,9 +176,9 @@ class State:
     pot_positions: chex.Array        # [MAX_POTS, 2] - pot (y, x) locations
     pot_cooking_timer: chex.Array    # [MAX_POTS] - cooking countdown
     pot_active_mask: chex.Array      # [MAX_POTS] - which pots are valid
-    order_types: chex.Array          # [MAX_ORDERS] - order queue
-    order_expirations: chex.Array    # [MAX_ORDERS] - time until expiry
-    order_active_mask: chex.Array    # [MAX_ORDERS] - active orders
+    order_types: chex.Array          # [MAX_ORDERS] - legacy inert field
+    order_expirations: chex.Array    # [MAX_ORDERS] - legacy inert field
+    order_active_mask: chex.Array    # [MAX_ORDERS] - always false
     item_conveyor_*: chex.Array      # Conveyor state arrays
     player_conveyor_*: chex.Array    # Player conveyor state arrays
     time: chex.Array                 # Current timestep

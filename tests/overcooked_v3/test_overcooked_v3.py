@@ -277,6 +277,25 @@ WWWWWWWW
         with pytest.raises(ValueError, match="non-negative"):
             OvercookedV3(layout=layout, recipe_probs=[1.1, -0.1])
 
+    @pytest.mark.parametrize("recipe_probs", ([np.nan, 1.0], [np.inf, 0.0]))
+    def test_recipe_probs_reject_non_finite_values(self, recipe_probs):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="finite"):
+            OvercookedV3(layout=layout, recipe_probs=recipe_probs)
+
+    def test_recipe_probs_reject_non_numeric_values(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="numeric"):
+            OvercookedV3(layout=layout, recipe_probs=["onion", "tomato"])
+
+    def test_recipe_probs_reject_wrong_rank(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="one-dimensional"):
+            OvercookedV3(layout=layout, recipe_probs=[[0.5], [0.5]])
+
     def test_reset_samples_from_recipe_probs(self):
         layout = self._two_recipe_layout()
         env = OvercookedV3(layout=layout, recipe_probs=[0.0, 1.0])
@@ -541,21 +560,13 @@ WWWWWW
         assert shaped_reward == pytest.approx(0.0)
 
 
-class TestOvercookedV3OrderQueue:
-    """Test order queue system."""
+class TestOvercookedV3OrderQueueAPI:
+    """Test unsupported order queue API."""
 
-    def test_order_queue_disabled_by_default(self):
-        """Verify order queue is disabled by default."""
-        env = OvercookedV3()
-        assert env.enable_order_queue == False
-
-    def test_order_queue_can_be_enabled(self):
-        """Verify order queue can be enabled."""
-        env = OvercookedV3(enable_order_queue=True)
-        assert env.enable_order_queue == True
-        key = jax.random.PRNGKey(0)
-        obs, state = env.reset(key)
-        assert state.order_types is not None
+    def test_enable_order_queue_is_not_supported(self):
+        """Verify stale configs fail instead of becoming silent no-ops."""
+        with pytest.raises(TypeError, match="enable_order_queue"):
+            OvercookedV3(enable_order_queue=True)
 
 
 class TestOvercookedV3Conveyors:

@@ -1,4 +1,4 @@
-"""Overcooked V3 Environment with pot burning, order queue, and conveyor belts."""
+"""Overcooked V3 Environment with pot burning and conveyor belts."""
 
 from enum import Enum
 from typing import List, Optional, Union, Tuple, Dict
@@ -28,9 +28,6 @@ from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
     POT_BURN_TIME,
-    ORDER_EXPIRED_PENALTY,
-    DEFAULT_ORDER_GENERATION_RATE,
-    DEFAULT_ORDER_EXPIRATION_TIME,
     DEFAULT_MAX_ORDERS,
     SHAPED_REWARDS,
     MAX_POTS,
@@ -78,10 +75,10 @@ class State:
     )  # [max_pots] - countdown to cooked (0 when idle/cooked)
     pot_active_mask: chex.Array  # [max_pots] - bool, which pot slots are valid
 
-    # Order queue state (optional feature)
-    order_types: chex.Array  # [max_orders] - SoupType enum values
-    order_expirations: chex.Array  # [max_orders] - steps remaining
-    order_active_mask: chex.Array  # [max_orders] - bool, which order slots are valid
+    # Legacy order queue fields retained as inert fixed-size arrays.
+    order_types: chex.Array  # [DEFAULT_MAX_ORDERS] - unused
+    order_expirations: chex.Array  # [DEFAULT_MAX_ORDERS] - unused
+    order_active_mask: chex.Array  # [DEFAULT_MAX_ORDERS] - always false
 
     # Item conveyor state
     item_conveyor_positions: chex.Array  # [max_item_conveyors, 2] - (y, x)
@@ -134,14 +131,14 @@ class State:
 
 
 class OvercookedV3(MultiAgentEnv):
-    """Overcooked V3 environment with pot burning, order queue, and conveyors.
+    """Overcooked V3 environment with pot burning, recipes, and conveyors.
 
     Methods:
         reset(key) -> Tuple[Dict[str, Array], State]:
             Reset the environment and return initial observations and state.
 
         step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]:
-            Perform a single timestep: process actions, conveyors, orders, and check termination.
+            Perform a single timestep: process actions, conveyors, and check termination.
 
         step_agents(key, state, actions) -> Tuple[State, float, Array]:
             Process agent movement (with collision resolution) and interact actions.
@@ -191,11 +188,6 @@ class OvercookedV3(MultiAgentEnv):
         # Pot settings
         pot_cook_time: int = POT_COOK_TIME,
         pot_burn_time: int = POT_BURN_TIME,
-        # Order queue settings
-        enable_order_queue: bool = False,
-        max_orders: int = DEFAULT_MAX_ORDERS,
-        order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
-        order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
         # Recipe sampling settings
         enable_random_recipe: bool = False,
         recipe_probs: Optional[Union[List[float], np.ndarray, chex.Array]] = None,
@@ -223,10 +215,6 @@ class OvercookedV3(MultiAgentEnv):
             agent_view_size: Partial observability window size (None for full)
             pot_cook_time: Steps to cook a full pot (default 90)
             pot_burn_time: Steps in burning window before pot burns (default 60)
-            enable_order_queue: Whether to use order queue system
-            max_orders: Maximum orders in queue
-            order_generation_rate: Probability of new order each step
-            order_expiration_time: Steps before order expires
             enable_random_recipe: Whether to sample a new active recipe after
                 a correct delivery
             recipe_probs: Probability distribution over layout.possible_recipes.
@@ -286,11 +274,6 @@ class OvercookedV3(MultiAgentEnv):
         self.pot_cook_time = pot_cook_time
         self.pot_burn_time = pot_burn_time
 
-        # Order queue settings
-        self.enable_order_queue = enable_order_queue
-        self.max_orders = max_orders
-        self.order_generation_rate = order_generation_rate
-        self.order_expiration_time = order_expiration_time
         self.enable_random_recipe = jnp.array(
             enable_random_recipe, dtype=jnp.bool_
         )
@@ -575,9 +558,9 @@ class OvercookedV3(MultiAgentEnv):
             pot_positions=jnp.array(self._pot_positions),
             pot_cooking_timer=jnp.zeros(MAX_POTS, dtype=jnp.int32),
             pot_active_mask=jnp.array(self._pot_active_mask),
-            order_types=jnp.zeros(self.max_orders, dtype=jnp.int32),
-            order_expirations=jnp.zeros(self.max_orders, dtype=jnp.int32),
-            order_active_mask=jnp.zeros(self.max_orders, dtype=jnp.bool_),
+            order_types=jnp.zeros(DEFAULT_MAX_ORDERS, dtype=jnp.int32),
+            order_expirations=jnp.zeros(DEFAULT_MAX_ORDERS, dtype=jnp.int32),
+            order_active_mask=jnp.zeros(DEFAULT_MAX_ORDERS, dtype=jnp.bool_),
             item_conveyor_positions=jnp.array(self._item_conveyor_positions),
             item_conveyor_directions=jnp.array(self._item_conveyor_directions),
             item_conveyor_active_mask=jnp.array(self._item_conveyor_active_mask),
@@ -762,8 +745,7 @@ class OvercookedV3(MultiAgentEnv):
         # Process barrier timers (for timed barriers)
         state = self._process_barrier_timers(state)
 
-        # Order queue processing is intentionally disabled. Active target
-        # changes are handled by enable_random_recipe and state.recipe.
+        # Active target changes are handled by enable_random_recipe and state.recipe.
 
         # Update time
         state = state.replace(time=state.time + 1)
@@ -1819,68 +1801,6 @@ class OvercookedV3(MultiAgentEnv):
             moving_wall_directions=new_directions,
             moving_wall_paused=new_paused,
         )
-
-    # -------------------------------------------------------------------------
-    # Order Queue
-    # -------------------------------------------------------------------------
-
-    def _process_order_queue(
-        self, state: State, key: chex.PRNGKey
-    ) -> Tuple[State, float]:
-        """Process order queue: generate new orders, check expirations."""
-        if not self.enable_order_queue:
-            return state, 0.0
-
-        order_types = state.order_types
-        order_expirations = state.order_expirations
-        order_active_mask = state.order_active_mask
-
-        # Decrement expirations
-        new_expirations = jnp.where(
-            order_active_mask, order_expirations - 1, order_expirations
-        )
-
-        # Check for expired orders
-        expired_mask = order_active_mask & (new_expirations <= 0)
-        num_expired = jnp.sum(expired_mask)
-        reward = num_expired * ORDER_EXPIRED_PENALTY
-
-        # Deactivate expired orders
-        new_active_mask = order_active_mask & ~expired_mask
-
-        # Maybe generate new order
-        key, subkey = jax.random.split(key)
-        should_generate = jax.random.uniform(subkey) < self.order_generation_rate
-
-        # Find first empty slot
-        empty_slots = ~new_active_mask
-        first_empty_idx = jnp.argmax(empty_slots)
-        has_empty_slot = jnp.any(empty_slots)
-
-        # Generate random order type (1 = onion soup, 2 = tomato soup if num_ingredients > 1)
-        key, subkey = jax.random.split(key)
-        new_order_type = jax.random.randint(
-            subkey, (), 1, min(self.layout.num_ingredients + 1, 3)
-        )
-
-        should_add = should_generate & has_empty_slot
-        new_order_types = jax.lax.select(
-            should_add, order_types.at[first_empty_idx].set(new_order_type), order_types
-        )
-        new_expirations = jax.lax.select(
-            should_add,
-            new_expirations.at[first_empty_idx].set(self.order_expiration_time),
-            new_expirations,
-        )
-        new_active_mask = jax.lax.select(
-            should_add, new_active_mask.at[first_empty_idx].set(True), new_active_mask
-        )
-
-        return state.replace(
-            order_types=new_order_types,
-            order_expirations=new_expirations,
-            order_active_mask=new_active_mask,
-        ), reward
 
     # -------------------------------------------------------------------------
     # Termination, Observations, and Spaces
