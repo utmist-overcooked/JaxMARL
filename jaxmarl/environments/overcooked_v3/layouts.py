@@ -595,6 +595,39 @@ class Layout:
 
         return is_valid, all_messages
 
+    def validate_recipe_probabilities(self, recipe_probs) -> Tuple[bool, List[str]]:
+        """Validate probabilities for sampling from this layout's recipes."""
+        if recipe_probs is None:
+            return True, []
+
+        messages = []
+        try:
+            probs = np.asarray(recipe_probs, dtype=np.float32)
+        except (TypeError, ValueError):
+            return False, ["recipe_probs must be numeric"]
+
+        if probs.ndim != 1:
+            messages.append("recipe_probs must be a one-dimensional sequence")
+            return False, messages
+
+        if len(probs) != len(self.possible_recipes):
+            messages.append(
+                "recipe_probs length "
+                f"({len(probs)}) must match possible_recipes length "
+                f"({len(self.possible_recipes)})"
+            )
+
+        if not np.all(np.isfinite(probs)):
+            messages.append("recipe_probs must contain only finite values")
+
+        if np.any(probs < 0):
+            messages.append("recipe_probs must be non-negative")
+
+        if not np.isclose(float(np.sum(probs)), 1.0):
+            messages.append("recipe_probs must sum to 1.0")
+
+        return len(messages) == 0, messages
+
     @staticmethod
     def _is_agent_walkable_tile(obj) -> bool:
         return obj in (StaticObject.EMPTY, StaticObject.PLAYER_CONVEYOR)
@@ -1065,6 +1098,9 @@ overcooked_v3_layouts = {
     # V2-style layouts with recipe indicators
     "cramped_room_v2": Layout.from_string(
         cramped_room_v2, possible_recipes=[[0, 0, 0]]
+    ),
+    "random_recipe_demo": Layout.from_string(
+        cramped_room_v2, possible_recipes=[[0, 0, 0], [1, 1, 1]]
     ),
 
     # Demo layouts with conveyors

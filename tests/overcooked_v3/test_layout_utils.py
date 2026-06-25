@@ -329,6 +329,42 @@ WWWWW
         assert not is_valid
         assert any("recipe 0" in msg.lower() for msg in messages)
 
+    def test_validate_recipe_probabilities_requires_recipe_count_match(self):
+        """Recipe probability validation is tied to possible_recipes length."""
+        layout_str = """
+WWWWWWW
+W0A1P W
+WB X AW
+WWWWWWW
+"""
+        layout = Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0], [1, 1, 1]],
+        )
+
+        is_valid, messages = layout.validate_recipe_probabilities([1.0])
+
+        assert not is_valid
+        assert any("possible_recipes length" in msg for msg in messages)
+
+    def test_validate_recipe_probabilities_rejects_non_distribution(self):
+        """Recipe probabilities must be a valid probability distribution."""
+        layout_str = """
+WWWWWWW
+W0A1P W
+WB X AW
+WWWWWWW
+"""
+        layout = Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0], [1, 1, 1]],
+        )
+
+        is_valid, messages = layout.validate_recipe_probabilities([0.25, 0.25])
+
+        assert not is_valid
+        assert any("sum to 1.0" in msg for msg in messages)
+
     def test_moving_wall_bounce_demo_validates(self):
         """Registered moving wall bounce demo has valid button target indexes."""
         layout = overcooked_v3_layouts["moving_wall_bounce_demo"]

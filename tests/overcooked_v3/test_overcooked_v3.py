@@ -2,6 +2,7 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jaxmarl import make
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
@@ -196,6 +197,119 @@ WWWWWW
         )
 
         assert new_state.agents.inventory[0] == 0
+
+
+class TestOvercookedV3RecipeSampling:
+    """Test active recipe sampling."""
+
+    @staticmethod
+    def _two_recipe_layout():
+        layout_str = """
+WWWWWWWW
+W0A1P RW
+WB X A W
+WWWWWWWW
+"""
+        return Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0], [1, 1, 1]],
+        )
+
+    @staticmethod
+    def _recipe_encoding(recipe):
+        return int(DynamicObject.get_recipe_encoding(jnp.array(recipe)))
+
+    @staticmethod
+    def _put_agent_next_to_goal_with_inventory(state, inventory):
+        static = np.asarray(state.grid[:, :, 0])
+        goal_y, goal_x = np.argwhere(static == int(StaticObject.GOAL))[0]
+        candidates = (
+            (goal_y, goal_x - 1, Direction.RIGHT),
+            (goal_y, goal_x + 1, Direction.LEFT),
+            (goal_y - 1, goal_x, Direction.DOWN),
+            (goal_y + 1, goal_x, Direction.UP),
+        )
+
+        for stand_y, stand_x, direction in candidates:
+            if (
+                0 <= stand_y < static.shape[0]
+                and 0 <= stand_x < static.shape[1]
+                and static[stand_y, stand_x] == int(StaticObject.EMPTY)
+            ):
+                new_pos = Position(
+                    x=state.agents.pos.x.at[0].set(int(stand_x)),
+                    y=state.agents.pos.y.at[0].set(int(stand_y)),
+                )
+                new_agents = state.agents.replace(
+                    pos=new_pos,
+                    dir=state.agents.dir.at[0].set(int(direction)),
+                    inventory=state.agents.inventory.at[0].set(inventory),
+                )
+                return state.replace(agents=new_agents)
+
+        raise AssertionError("No empty tile adjacent to goal")
+
+    @staticmethod
+    def _recipe_layer_start(env):
+        num_ingredients = env.layout.num_ingredients
+        return (
+            2 * (7 + num_ingredients)
+            + 10
+            + num_ingredients
+            + (2 + num_ingredients)
+        )
+
+    def test_recipe_probs_reject_wrong_length(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="recipe_probs length"):
+            OvercookedV3(layout=layout, recipe_probs=[1.0])
+
+    def test_reset_samples_from_recipe_probs(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(layout=layout, recipe_probs=[0.0, 1.0])
+
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        assert int(state.recipe) == self._recipe_encoding([1, 1, 1])
+
+    def test_correct_delivery_resamples_active_recipe_and_observation(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            enable_random_recipe=True,
+            recipe_probs=[0.0, 1.0],
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        first_recipe = self._recipe_encoding([0, 0, 0])
+        second_recipe = self._recipe_encoding([1, 1, 1])
+        plated_first_recipe = (
+            first_recipe | int(DynamicObject.PLATE) | int(DynamicObject.COOKED)
+        )
+        state = state.replace(recipe=first_recipe)
+        state = self._put_agent_next_to_goal_with_inventory(
+            state, plated_first_recipe
+        )
+
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+        actions["agent_0"] = int(Actions.interact)
+        obs, new_state, rewards, _, _ = env.step(
+            jax.random.PRNGKey(1), state, actions
+        )
+
+        assert bool(new_state.new_correct_delivery)
+        assert float(rewards["agent_0"]) == pytest.approx(env.delivery_reward)
+        assert int(new_state.recipe) == second_recipe
+
+        static = np.asarray(new_state.grid[:, :, 0])
+        recipe_y, recipe_x = np.argwhere(
+            static == int(StaticObject.RECIPE_INDICATOR)
+        )[0]
+        recipe_layer_start = self._recipe_layer_start(env)
+        agent_obs = obs["agent_0"]
+        assert int(agent_obs[recipe_y, recipe_x, recipe_layer_start + 2]) == 0
+        assert int(agent_obs[recipe_y, recipe_x, recipe_layer_start + 3]) == 3
 
 
 class TestOvercookedV3PotMechanics:

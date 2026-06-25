@@ -196,6 +196,9 @@ class OvercookedV3(MultiAgentEnv):
         max_orders: int = DEFAULT_MAX_ORDERS,
         order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
         order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
+        # Recipe sampling settings
+        enable_random_recipe: bool = False,
+        recipe_probs: Optional[Union[List[float], np.ndarray, chex.Array]] = None,
         # Conveyor belt settings
         enable_item_conveyors: Optional[bool] = None,
         enable_player_conveyors: Optional[bool] = None,
@@ -224,6 +227,10 @@ class OvercookedV3(MultiAgentEnv):
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
             order_expiration_time: Steps before order expires
+            enable_random_recipe: Whether to sample a new active recipe after
+                a correct delivery
+            recipe_probs: Probability distribution over layout.possible_recipes.
+                If None, recipes are sampled uniformly.
             enable_item_conveyors: Whether item conveyors move items. If None,
                 inferred from whether the layout contains item conveyors.
             enable_player_conveyors: Whether player conveyors push agents. If
@@ -284,6 +291,9 @@ class OvercookedV3(MultiAgentEnv):
         self.max_orders = max_orders
         self.order_generation_rate = order_generation_rate
         self.order_expiration_time = order_expiration_time
+        self.enable_random_recipe = jnp.array(
+            enable_random_recipe, dtype=jnp.bool_
+        )
 
         # Conveyor settings
         layout_has_item_conveyors = len(layout.item_conveyor_info) > 0
@@ -352,6 +362,19 @@ class OvercookedV3(MultiAgentEnv):
 
         # Pre-compute possible recipes
         self.possible_recipes = jnp.array(layout.possible_recipes, dtype=jnp.int32)
+        probs_are_valid, recipe_prob_messages = layout.validate_recipe_probabilities(
+            recipe_probs
+        )
+        if not probs_are_valid:
+            formatted_messages = "\n".join(
+                f"- {message}" for message in recipe_prob_messages
+            )
+            raise ValueError(f"Invalid recipe_probs:\n{formatted_messages}")
+        self.recipe_probs = (
+            None
+            if recipe_probs is None
+            else jnp.array(recipe_probs, dtype=jnp.float32)
+        )
 
         # Pre-compute enclosed spaces for random agent placement
         self.enclosed_spaces = compute_enclosed_spaces(
@@ -603,7 +626,12 @@ class OvercookedV3(MultiAgentEnv):
 
     def _sample_recipe(self, key: chex.PRNGKey) -> int:
         """Sample a recipe from possible recipes."""
-        recipe_idx = jax.random.randint(key, (), 0, self.possible_recipes.shape[0])
+        if self.recipe_probs is None:
+            recipe_idx = jax.random.randint(key, (), 0, self.possible_recipes.shape[0])
+        else:
+            recipe_idx = jax.random.choice(
+                key, self.possible_recipes.shape[0], p=self.recipe_probs
+            )
         recipe = self.possible_recipes[recipe_idx]
         return DynamicObject.get_recipe_encoding(recipe)
 
@@ -704,11 +732,8 @@ class OvercookedV3(MultiAgentEnv):
         # Process barrier timers (for timed barriers)
         state = self._process_barrier_timers(state)
 
-        # Process order queue
-        if self.enable_order_queue:
-            key, subkey = jax.random.split(key)
-            state, order_reward = self._process_order_queue(state, subkey)
-            reward = reward + order_reward
+        # Order queue processing is intentionally disabled. Active target
+        # changes are handled by enable_random_recipe and state.recipe.
 
         # Update time
         state = state.replace(time=state.time + 1)
@@ -1095,11 +1120,22 @@ class OvercookedV3(MultiAgentEnv):
                 (new_agents, actions),
             )
 
+        sample_new_recipe = new_correct_delivery & self.enable_random_recipe
+        key, subkey = jax.random.split(key)
+        new_recipe = jax.lax.cond(
+            sample_new_recipe,
+            lambda _, recipe_key: self._sample_recipe(recipe_key),
+            lambda recipe, _: recipe,
+            state.recipe,
+            subkey,
+        )
+
         return (
             state.replace(
                 agents=new_agents,
                 grid=new_grid,
                 pot_cooking_timer=new_pot_timers,
+                recipe=new_recipe,
                 new_correct_delivery=new_correct_delivery,
                 moving_wall_directions=new_mw_directions,
                 moving_wall_paused=new_mw_paused,
