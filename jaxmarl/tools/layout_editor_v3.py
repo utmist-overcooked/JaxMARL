@@ -56,14 +56,23 @@ FALLBACK_BUTTON = 23
 FALLBACK_BARRIER = 24
 FALLBACK_PRESSURE_PLATE = 25
 
+# ButtonAction values. Keep these in sync with overcooked_v3.common.ButtonAction.
+BUTTON_ACTION_TOGGLE_PAUSE = 0
+BUTTON_ACTION_TOGGLE_DIRECTION = 1
+BUTTON_ACTION_TOGGLE_BOUNCE = 2
+BUTTON_ACTION_TRIGGER_MOVE = 3
+BUTTON_ACTION_TOGGLE_BARRIER = 4
+BUTTON_ACTION_TIMED_BARRIER = 5
+DEFAULT_WIRE_ACTION = BUTTON_ACTION_TOGGLE_BARRIER
+
 # Fallback ButtonAction values
 FALLBACK_BUTTON_ACTIONS = {
-    0: "TOGGLE_BARRIER",
-    1: "TIMED_BARRIER",
-    2: "TOGGLE_PAUSE",
-    3: "TOGGLE_DIRECTION",
-    4: "TOGGLE_BOUNCE",
-    5: "TRIGGER_MOVE",
+    BUTTON_ACTION_TOGGLE_PAUSE: "TOGGLE_PAUSE",
+    BUTTON_ACTION_TOGGLE_DIRECTION: "TOGGLE_DIRECTION",
+    BUTTON_ACTION_TOGGLE_BOUNCE: "TOGGLE_BOUNCE",
+    BUTTON_ACTION_TRIGGER_MOVE: "TRIGGER_MOVE",
+    BUTTON_ACTION_TOGGLE_BARRIER: "TOGGLE_BARRIER",
+    BUTTON_ACTION_TIMED_BARRIER: "TIMED_BARRIER",
 }
 
 
@@ -151,20 +160,45 @@ MAX_GRID_HEIGHT = 20
 DEFAULT_GRID_WIDTH = 7
 DEFAULT_GRID_HEIGHT = 5
 
-# Button action labels (index -> name, must match ButtonAction enum order)
-BUTTON_ACTION_LABELS = [
-    "Toggle Barrier",   # 0
-    "Timed Barrier",    # 1
-    "Toggle Pause",     # 2  (moving wall)
-    "Toggle Direction", # 3  (moving wall)
-    "Toggle Bounce",    # 4  (moving wall)
-    "Trigger Move",     # 5  (moving wall)
+# Button action labels (ButtonAction enum value -> name)
+BUTTON_ACTION_LABELS = {
+    BUTTON_ACTION_TOGGLE_PAUSE: "Toggle Pause",
+    BUTTON_ACTION_TOGGLE_DIRECTION: "Toggle Direction",
+    BUTTON_ACTION_TOGGLE_BOUNCE: "Toggle Bounce",
+    BUTTON_ACTION_TRIGGER_MOVE: "Trigger Move",
+    BUTTON_ACTION_TOGGLE_BARRIER: "Toggle Barrier",
+    BUTTON_ACTION_TIMED_BARRIER: "Timed Barrier",
+}
+
+BUTTON_ACTION_CHOICES = [
+    (BUTTON_ACTION_TOGGLE_BARRIER, BUTTON_ACTION_LABELS[BUTTON_ACTION_TOGGLE_BARRIER]),
+    (BUTTON_ACTION_TIMED_BARRIER, BUTTON_ACTION_LABELS[BUTTON_ACTION_TIMED_BARRIER]),
+    (BUTTON_ACTION_TOGGLE_PAUSE, BUTTON_ACTION_LABELS[BUTTON_ACTION_TOGGLE_PAUSE]),
+    (BUTTON_ACTION_TOGGLE_DIRECTION, BUTTON_ACTION_LABELS[BUTTON_ACTION_TOGGLE_DIRECTION]),
+    (BUTTON_ACTION_TOGGLE_BOUNCE, BUTTON_ACTION_LABELS[BUTTON_ACTION_TOGGLE_BOUNCE]),
+    (BUTTON_ACTION_TRIGGER_MOVE, BUTTON_ACTION_LABELS[BUTTON_ACTION_TRIGGER_MOVE]),
 ]
 
-# Which action indices apply to barriers (for buttons / pressure plates)
-BARRIER_ACTIONS = {0, 1}
+# Which action values apply to barriers (for buttons / pressure plates)
+BARRIER_ACTIONS = {BUTTON_ACTION_TOGGLE_BARRIER, BUTTON_ACTION_TIMED_BARRIER}
 # Which apply to moving walls
-MOVING_WALL_ACTIONS = {2, 3, 4, 5}
+MOVING_WALL_ACTIONS = {
+    BUTTON_ACTION_TOGGLE_PAUSE,
+    BUTTON_ACTION_TOGGLE_DIRECTION,
+    BUTTON_ACTION_TOGGLE_BOUNCE,
+    BUTTON_ACTION_TRIGGER_MOVE,
+}
+
+
+def _button_action_value(action_type) -> int:
+    return int(action_type)
+
+
+def _button_action_label(action_type) -> str:
+    try:
+        return BUTTON_ACTION_LABELS[_button_action_value(action_type)]
+    except (KeyError, TypeError, ValueError):
+        return str(action_type)
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +304,7 @@ class ButtonInfo:
     """Data for a single button placed in the editor."""
     y: int
     x: int
-    action_type: int = 0          # index into BUTTON_ACTION_LABELS
+    action_type: int = DEFAULT_WIRE_ACTION  # ButtonAction enum value
     target_barrier_idxs: List[int] = field(default_factory=list)  # indices into EditorState.barriers
 
 
@@ -287,7 +321,7 @@ class PressurePlateInfo:
     """Data for a single pressure plate placed in the editor."""
     y: int
     x: int
-    action_type: int = 0           # index into BUTTON_ACTION_LABELS
+    action_type: int = DEFAULT_WIRE_ACTION  # ButtonAction enum value
     target_barrier_idxs: List[int] = field(default_factory=list)
 
 
@@ -524,7 +558,7 @@ class LevelEditor:
 
         # Hit-test rects populated by _draw_wiring_panel / _draw_barrier_panel each frame
         # so that _handle_info_panel_click always uses the exact rendered positions.
-        self._wiring_action_rects: List[pygame.Rect] = []   # index → action_type
+        self._wiring_action_rects: List[Tuple[pygame.Rect, int]] = []  # rect -> ButtonAction value
         self._wiring_barrier_rects: List[pygame.Rect] = []  # index → barrier checkbox
         self._barrier_toggle_rect: Optional[pygame.Rect] = None
 
@@ -648,9 +682,9 @@ class LevelEditor:
             obj = self.state.buttons[btn_idx] if btn_idx is not None else self.state.pressure_plates[pp_idx]
 
             # Action type rows
-            for i, rect in enumerate(self._wiring_action_rects):
+            for rect, action_type in self._wiring_action_rects:
                 if rect.collidepoint(mx, my):
-                    obj.action_type = i
+                    obj.action_type = action_type
                     return
 
             # Barrier checkbox rows
@@ -899,6 +933,9 @@ class LevelEditor:
             barrier_code = self._barrier_code()
             button_code = self._button_code()
             pressure_plate_code = self._pressure_plate_code()
+            barrier_config_code = self._barrier_config_list()
+            button_config_code = self._button_config_list()
+            pressure_plate_config_code = self._pressure_plate_config_list()
 
             code = f'''# Add to jaxmarl/environments/overcooked_v3/layouts.py
 
@@ -912,9 +949,9 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
     {self.state.layout_name},
     possible_recipes={self.state.recipes},
     swap_agents=False,
-    barrier_info={self._barrier_info_list()},
-    button_info={self._button_info_list()},
-    pressure_plate_info={self._pressure_plate_info_list()},
+    barrier_config={barrier_config_code},
+    button_config={button_config_code},
+    pressure_plate_config={pressure_plate_config_code},
 )
 '''
             export_dir = Path(__file__).resolve().parents[2] / "exports"
@@ -934,28 +971,75 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
             print(f"Error exporting layout: {e}")
             self.validation_messages = [f"Export error: {e}"]
 
-    def _barrier_info_list(self) -> str:
-        items = [(b.y, b.x, b.initially_active) for b in self.state.barriers]
-        return repr(items)
+    def _ordered_barriers(self) -> List[Tuple[int, BarrierInfo]]:
+        return sorted(enumerate(self.state.barriers), key=lambda item: (item[1].y, item[1].x))
 
-    def _button_info_list(self) -> str:
-        items = []
-        for btn in self.state.buttons:
-            targets = tuple(btn.target_barrier_idxs) if btn.target_barrier_idxs else ()
-            items.append((btn.y, btn.x, targets, btn.action_type))
-        return repr(items)
+    def _ordered_buttons(self) -> List[Tuple[int, ButtonInfo]]:
+        return sorted(enumerate(self.state.buttons), key=lambda item: (item[1].y, item[1].x))
 
-    def _pressure_plate_info_list(self) -> str:
+    def _ordered_pressure_plates(self) -> List[Tuple[int, PressurePlateInfo]]:
+        return sorted(enumerate(self.state.pressure_plates), key=lambda item: (item[1].y, item[1].x))
+
+    def _barrier_export_index_map(self) -> Dict[int, int]:
+        return {
+            editor_idx: export_idx
+            for export_idx, (editor_idx, _) in enumerate(self._ordered_barriers())
+        }
+
+    def _remap_barrier_targets_for_export(
+        self,
+        targets: List[int],
+        barrier_index_map: Dict[int, int],
+    ) -> Tuple[int, ...]:
+        remapped = []
+        for target_idx in targets:
+            try:
+                target_idx = int(target_idx)
+            except (TypeError, ValueError):
+                remapped.append(target_idx)
+                continue
+            remapped.append(barrier_index_map.get(target_idx, target_idx))
+        return tuple(remapped) if remapped else (0,)
+
+    def _barrier_config(self) -> List[bool]:
+        return [bool(barrier.initially_active) for _, barrier in self._ordered_barriers()]
+
+    def _button_config(self) -> List[Tuple[Tuple[int, ...], int]]:
+        barrier_index_map = self._barrier_export_index_map()
         items = []
-        for pp in self.state.pressure_plates:
-            items.append((pp.y, pp.x, list(pp.target_barrier_idxs), pp.action_type))
-        return repr(items)
+        for _, btn in self._ordered_buttons():
+            targets = self._remap_barrier_targets_for_export(
+                btn.target_barrier_idxs,
+                barrier_index_map,
+            )
+            items.append((targets, _button_action_value(btn.action_type)))
+        return items
+
+    def _pressure_plate_config(self) -> List[Tuple[Tuple[int, ...], int]]:
+        barrier_index_map = self._barrier_export_index_map()
+        items = []
+        for _, pp in self._ordered_pressure_plates():
+            targets = self._remap_barrier_targets_for_export(
+                pp.target_barrier_idxs,
+                barrier_index_map,
+            )
+            items.append((targets, _button_action_value(pp.action_type)))
+        return items
+
+    def _barrier_config_list(self) -> str:
+        return repr(self._barrier_config())
+
+    def _button_config_list(self) -> str:
+        return repr(self._button_config())
+
+    def _pressure_plate_config_list(self) -> str:
+        return repr(self._pressure_plate_config())
 
     def _barrier_code(self) -> str:
         if not self.state.barriers:
             return "# No barriers defined"
-        lines = ["# Barrier definitions: (y, x, initially_active)"]
-        for i, b in enumerate(self.state.barriers):
+        lines = ["# Barrier definitions: (export_idx, y, x, initially_active)"]
+        for i, (_, b) in enumerate(self._ordered_barriers()):
             lines.append(f"# Barrier {i}: ({b.y}, {b.x}, {b.initially_active})")
         return "\n".join(lines)
 
@@ -963,18 +1047,18 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
         if not self.state.buttons:
             return ""
         lines = ["# Button definitions: (y, x, target_barrier_indices, action_type)"]
-        for i, btn in enumerate(self.state.buttons):
-            action_name = BUTTON_ACTION_LABELS[btn.action_type] if btn.action_type < len(BUTTON_ACTION_LABELS) else str(btn.action_type)
-            lines.append(f"# Button {i}: ({btn.y}, {btn.x}, {btn.target_barrier_idxs}, {btn.action_type})  # {action_name}")
+        for i, ((_, btn), (targets, action_type)) in enumerate(zip(self._ordered_buttons(), self._button_config())):
+            action_name = _button_action_label(action_type)
+            lines.append(f"# Button {i}: ({btn.y}, {btn.x}, {targets}, {action_type})  # {action_name}")
         return "\n".join(lines)
 
     def _pressure_plate_code(self) -> str:
         if not self.state.pressure_plates:
             return ""
         lines = ["# Pressure plate definitions: (y, x, target_barrier_indices, action_type)"]
-        for i, pp in enumerate(self.state.pressure_plates):
-            action_name = BUTTON_ACTION_LABELS[pp.action_type] if pp.action_type < len(BUTTON_ACTION_LABELS) else str(pp.action_type)
-            lines.append(f"# Pressure Plate {i}: ({pp.y}, {pp.x}, {pp.target_barrier_idxs}, {pp.action_type})  # {action_name}")
+        for i, ((_, pp), (targets, action_type)) in enumerate(zip(self._ordered_pressure_plates(), self._pressure_plate_config())):
+            action_name = _button_action_label(action_type)
+            lines.append(f"# Pressure Plate {i}: ({pp.y}, {pp.x}, {targets}, {action_type})  # {action_name}")
         return "\n".join(lines)
 
     def _layout_string_from_state(self) -> str:
@@ -990,9 +1074,9 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
                 StaticObject.PLATE_PILE: "B",
                 StaticObject.POT: "P",
                 StaticObject.RECIPE_INDICATOR: "R",
-                StaticObject.BUTTON: "Q",
-                StaticObject.BARRIER: "K",
-                StaticObject.PRESSURE_PLATE: "L",
+                StaticObject.BUTTON: "!",
+                StaticObject.BARRIER: "#",
+                StaticObject.PRESSURE_PLATE: "_",
             }
         else:
             ingredient_base = FALLBACK_INGREDIENT_BASE
@@ -1003,9 +1087,9 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
                 FALLBACK_PLATE_PILE: "B",
                 FALLBACK_POT: "P",
                 FALLBACK_RECIPE: "R",
-                FALLBACK_BUTTON: "Q",
-                FALLBACK_BARRIER: "K",
-                FALLBACK_PRESSURE_PLATE: "L",
+                FALLBACK_BUTTON: "!",
+                FALLBACK_BARRIER: "#",
+                FALLBACK_PRESSURE_PLATE: "_",
             }
 
         item_symbols = {2: ">", 3: "<", 0: "^", 1: "v"}
@@ -1043,11 +1127,11 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
                 return
 
             import tempfile, subprocess
-            layout_str = layout.to_string() if hasattr(layout, "to_string") else ""
+            layout_str = self._layout_string_from_state()
             recipes_str = str(self.state.recipes)
-            barrier_info_str = self._barrier_info_list()
-            button_info_str = self._button_info_list()
-            pp_info_str = self._pressure_plate_info_list()
+            barrier_config_str = self._barrier_config_list()
+            button_config_str = self._button_config_list()
+            pp_config_str = self._pressure_plate_config_list()
 
             test_script = f'''#!/usr/bin/env python3
 import jax
@@ -1061,9 +1145,9 @@ layout_str = """{layout_str}"""
 layout = Layout.from_string(
     layout_str,
     possible_recipes={recipes_str},
-    barrier_info={barrier_info_str},
-    button_info={button_info_str},
-    pressure_plate_info={pp_info_str},
+    barrier_config={barrier_config_str},
+    button_config={button_config_str},
+    pressure_plate_config={pp_config_str},
 )
 
 env = make("overcooked_v3")
@@ -1587,15 +1671,15 @@ pygame.quit()
         self.screen.blit(act_lbl, (panel_x + 10, y))
         y += 24
 
-        for i, label in enumerate(BUTTON_ACTION_LABELS):
-            selected = (obj.action_type == i)
+        for action_type, label in BUTTON_ACTION_CHOICES:
+            selected = (_button_action_value(obj.action_type) == action_type)
             bg = COLOR_TEAL if selected else COLOR_GRAY
             btn_rect = pygame.Rect(panel_x + 10, y, panel_width - 25, 24)
-            self._wiring_action_rects.append(btn_rect)          # ← store for click handler
+            self._wiring_action_rects.append((btn_rect, action_type))
             pygame.draw.rect(self.screen, bg, btn_rect)
             pygame.draw.rect(self.screen, COLOR_WHITE, btn_rect, 1)
             tag = " ✓" if selected else ""
-            txt = self.small_font.render(f"{i}: {label}{tag}", True, COLOR_WHITE)
+            txt = self.small_font.render(f"{action_type}: {label}{tag}", True, COLOR_WHITE)
             self.screen.blit(txt, (panel_x + 14, y + 3))
             y += 28
 
