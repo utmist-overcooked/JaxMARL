@@ -21,21 +21,19 @@ from jaxmarl import make
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts
 
-# Curated list to cycle with N/P keys (feature demos worth eyeballing).
+# Curated list to cycle with N/P keys.
 PLAYABLE = [
     "pressure_plate_demo",
     "pressure_gated_conveyor_access",
     "pressure_gated_circuit",
     "pressure_gated_zones",
     "twin_movement",
-    "moving_wall_demo",
-    "moving_wall_bounce_demo",
-    "moving_wall_barrier_button_demo",
-    "barrier_demo",
-    "timed_barrier_demo",
-    "conveyor_demo",
-    "cramped_room",
+    "button_triple_gate",
+    "button_gated_conveyor_access",
+    "button_gated_circuit",
+    "button_gated_zones",
 ]
+DEFAULT_LAYOUT = PLAYABLE[0]
 
 AGENT0_KEYS = {pygame.K_w: 3, pygame.K_s: 1, pygame.K_a: 2, pygame.K_d: 0, pygame.K_SPACE: 5}
 AGENT1_KEYS = {pygame.K_UP: 3, pygame.K_DOWN: 1, pygame.K_LEFT: 2, pygame.K_RIGHT: 0, pygame.K_RETURN: 5}
@@ -61,7 +59,7 @@ def build(layout_name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--layout", default="moving_wall_bounce_demo")
+    parser.add_argument("--layout", default=DEFAULT_LAYOUT)
     parser.add_argument("--list", action="store_true", help="list all registered layouts and exit")
     args = parser.parse_args()
 
