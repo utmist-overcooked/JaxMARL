@@ -117,6 +117,36 @@ overcooked_v3_layouts["my_layout"] = Layout.from_string(
 )
 ```
 
+**Random active recipes:**
+
+Layouts define the available recipe set through `possible_recipes`. The
+environment can then sample the next active `state.recipe` from a configured
+probability distribution after each correct delivery:
+
+```python
+env = OvercookedV3(
+    layout="random_recipe_demo",
+    enable_random_recipe=True,
+    recipe_probs=[0.7, 0.3],
+)
+```
+
+`recipe_probs` must be the same length and order as
+`layout.possible_recipes`, must be non-negative, and must sum to `1.0`. If
+`recipe_probs` is omitted, recipes are sampled uniformly. The active recipe is
+stored in `state.recipe`, so recipe indicators update automatically when the
+sampled recipe changes.
+
+For training runs, pass these values through YAML `ENV_KWARGS`:
+
+```yaml
+"ENV_NAME": "overcooked_v3"
+"ENV_KWARGS":
+  "layout": "random_recipe_demo"
+  "enable_random_recipe": True
+  "recipe_probs": [0.7, 0.3]
+```
+
 ### `overcooked.py` - Main Environment
 
 The `OvercookedV3` class implementing `MultiAgentEnv`:
@@ -323,7 +353,7 @@ env = OvercookedV3(
     max_steps=400,
     pot_cook_time=90,
     pot_burn_time=60,
-    enable_order_queue=False,
+    enable_random_recipe=False,
     shaped_rewards=True,
 )
 
