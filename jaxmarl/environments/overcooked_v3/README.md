@@ -63,6 +63,7 @@ All tunable parameters with defaults:
 | Constant | Default | Description |
 |----------|---------|-------------|
 | `POT_COOK_TIME` | 90 | Steps to cook a full pot |
+| `POT_COOK_TIME_RANGE` | `()` | Optional inclusive `[min, max]` range for random cook times |
 | `POT_BURN_TIME` | 60 | Steps in burning window before contents destroyed |
 | `DELIVERY_REWARD` | 20.0 | Reward for correct soup delivery |
 | `BURN_PENALTY` | -5.0 | Penalty when pot burns |
@@ -72,6 +73,34 @@ All tunable parameters with defaults:
 | `MAX_PLAYER_CONVEYORS` | 8 | Maximum player conveyor cells |
 
 **Important:** `MAX_*` constants define fixed array sizes for JIT compatibility. Increase these if you need more objects.
+
+#### Variable Pot Cook Times
+
+`pot_cook_time_range` is an optional `OvercookedV3` constructor argument. When set to `[65, 90]`, each cook event samples uniformly from every integer in that inclusive range: `65, 66, 67, ..., 90`.
+
+Omit `pot_cook_time_range` or pass `[]` to keep the fixed `pot_cook_time` behavior.
+
+Direct Python:
+```python
+env = make(
+    "overcooked_v3",
+    layout="cramped_room",
+    pot_cook_time_range=[65, 90],
+)
+```
+
+YAML configs that pass `ENV_KWARGS` into `jaxmarl.make(...)` can specify the same constructor argument:
+```yaml
+"ENV_NAME": "overcooked_v3"
+"ENV_KWARGS":
+  "layout": "cramped_room"
+  "pot_cook_time_range": [65, 90]
+```
+
+`settings.py` provides the default only when `pot_cook_time_range` is not passed:
+```python
+POT_COOK_TIME_RANGE = ()
+```
 
 ### `layouts.py` - Layout Definitions
 
@@ -322,9 +351,8 @@ env = OvercookedV3(
     layout="cramped_room",
     max_steps=400,
     pot_cook_time=90,
-    # Optional: sample each cook event from every integer in [65, 90].
-    # Omit or pass [] to keep fixed pot_cook_time behavior.
-    pot_cook_time_range=[],
+    # Optional. Omit or pass [] to keep fixed pot_cook_time behavior.
+    pot_cook_time_range=[65, 90],
     pot_burn_time=60,
     enable_order_queue=False,
     shaped_rewards=True,
