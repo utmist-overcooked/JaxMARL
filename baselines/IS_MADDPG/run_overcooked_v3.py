@@ -1199,6 +1199,21 @@ def run(config: dict, env_vec: OvercookedV3,
     jax.block_until_ready(all_metrics)
     print(f"Training complete. Compile+run took {time.time()-t_compile:.1f}s")
 
+    
+    # Save final checkpoint
+    if ckpt_dir is not None:
+        final_ckpt = os.path.join(
+            ckpt_dir,
+            f"is_maddpg_{config['LAYOUT']}_final.zip"
+        )
+        save_checkpoint_zip(
+            runner_state.train_state,
+            final_ckpt,
+            config,
+            step=total_steps_target,
+        )
+        print(f"Final checkpoint saved → {final_ckpt}")
+
 
 
 # Version 1 (for loop over steps) — replaced by single lax.scan above
