@@ -717,68 +717,68 @@ def run(config: dict, env_vec: OvercookedV3,
     # ------------------------------------------------------------------
     # 5. Metrics
     # ------------------------------------------------------------------
-    ep_returns   = np.zeros((num_envs, num_agents), dtype=np.float32)
-    ep_lengths   = np.zeros((num_envs,), dtype=np.int32)
-    all_returns  = []
-    all_lengths  = []
-    all_deliveries = []
-    ep_deliveries  = np.zeros((num_envs,), dtype=np.float32)
-    last_metrics = None
-    total_updates = 0
-    total_steps_target = config["TOTAL_TIMESTEPS"] // num_envs
+    # ep_returns   = np.zeros((num_envs, num_agents), dtype=np.float32)
+    # ep_lengths   = np.zeros((num_envs,), dtype=np.int32)
+    # all_returns  = []
+    # all_lengths  = []
+    # all_deliveries = []
+    # ep_deliveries  = np.zeros((num_envs,), dtype=np.float32)
+    # last_metrics = None
+    # total_updates = 0
+    # total_steps_target = config["TOTAL_TIMESTEPS"] // num_envs
 
-    # TEST_INTERVAL is a fraction of total_timesteps e.g. 0.05 = every 5%.
-    test_interval_steps  = max(1, int(config["TOTAL_TIMESTEPS"] * config["TEST_INTERVAL"]))
+    # # TEST_INTERVAL is a fraction of total_timesteps e.g. 0.05 = every 5%.
+    # test_interval_steps  = max(1, int(config["TOTAL_TIMESTEPS"] * config["TEST_INTERVAL"]))
     
-    # Convert to loop iterations (how many for-loop steps between evals)
-    test_interval = max(1, test_interval_steps // num_envs)    
-    t_start = time.time()
+    # # Convert to loop iterations (how many for-loop steps between evals)
+    # test_interval = max(1, test_interval_steps // num_envs)    
+    # t_start = time.time()
 
-    reward_type_counts = {
-    "placement_in_pot": 0,   # shaped reward = 6
-    "ingredient_pickup": 0,  # shaped reward = 3
-    "soup_in_dish":      0,  # shaped reward = 12
-    "plate_pickup":      0,  # shaped reward = 4
-    "delivery":          0,  # raw reward = 20
-    # "burn_penalty":      0,  # raw reward = -5
-    }
+    # reward_type_counts = {
+    # "placement_in_pot": 0,   # shaped reward = 6
+    # "ingredient_pickup": 0,  # shaped reward = 3
+    # "soup_in_dish":      0,  # shaped reward = 12
+    # "plate_pickup":      0,  # shaped reward = 4
+    # "delivery":          0,  # raw reward = 20
+    # # "burn_penalty":      0,  # raw reward = -5
+    # }
 
-    # Track rewards
-    reward_type_history = {k: [] for k in reward_type_counts}  # per-episode counts
-    ep_reward_types = {k: np.zeros(num_envs) for k in reward_type_counts}
+    # # Track rewards
+    # reward_type_history = {k: [] for k in reward_type_counts}  # per-episode counts
+    # ep_reward_types = {k: np.zeros(num_envs) for k in reward_type_counts}
 
-    print(f"\n[IS-MADDPG] Starting training on OvercookedV3 / {config['LAYOUT']}")
-    print(f"  total_timesteps : {config['TOTAL_TIMESTEPS']:,}")
-    print(f"  num_envs        : {num_envs}")
-    print(f"  obs_dim         : {obs_dim}")
-    print(f"  act_dim         : {act_dim}")
-    print(f"  msg_dim         : {msg_dim}\n")
+    # print(f"\n[IS-MADDPG] Starting training on OvercookedV3 / {config['LAYOUT']}")
+    # print(f"  total_timesteps : {config['TOTAL_TIMESTEPS']:,}")
+    # print(f"  num_envs        : {num_envs}")
+    # print(f"  obs_dim         : {obs_dim}")
+    # print(f"  act_dim         : {act_dim}")
+    # print(f"  msg_dim         : {msg_dim}\n")
 
-    print("JAX devices:", jax.devices())
-    print("Default backend:", jax.default_backend())
+    # print("JAX devices:", jax.devices())
+    # print("Default backend:", jax.default_backend())
 
-    # ------------------------------------------------------------------
-    # 6. Main loop — Python for-loop owns the numpy buffer boundary
-    # ------------------------------------------------------------------
+    # # ------------------------------------------------------------------
+    # # 6. Main loop — Python for-loop owns the numpy buffer boundary
+    # # ------------------------------------------------------------------
 
-    first_update_done = False
-    compile_start = None
+    # first_update_done = False
+    # compile_start = None
 
-    last_eval_step = 0
-    eval_interval_steps = max(1, int(config["TOTAL_TIMESTEPS"] * config["TEST_INTERVAL"]))  
+    # last_eval_step = 0
+    # eval_interval_steps = max(1, int(config["TOTAL_TIMESTEPS"] * config["TEST_INTERVAL"]))  
 
 
-    t_step   = 0.0  # env stepping
-    t_buffer = 0.0  # buffer adds
-    t_train  = 0.0  # gradient updates
-    t_other  = 0.0  # everything else
+    # t_step   = 0.0  # env stepping
+    # t_buffer = 0.0  # buffer adds
+    # t_train  = 0.0  # gradient updates
+    # t_other  = 0.0  # everything else
 
-    CKPT_INTERVAL = 1500
-    if ckpt_dir is not None:
-        os.makedirs(ckpt_dir, exist_ok=True)
-        print(f"  Checkpoints will be saved to: {ckpt_dir}/", flush=True)
-    else:
-        print("  [WARNING] No save_path set — checkpoints will NOT be saved.", flush=True)
+    # CKPT_INTERVAL = 1500
+    # if ckpt_dir is not None:
+    #     os.makedirs(ckpt_dir, exist_ok=True)
+    #     print(f"  Checkpoints will be saved to: {ckpt_dir}/", flush=True)
+    # else:
+    #     print("  [WARNING] No save_path set — checkpoints will NOT be saved.", flush=True)
 
 
 # Version 2 (single lax.scan over total_steps_target) — more efficient than the original for loop over total_steps_target
@@ -895,40 +895,20 @@ def run(config: dict, env_vec: OvercookedV3,
         rewards_all = raw_rewards + shaped_rewards
 
         step_reward = rewards_all.sum(axis=1)
+        
+        events = info["events"]
 
-        delivery_event = (
-            (raw_rewards >= 20.0)
-            .any(axis=1)
-            .astype(jnp.float32)
-        )
+        ep_ingredient_pickup = ep_ingredient_pickup + events["ingredient_pickup"]
+        ep_plate_pickup      = ep_plate_pickup      + events["plate_pickup"]
+        ep_placement_in_pot  = ep_placement_in_pot  + events["placement_in_pot"]
+        ep_soup_in_dish      = ep_soup_in_dish      + events["soup_in_dish"]
+        ep_delivery          = ep_delivery          + events["delivery"]
+
+        delivery_event = (events["delivery"] > 0).astype(jnp.float32)   
 
         ep_returns = ep_returns + step_reward
         ep_lengths = ep_lengths + 1
-        ep_deliveries = ep_deliveries + delivery_event
-
-        sv = shaped_rewards[:, 0]
-
-        ep_ingredient_pickup = (
-            ep_ingredient_pickup +
-            (sv == 3.0).astype(jnp.float32)
-        )
-
-        ep_plate_pickup = (
-            ep_plate_pickup +
-            (sv == 4.0).astype(jnp.float32)
-        )
-
-        ep_placement_in_pot = (
-            ep_placement_in_pot +
-            (sv == 6.0).astype(jnp.float32)
-        )
-
-        ep_soup_in_dish = (
-            ep_soup_in_dish +
-            (sv == 12.0).astype(jnp.float32)
-        )
-
-        ep_delivery = ep_delivery + delivery_event           
+        ep_deliveries = ep_deliveries + delivery_event    
 
         dones = jnp.stack(
             [dones_dict[aid] for aid in agent_ids], axis=1
@@ -1156,19 +1136,69 @@ def run(config: dict, env_vec: OvercookedV3,
             ep_soup_in_dish=ep_soup_in_dish,
             ep_delivery=ep_delivery,
         )
-        return new_runner_state, step_metrics
+        return new_runner_state, step_metrics        
+
+    total_steps_target = config["TOTAL_TIMESTEPS"] // num_envs
+    LOG_EVERY = 500  # log every 500 steps
+    num_log_blocks = total_steps_target // LOG_EVERY
+
+    def _log_block(runner_state, block_idx):
+        """Scan over LOG_EVERY steps, return aggregated metrics for this block.
+        
+        block_idx: scalar int — which block we're in (0 to num_log_blocks-1)
+        Used to compute absolute step indices so epsilon decays correctly
+        across the full training run.
+        """
+
+        # Absolute step indices for this block: [block*LOG_EVERY, ..., (block+1)*LOG_EVERY - 1]
+        block_start  = block_idx * LOG_EVERY
+        step_indices = block_start + jnp.arange(LOG_EVERY)  # (LOG_EVERY,) absolute indices
+
+        runner_state, metrics = jax.lax.scan(
+            _update_step,
+            runner_state,
+            step_indices,          # passed as xs to _update_step
+            length=LOG_EVERY,
+        )
+
+        # But keep completed episode info as sum across the block
+        summed_events = {
+            "completed_returns":          metrics["completed_returns"].sum(axis=0),
+            "completed_lengths":          metrics["completed_lengths"].sum(axis=0),
+            "completed_deliveries":       metrics["completed_deliveries"].sum(axis=0),
+            "completed_ingredient_pickup":metrics["completed_ingredient_pickup"].sum(axis=0),
+            "completed_plate_pickup":     metrics["completed_plate_pickup"].sum(axis=0),
+            "completed_placement_in_pot": metrics["completed_placement_in_pot"].sum(axis=0),
+            "completed_soup_in_dish":     metrics["completed_soup_in_dish"].sum(axis=0),
+            "completed_delivery":         metrics["completed_delivery"].sum(axis=0),
+        }
+
+        # For loss metrics take the mean over the block (ignoring zero entries
+        # from steps before the buffer was ready)
+        mean_metrics = {
+            "rewards":      metrics["rewards"].mean(),
+            "deliveries":   metrics["deliveries"].mean(),
+            "critic_loss":  metrics["critic_loss"].mean(),
+            "actor_loss":   metrics["actor_loss"].mean(),
+            "pred_loss":    metrics["pred_loss"].mean(),
+            "q_mean":       metrics["q_mean"].mean(),
+        }
+
+        block_metrics = {**mean_metrics, **summed_events}
+        return runner_state, block_metrics        
 
     # ── Run entire training as one compiled scan ──────────────────────
     print("JIT compiling full training loop (first run takes several minutes)...")
     t_compile = time.time()
     runner_state, all_metrics = jax.lax.scan(
-        _update_step,
+        _log_block,
         runner_state,
-        jnp.arange(total_steps_target),
-        length=total_steps_target,
+        jnp.arange(num_log_blocks),
+        length=num_log_blocks,
     )
     jax.block_until_ready(all_metrics)
     print(f"Training complete. Compile+run took {time.time()-t_compile:.1f}s")
+
 
 
 # Version 1 (for loop over steps) — replaced by single lax.scan above
@@ -1729,10 +1759,10 @@ def run(config: dict, env_vec: OvercookedV3,
 
     # ── Post-processing of scan outputs ───────────────────────────────
     def extract_completed(metric_2d):
-        """Flatten (total_steps, num_envs) and keep only completed episodes."""
-        flat = np.asarray(metric_2d).reshape(-1)
-        mask = np.asarray(all_metrics["completed_lengths"]).reshape(-1) > 0
-        return flat[mask]
+            """metric_2d is now (num_log_blocks, num_envs) after summing within blocks."""
+            flat = np.asarray(metric_2d).reshape(-1)
+            mask = np.asarray(all_metrics["completed_lengths"]).reshape(-1) > 0
+            return flat[mask]
 
     all_returns    = extract_completed(all_metrics["completed_returns"])
     all_lengths    = extract_completed(all_metrics["completed_lengths"])
@@ -2041,8 +2071,10 @@ def main():
 
     print(f"\n Training complete.")
     print(f"   Total gradient updates : {results['total_updates']}")
-    if results["returns"]:
-        print(f"   Last 100-ep mean return: {np.mean(results['returns'][-100:]):.2f}")
+    # if results["returns"]:
+    #     print(f"   Last 100-ep mean return: {np.mean(results['returns'][-100:]):.2f}")
+    if len(results["returns"]) > 0:
+        print(f"   Last 100-ep mean return: {np.mean(results['returns'][-100:]):.2f}")    
 
     wandb.finish()
 

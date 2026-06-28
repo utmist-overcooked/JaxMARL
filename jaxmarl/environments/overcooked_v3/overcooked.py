@@ -689,7 +689,7 @@ class OvercookedV3(MultiAgentEnv):
             indices=jnp.array([actions[f"agent_{i}"] for i in range(self.num_agents)])
         )
 
-        state, reward, shaped_rewards = self.step_agents(key, state, acts)
+        state, reward, shaped_rewards, event_counts = self.step_agents(key, state, acts)
 
         # Process moving walls (before conveyors so conveyors interact with new wall positions)
         if self.enable_moving_walls:
@@ -733,7 +733,10 @@ class OvercookedV3(MultiAgentEnv):
             lax.stop_gradient(state),
             rewards,
             dones,
-            {"shaped_reward": shaped_rewards_dict},
+            {
+                "shaped_reward": shaped_rewards_dict,
+                "events": event_counts,
+            },
         )
 
     # -------------------------------------------------------------------------
@@ -826,7 +829,7 @@ class OvercookedV3(MultiAgentEnv):
             is_interact = action == Actions.interact
 
             def _interact(carry, agent):
-                grid, correct_delivery, reward, pot_timers = carry
+                grid, correct_delivery, reward, pot_timers, events_acc = carry
 
                 (
                     new_grid,
@@ -835,6 +838,8 @@ class OvercookedV3(MultiAgentEnv):
                     interact_reward,
                     shaped_reward,
                     new_pot_timers,
+                    step_events,
+
                 ) = self.process_interact(
                     grid,
                     agent,
@@ -845,22 +850,44 @@ class OvercookedV3(MultiAgentEnv):
                     state.pot_active_mask,
                 )
 
+                # Accumulate events across agents
+                new_events_acc = {
+                    k: events_acc[k] + step_events[k].astype(jnp.float32)
+                    for k in events_acc
+                }                
+
                 carry = (
                     new_grid,
                     correct_delivery | new_correct_delivery,
                     reward + interact_reward,
                     new_pot_timers,
+                    new_events_acc,
                 )
                 return carry, (new_agent, shaped_reward)
 
+            zero_events = {
+                "ingredient_pickup": jnp.float32(0),
+                "placement_in_pot":  jnp.float32(0),
+                "plate_pickup":      jnp.float32(0),
+                "soup_in_dish":      jnp.float32(0),
+                "delivery":          jnp.float32(0),
+            }
+            
             return jax.lax.cond(
                 is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
             )
 
-        carry = (grid, False, 0.0, state.pot_cooking_timer)
+        
+        # Initial carry includes zero event accumulator
+        zero_events = {k: jnp.float32(0) for k in
+                       ["ingredient_pickup", "placement_in_pot",
+                        "plate_pickup", "soup_in_dish", "delivery"]}
+        
+        
+        carry = (grid, False, 0.0, state.pot_cooking_timer, zero_events)
         xs = (new_agents, actions)
         (
-            (new_grid, new_correct_delivery, reward, new_pot_timers),
+            (new_grid, new_correct_delivery, reward, new_pot_timers, event_counts),
             (new_agents, shaped_rewards),
         ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
@@ -1367,6 +1394,7 @@ class OvercookedV3(MultiAgentEnv):
             reward,
             shaped_reward,
             new_pot_timers,
+            event_metrics,
         )
 
     # -------------------------------------------------------------------------
