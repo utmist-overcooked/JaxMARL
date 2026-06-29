@@ -898,13 +898,13 @@ def run(config: dict, env_vec: OvercookedV3,
         
         events = info["events"]
 
-        ep_ingredient_pickup = ep_ingredient_pickup + events["ingredient_pickup"]
-        ep_plate_pickup      = ep_plate_pickup      + events["plate_pickup"]
-        ep_placement_in_pot  = ep_placement_in_pot  + events["placement_in_pot"]
-        ep_soup_in_dish      = ep_soup_in_dish      + events["soup_in_dish"]
-        ep_delivery          = ep_delivery          + events["delivery"]
+        ep_ingredient_pickup = ep_ingredient_pickup + events.ingredient_pickup
+        ep_plate_pickup      = ep_plate_pickup      + events.plate_pickup
+        ep_placement_in_pot  = ep_placement_in_pot  + events.placement_in_pot
+        ep_soup_in_dish      = ep_soup_in_dish      + events.soup_in_dish
+        ep_delivery          = ep_delivery          + events.delivery
 
-        delivery_event = (events["delivery"] > 0).astype(jnp.float32)   
+        delivery_event = (events.delivery > 0).astype(jnp.float32)  
 
         ep_returns = ep_returns + step_reward
         ep_lengths = ep_lengths + 1
@@ -1161,31 +1161,57 @@ def run(config: dict, env_vec: OvercookedV3,
             length=LOG_EVERY,
         )
 
-        # But keep completed episode info as sum across the block
-        summed_events = {
-            "completed_returns":          metrics["completed_returns"].sum(axis=0),
-            "completed_lengths":          metrics["completed_lengths"].sum(axis=0),
-            "completed_deliveries":       metrics["completed_deliveries"].sum(axis=0),
-            "completed_ingredient_pickup":metrics["completed_ingredient_pickup"].sum(axis=0),
-            "completed_plate_pickup":     metrics["completed_plate_pickup"].sum(axis=0),
-            "completed_placement_in_pot": metrics["completed_placement_in_pot"].sum(axis=0),
-            "completed_soup_in_dish":     metrics["completed_soup_in_dish"].sum(axis=0),
-            "completed_delivery":         metrics["completed_delivery"].sum(axis=0),
-        }
+        # Flatten to (LOG_EVERY * num_envs,) and filter
+        ep_mask = (metrics["completed_lengths"] > 0).reshape(-1)  # (LOG_EVERY*num_envs,)
 
-        # For loss metrics take the mean over the block (ignoring zero entries
-        # from steps before the buffer was ready)
-        mean_metrics = {
+        def masked_sum(x):
+            """Sum completed values — zeros for non-done steps don't contribute."""
+            # x shape: (LOG_EVERY, num_envs)
+            # We want the sum of values where episodes completed
+            return jnp.where(
+                metrics["completed_lengths"] > 0, x, 0.0
+            ).sum()
+
+        # Count completed episodes in this block
+        n_completed = ep_mask.sum().astype(jnp.float32)
+
+        block_metrics = {
+            # Training loss metrics — mean over LOG_EVERY steps
             "rewards":      metrics["rewards"].mean(),
             "deliveries":   metrics["deliveries"].mean(),
             "critic_loss":  metrics["critic_loss"].mean(),
             "actor_loss":   metrics["actor_loss"].mean(),
             "pred_loss":    metrics["pred_loss"].mean(),
             "q_mean":       metrics["q_mean"].mean(),
+
+            # Episode metrics — mean per completed episode in this block
+            # Shape (num_envs,) — mean across envs of per-env episode means
+            "ep_return_mean":    jnp.where(
+                n_completed > 0,
+                masked_sum(metrics["completed_returns"]) / jnp.maximum(n_completed, 1),
+                jnp.nan,
+            ),
+            "ep_delivery_mean":  jnp.where(
+                n_completed > 0,
+                masked_sum(metrics["completed_deliveries"]) / jnp.maximum(n_completed, 1),
+                jnp.nan,
+            ),
+            "ep_length_mean":    jnp.where(
+                n_completed > 0,
+                masked_sum(metrics["completed_lengths"]) / jnp.maximum(n_completed, 1),
+                jnp.nan,
+            ),
+            "n_completed":       n_completed,
+
+            # Event sums per block (for totals table)
+            "total_ingredient_pickup": masked_sum(metrics["completed_ingredient_pickup"]),
+            "total_plate_pickup":      masked_sum(metrics["completed_plate_pickup"]),
+            "total_placement_in_pot":  masked_sum(metrics["completed_placement_in_pot"]),
+            "total_soup_in_dish":      masked_sum(metrics["completed_soup_in_dish"]),
+            "total_delivery":          masked_sum(metrics["completed_delivery"]),
         }
 
-        block_metrics = {**mean_metrics, **summed_events}
-        return runner_state, block_metrics        
+        return runner_state, block_metrics
 
     # ── Run entire training as one compiled scan ──────────────────────
     print("JIT compiling full training loop (first run takes several minutes)...")
@@ -1772,29 +1798,48 @@ def run(config: dict, env_vec: OvercookedV3,
     #     "total_updates": total_updates,
     # }
 
-    # ── Post-processing of scan outputs ───────────────────────────────
-    def extract_completed(metric_2d):
-            """metric_2d is now (num_log_blocks, num_envs) after summing within blocks."""
-            flat = np.asarray(metric_2d).reshape(-1)
-            mask = np.asarray(all_metrics["completed_lengths"]).reshape(-1) > 0
-            return flat[mask]
+    # ── Post-processing ────────────────────────────────────────────────
+    # all_metrics shapes: (num_log_blocks,) for scalar metrics
 
-    all_returns    = extract_completed(all_metrics["completed_returns"])
-    all_lengths    = extract_completed(all_metrics["completed_lengths"])
-    all_deliveries = extract_completed(all_metrics["completed_deliveries"])
+    # Filter to blocks where at least one episode completed
+    n_completed  = np.asarray(all_metrics["n_completed"])          # (num_log_blocks,)
+    has_episodes = n_completed > 0
 
-    reward_type_history = {
-        "ingredient_pickup": extract_completed(all_metrics["completed_ingredient_pickup"]),
-        "plate_pickup":      extract_completed(all_metrics["completed_plate_pickup"]),
-        "placement_in_pot":  extract_completed(all_metrics["completed_placement_in_pot"]),
-        "soup_in_dish":      extract_completed(all_metrics["completed_soup_in_dish"]),
-        "delivery":          extract_completed(all_metrics["completed_delivery"]),
+    # Block-level means (one value per block, NaN when no episodes)
+    block_returns    = np.asarray(all_metrics["ep_return_mean"])   # (num_log_blocks,)
+    block_deliveries = np.asarray(all_metrics["ep_delivery_mean"])
+    block_lengths    = np.asarray(all_metrics["ep_length_mean"])
+
+    # Filter to blocks with completed episodes
+    all_returns    = block_returns[has_episodes]
+    all_deliveries = block_deliveries[has_episodes]
+    all_lengths    = block_lengths[has_episodes]
+
+    # Total event counts across full training
+    reward_type_counts = {
+        "ingredient_pickup": int(np.asarray(all_metrics["total_ingredient_pickup"]).sum()),
+        "plate_pickup":      int(np.asarray(all_metrics["total_plate_pickup"]).sum()),
+        "placement_in_pot":  int(np.asarray(all_metrics["total_placement_in_pot"]).sum()),
+        "soup_in_dish":      int(np.asarray(all_metrics["total_soup_in_dish"]).sum()),
+        "delivery":          int(np.asarray(all_metrics["total_delivery"]).sum()),
     }
-    reward_type_counts = {k: int(v.sum()) for k, v in reward_type_history.items()}
 
-    # Total gradient updates = steps where buffer was ready
-    # Approximate from scan length minus learning_starts buffer fill
-    total_updates = int(np.asarray(all_metrics["critic_loss"] != 0).sum())
+    # Per-block event counts for histogram (only blocks with episodes)
+    reward_type_history = {
+        "ingredient_pickup": np.asarray(all_metrics["total_ingredient_pickup"])[has_episodes],
+        "plate_pickup":      np.asarray(all_metrics["total_plate_pickup"])[has_episodes],
+        "placement_in_pot":  np.asarray(all_metrics["total_placement_in_pot"])[has_episodes],
+        "soup_in_dish":      np.asarray(all_metrics["total_soup_in_dish"])[has_episodes],
+        "delivery":          np.asarray(all_metrics["total_delivery"])[has_episodes],
+    }
+
+    # Training metrics over all blocks (for loss curves)
+    block_steps       = np.arange(num_log_blocks) * LOG_EVERY * num_envs
+    critic_loss_curve = np.asarray(all_metrics["critic_loss"])
+    actor_loss_curve  = np.asarray(all_metrics["actor_loss"])
+    q_mean_curve      = np.asarray(all_metrics["q_mean"])
+
+    total_updates = int((np.asarray(all_metrics["critic_loss"]) != 0).sum())
 
     # ── Post-training summary ──────────────────────────────────────────
     print("\n" + "="*60)
@@ -1813,45 +1858,78 @@ def run(config: dict, env_vec: OvercookedV3,
     plot_dir = ckpt_dir if ckpt_dir else "."
     os.makedirs(plot_dir, exist_ok=True)
 
-    # ── Plot 1: Returns over episodes + distribution ───────────────────
+
+    # ── Plot 0: Training loss curves ──────────────────────────────────
+    if len(critic_loss_curve) > 0:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+        for ax, (name, curve, color) in zip(axes, [
+            ("Critic Loss", critic_loss_curve, "red"),
+            ("Actor Loss",  actor_loss_curve,  "steelblue"),
+            ("Q Mean",      q_mean_curve,       "green"),
+        ]):
+            # Mask out pre-training zeros
+            valid = curve != 0
+            if valid.any():
+                x = block_steps[valid]
+                y = curve[valid]
+                ax.plot(x, y, alpha=0.4, color=color)
+                w = min(20, valid.sum())
+                if valid.sum() >= w:
+                    smoothed = np.convolve(y, np.ones(w)/w, mode="valid")
+                    ax.plot(x[w-1:], smoothed, color=color, linewidth=2)
+            ax.set_xlabel("Env Step")
+            ax.set_title(name)
+            ax.grid(alpha=0.3)
+
+        plt.suptitle(f"IS-MADDPG Training Losses — {config['LAYOUT']}")
+        plt.tight_layout()
+        loss_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_losses.png")
+        plt.savefig(loss_path, dpi=150, bbox_inches="tight")
+        print(f"Loss curves saved → {loss_path}")
+        plt.show()
+        plt.close()
+
+    
+    # ── Plot 1: Returns vs env steps ──────────────────────────────────
     if len(all_returns) > 0:
+        # x-axis: env step at each block midpoint
+        block_steps_with_eps = block_steps[has_episodes]
+
         fig, axes = plt.subplots(1, 2, figsize=(14, 4))
 
         ax = axes[0]
-        ax.plot(all_returns, alpha=0.3, color="steelblue", label="raw")
-        window = min(50, len(all_returns))
-        if len(all_returns) >= window:
-            smoothed = np.convolve(
-                all_returns, np.ones(window) / window, mode="valid"
-            )
-            ax.plot(
-                range(window - 1, len(all_returns)),
-                smoothed,
-                color="steelblue", linewidth=2,
-                label=f"{window}-ep moving avg",
-            )
-        ax.set_xlabel("Episode")
-        ax.set_ylabel("Return")
+        ax.plot(block_steps_with_eps, all_returns,
+                alpha=0.4, color="steelblue", linewidth=1, label="block mean")
+        w = min(20, len(all_returns))
+        if len(all_returns) >= w:
+            smoothed = np.convolve(all_returns, np.ones(w)/w, mode="valid")
+            ax.plot(block_steps_with_eps[w-1:], smoothed,
+                    color="steelblue", linewidth=2, label=f"{w}-block moving avg")
+        ax.set_xlabel("Env Step")
+        ax.set_ylabel("Mean Episode Return")
         ax.set_title(f"IS-MADDPG — OvercookedV3 / {config['LAYOUT']}")
         ax.legend()
         ax.grid(alpha=0.3)
 
         ax = axes[1]
-        ax.hist(all_returns, bins=30, color="steelblue", alpha=0.7, edgecolor="white")
-        ax.axvline(float(np.mean(all_returns)), color="red", linestyle="--",
-                   linewidth=1.5, label=f"mean={np.mean(all_returns):.1f}")
-        ax.set_xlabel("Episode Return")
+        ax.hist(all_returns[~np.isnan(all_returns)], bins=30,
+                color="steelblue", alpha=0.7, edgecolor="white")
+        ax.axvline(float(np.nanmean(all_returns)), color="red", linestyle="--",
+                   linewidth=1.5, label=f"mean={np.nanmean(all_returns):.1f}")
+        ax.set_xlabel("Mean Episode Return per Block")
         ax.set_ylabel("Count")
-        ax.set_title("Return Distribution (all episodes)")
+        ax.set_title("Return Distribution")
         ax.legend()
         ax.grid(alpha=0.3)
 
         plt.tight_layout()
         plot_path = os.path.join(plot_dir, f"is_maddpg_{config['LAYOUT']}_returns.png")
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-        print(f"\nReturn plot saved → {plot_path}")
+        print(f"Return plot saved → {plot_path}")
         plt.show()
         plt.close()
+
 
     # ── Plot 2: Per-episode event counts over time ─────────────────────
     event_cols = ["ingredient_pickup", "placement_in_pot", "plate_pickup",

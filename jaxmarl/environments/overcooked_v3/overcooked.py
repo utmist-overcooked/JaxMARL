@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 import chex
+from typing import NamedTuple
 
 from jaxmarl.environments import MultiAgentEnv
 from jaxmarl.environments import spaces
@@ -132,6 +133,13 @@ class State:
 # Overcooked V3 Environment
 # =============================================================================
 
+class EventCounts(NamedTuple):
+    """Per-step event counts accumulated across agents in lax.scan."""
+    ingredient_pickup: jnp.ndarray   # scalar float32
+    placement_in_pot:  jnp.ndarray
+    plate_pickup:      jnp.ndarray
+    soup_in_dish:      jnp.ndarray
+    delivery:          jnp.ndarray
 
 class OvercookedV3(MultiAgentEnv):
     """Overcooked V3 environment with pot burning, order queue, and conveyors.
@@ -735,7 +743,7 @@ class OvercookedV3(MultiAgentEnv):
             dones,
             {
                 "shaped_reward": shaped_rewards_dict,
-                "events": event_counts,
+                "events": event_counts, # EventCounts NamedTuple with per-step event counts
             },
         )
 
@@ -850,11 +858,14 @@ class OvercookedV3(MultiAgentEnv):
                     state.pot_active_mask,
                 )
 
-                # Accumulate events across agents
-                new_events_acc = {
-                    k: events_acc[k] + step_events[k].astype(jnp.float32)
-                    for k in events_acc
-                }                
+                # Accumulate events across agents using NamedTuple (can't do string indexing in Python dictionaries in Jax)
+                new_events_acc = EventCounts(
+                    ingredient_pickup=events_acc.ingredient_pickup + step_events.ingredient_pickup.astype(jnp.float32),
+                    placement_in_pot= events_acc.placement_in_pot  + step_events.placement_in_pot.astype(jnp.float32),
+                    plate_pickup=     events_acc.plate_pickup       + step_events.plate_pickup.astype(jnp.float32),
+                    soup_in_dish=     events_acc.soup_in_dish       + step_events.soup_in_dish.astype(jnp.float32),
+                    delivery=         events_acc.delivery           + step_events.delivery.astype(jnp.float32),
+                )          
 
                 carry = (
                     new_grid,
@@ -865,25 +876,27 @@ class OvercookedV3(MultiAgentEnv):
                 )
                 return carry, (new_agent, shaped_reward)
 
-            zero_events = {
-                "ingredient_pickup": jnp.float32(0),
-                "placement_in_pot":  jnp.float32(0),
-                "plate_pickup":      jnp.float32(0),
-                "soup_in_dish":      jnp.float32(0),
-                "delivery":          jnp.float32(0),
-            }
+            zero_events = EventCounts(
+                ingredient_pickup=jnp.float32(0),
+                placement_in_pot= jnp.float32(0),
+                plate_pickup=     jnp.float32(0),
+                soup_in_dish=     jnp.float32(0),
+                delivery=         jnp.float32(0),
+            )
             
             return jax.lax.cond(
                 is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
             )
-
         
         # Initial carry includes zero event accumulator
-        zero_events = {k: jnp.float32(0) for k in
-                       ["ingredient_pickup", "placement_in_pot",
-                        "plate_pickup", "soup_in_dish", "delivery"]}
-        
-        
+        zero_events = EventCounts(
+            ingredient_pickup=jnp.float32(0),
+            placement_in_pot=jnp.float32(0),
+            plate_pickup=jnp.float32(0),
+            soup_in_dish=jnp.float32(0),
+            delivery=jnp.float32(0)
+        )
+
         carry = (grid, False, 0.0, state.pot_cooking_timer, zero_events)
         xs = (new_agents, actions)
         (
@@ -1137,6 +1150,7 @@ class OvercookedV3(MultiAgentEnv):
             ),
             reward,
             shaped_rewards,
+            event_counts,
         )
 
     # -------------------------------------------------------------------------
@@ -1374,17 +1388,12 @@ class OvercookedV3(MultiAgentEnv):
             )
 
         correct_delivery = successful_delivery & is_correct_recipe
-        event_metrics = jnp.array(
-            (
-                auto_cook & successful_pot_placement,
-                successful_pot_placement,
-                successful_pickup,
-                successful_counter_drop,
-                successful_dish_pickup,
-                0.0,  # Filled in after movement with progress toward delivery.
-                correct_delivery,
-            ),
-            dtype=jnp.float32,
+        event_metrics = EventCounts(
+            ingredient_pickup=(successful_ingredient_pickup & is_ingredient_pickup_useful).astype(jnp.float32),
+            placement_in_pot= (successful_pot_placement    & is_pot_placement_useful).astype(jnp.float32),
+            plate_pickup=     (is_plate_pickup_useful * successful_plate_pickup).astype(jnp.float32),
+            soup_in_dish=     (successful_dish_pickup & is_dish_pickup_useful).astype(jnp.float32),
+            delivery=         correct_delivery.astype(jnp.float32),
         )
 
         return (
