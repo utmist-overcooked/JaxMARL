@@ -867,8 +867,47 @@ def make_train(config, monitor=None):
     return train
 
 
+def _resolve_seed_list(config):
+    """Return the ordered list of integer seeds to train sequentially.
+
+    Prefers the ``SEEDS`` list from the config (e.g. ``[0, 1, 2]``). Falls
+    back to expanding ``SEED``/``NUM_SEEDS`` so existing configs keep working.
+    """
+    seeds = config.get("SEEDS")
+    if seeds is not None and not isinstance(seeds, (list, tuple)):
+        seeds = [seeds]
+    if seeds:
+        return [int(s) for s in seeds]
+    base_seed = int(config.get("SEED", 0))
+    num_seeds = int(config.get("NUM_SEEDS", 1) or 1)
+    return [base_seed + i for i in range(max(num_seeds, 1))]
+
+
 def single_run(config):
-    """Execute a single training run."""
+    """Train one run per seed, sequentially.
+
+    Each seed gets its own W&B run, all grouped under ``WANDB_GROUP`` (which
+    defaults to the run name) so the seeds show up together in the UI.
+    """
+    seeds = _resolve_seed_list(config)
+    layout_name = config["ENV_KWARGS"]["layout"]
+    base_name = (
+        config["WANDB_RUN_NAME"]
+        or f"mappo_rnn_overcooked_v3_full_obs_{layout_name}"
+    )
+    group = config.get("WANDB_GROUP") or base_name
+
+    for idx, seed in enumerate(seeds):
+        seed_config = copy.deepcopy(config)
+        seed_config["SEED"] = seed
+        seed_config["NUM_SEEDS"] = 1
+        run_name = f"{base_name}_seed{seed}" if len(seeds) > 1 else base_name
+        print(f"\n=== Training seed {seed} ({idx + 1}/{len(seeds)}) ===")
+        _run_single_seed(seed_config, run_name=run_name, group=group)
+
+
+def _run_single_seed(config, run_name, group):
+    """Execute a single training run for one seed and persist its params."""
     layout_name = config["ENV_KWARGS"]["layout"]
     num_seeds = config["NUM_SEEDS"]
 
@@ -879,10 +918,12 @@ def single_run(config):
         dir=wandb_dir,
         entity=config["ENTITY"],
         project=config["PROJECT"],
+        group=group,
         tags=["MAPPO", "RNN", "OvercookedV3", "FullObs"],
         config=copy.deepcopy(config),
         mode=config["WANDB_MODE"],
-        name=config["WANDB_RUN_NAME"] or f"mappo_rnn_overcooked_v3_full_obs_{layout_name}",
+        name=run_name,
+        reinit=True,
     )
 
     num_updates = int(
@@ -944,6 +985,8 @@ def single_run(config):
         save_params(critic_params, critic_path)
         print(f"Saved actor params to {actor_path}")
         print(f"Saved critic params to {critic_path}")
+
+    wandb.finish()
 
 
 def tune(config):

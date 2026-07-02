@@ -34,11 +34,16 @@ hydra:
 "ACTIVATION": "relu"
 "SEED": 0
 "NUM_SEEDS": 1
+# List of seeds to train sequentially (one W&B run each), e.g. [0, 1, 2].
+# When set, this takes precedence over SEED/NUM_SEEDS.
+"SEEDS": [0]
 
 "ENTITY": ""
 "PROJECT": ""
 "WANDB_MODE": "disabled"
 "WANDB_RUN_NAME": ""
+# W&B group that ties the per-seed runs together. Defaults to the run name.
+"WANDB_GROUP": ""
 "WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_full_obs"
 "USE_RICH_MONITOR": True
 
