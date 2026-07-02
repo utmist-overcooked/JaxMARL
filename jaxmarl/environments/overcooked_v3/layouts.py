@@ -181,8 +181,12 @@ coordinated_temporal_conveyor = """
 # it can cook its own dishes while green is busy.
 # NOTE: item conveyors are capped at MAX_ITEM_CONVEYORS (16); this layout uses 15
 # so the whole belt stays active (the engine silently truncates any beyond 16).
-# Reconstructed from the coordinated_temporal_conveyor_harder training render;
-# swap this string for the canonical cluster grid if it differs.
+# Belt flow verified end-to-end: an item placed on the feeder (0,4) cascades to
+# the tail (9,9) and parks there for the bottom agent to pick up (items never
+# move onto floor). Requires enable_item_conveyors=True at env construction.
+# Reconstructed from the coordinated_temporal_conveyor_harder training render
+# (the original grid only exists on the training cluster); this reconstruction
+# is the canonical in-repo definition.
 coordinated_temporal_conveyor_harder = """
 01  >>vW   X
   A  WvW

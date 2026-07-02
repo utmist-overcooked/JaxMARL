@@ -19,6 +19,13 @@
 # teacher. (Once the SEEDS/WANDB_GROUP change from the multi-seed PR is merged
 # into this branch you can replace the loop below with a single call passing
 # SEEDS=[0,1,2] and WANDB_GROUP.)
+#
+# IMPORTANT: OvercookedV3 disables conveyor movement by default, so the
+# ++ENV_KWARGS.enable_item_conveyors/enable_player_conveyors overrides below
+# are mandatory — without them the belt is static decoration. delivery_reward
+# and random_agent_positions=False match the existing CTC run convention.
+# (enforce_handoff_roles / wrong_delivery_reward from the cluster scripts are
+# NOT passed: those kwargs only exist in the cluster worktree env.)
 set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -36,6 +43,7 @@ TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-5e6}"
 REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON:-3e6}"
 SHAPED_REWARD_SCALE="${SHAPED_REWARD_SCALE:-1.0}"
 MAX_STEPS="${MAX_STEPS:-400}"
+DELIVERY_REWARD="${DELIVERY_REWARD:-100.0}"
 WANDB_MODE="${WANDB_MODE:-offline}"
 WANDB_PROJECT="${WANDB_PROJECT:-overcookedv3-mappo-full-obs}"
 WANDB_ENTITY="${WANDB_ENTITY:-null}"
@@ -53,6 +61,10 @@ for SEED in $SEEDS; do
         ENV_KWARGS.agent_view_size=null \
         ENV_KWARGS.shaped_rewards=True \
         ENV_KWARGS.max_steps="$MAX_STEPS" \
+        ENV_KWARGS.random_agent_positions=False \
+        "++ENV_KWARGS.enable_item_conveyors=True" \
+        "++ENV_KWARGS.enable_player_conveyors=True" \
+        "++ENV_KWARGS.delivery_reward=${DELIVERY_REWARD}" \
         TOTAL_TIMESTEPS="$TOTAL_TIMESTEPS" \
         REW_SHAPING_HORIZON="$REW_SHAPING_HORIZON" \
         SHAPED_REWARD_SCALE="$SHAPED_REWARD_SCALE" \
