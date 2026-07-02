@@ -172,27 +172,29 @@ coordinated_temporal_conveyor = """
 01   Wv>>>>>
 """
 
-# Longer-drop variant of coordinated_temporal_conveyor. The central vertical
-# item conveyor is extended so that with agent_view_size=2 (a 5x5 window) the
-# bottom "green" agent cannot see the top "blue" agent, forcing the handoff to
-# be coordinated over time / communication rather than by direct observation.
-# NOTE: reconstructed from the committed coordinated_temporal_conveyor by only
-# lengthening the vertical drop; every other element (agents, ingredient piles,
-# pots, plate pile, delivery, both conveyor turns) is unchanged. Swap this
-# string for the canonical CTC-harder grid if it differs.
+# Longer-drop variant of coordinated_temporal_conveyor. A short top feeder turns
+# down into a long vertical item conveyor that turns right at the bottom into the
+# "green" kitchen. With agent_view_size=2 (a 5x5 window) the bottom green agent
+# cannot see the top "blue" agent (vertical gap dy=6), forcing the ingredient
+# handoff to be coordinated over time / communication rather than by direct
+# observation. Blue (top-left) has its own delivery X, pot P and plate pile B so
+# it can cook its own dishes while green is busy.
+# NOTE: item conveyors are capped at MAX_ITEM_CONVEYORS (16); this layout uses 15
+# so the whole belt stays active (the engine silently truncates any beyond 16).
+# Reconstructed from the coordinated_temporal_conveyor_harder training render;
+# swap this string for the canonical cluster grid if it differs.
 coordinated_temporal_conveyor_harder = """
->>>>>>vW   X
-      vW  A
+01  >>vW   X
+  A  WvW
+WWWW WvW
+XP B WvW
      WvW
      WvW
      WvW
-     WvW
-     WvW
-     WvW
-     WvW
-     Wv   PB
-  A  WvWWWWW
-01   Wv>>>>>
+     WvW A
+     WvWPPB
+     W>>>>
+WWWWWWWWWWWW
 """
 
 general_conveyor_level_1 = """
