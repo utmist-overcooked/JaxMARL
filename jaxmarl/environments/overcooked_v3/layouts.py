@@ -165,8 +165,31 @@ B
 
 coordinated_temporal_conveyor = """
 >>>>>>vW   X
-      vW  A 
-     WvW    
+      vW  A
+     WvW
+     Wv   PB
+  A  WvWWWWW
+01   Wv>>>>>
+"""
+
+# Longer-drop variant of coordinated_temporal_conveyor. The central vertical
+# item conveyor is extended so that with agent_view_size=2 (a 5x5 window) the
+# bottom "green" agent cannot see the top "blue" agent, forcing the handoff to
+# be coordinated over time / communication rather than by direct observation.
+# NOTE: reconstructed from the committed coordinated_temporal_conveyor by only
+# lengthening the vertical drop; every other element (agents, ingredient piles,
+# pots, plate pile, delivery, both conveyor turns) is unchanged. Swap this
+# string for the canonical CTC-harder grid if it differs.
+coordinated_temporal_conveyor_harder = """
+>>>>>>vW   X
+      vW  A
+     WvW
+     WvW
+     WvW
+     WvW
+     WvW
+     WvW
+     WvW
      Wv   PB
   A  WvWWWWW
 01   Wv>>>>>
@@ -684,6 +707,10 @@ overcooked_v3_layouts = {
 
     "coordinated_temporal_conveyor": Layout.from_string(
         coordinated_temporal_conveyor, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "coordinated_temporal_conveyor_harder": Layout.from_string(
+        coordinated_temporal_conveyor_harder, possible_recipes=[[0, 0, 0]],
     ),
 
     "single_file": Layout.from_string(
