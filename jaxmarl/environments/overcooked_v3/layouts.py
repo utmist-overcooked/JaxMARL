@@ -123,22 +123,42 @@ A       WXW
 B          W
 """
 
-# coordinated_temporal_conveyor = """
-# >>>>>>vW   X
-#       vW  A 
-#      WvW    
-#      Wv   PB
-#   A  WvWWWWW
-# 01    v>>>>W
-# """
-
 coordinated_temporal_conveyor = """
->>>>>>v    X
-      v   A 
-      v     
-      v   PB
-  A   vWWWWW
+>>>>>>vW   X
+      vW  A 
+     WvW    
+     Wv   PB
+  A  WvWWWWW
 01    v>>>>W
+"""
+
+# Longer-drop variant of coordinated_temporal_conveyor. A short top feeder turns
+# down into a long vertical item conveyor that turns right at the bottom into the
+# "green" kitchen. With agent_view_size=2 (a 5x5 window) the bottom green agent
+# cannot see the top "blue" agent (vertical gap dy=6), forcing the ingredient
+# handoff to be coordinated over time / communication rather than by direct
+# observation. Blue (top-left) has its own delivery X, pot P and plate pile B so
+# it can cook its own dishes while green is busy.
+# NOTE: item conveyors are capped at MAX_ITEM_CONVEYORS (16); this layout uses 15
+# so the whole belt stays active (the engine silently truncates any beyond 16).
+# Belt flow verified end-to-end: an item placed on the feeder (0,4) cascades to
+# the tail (9,9) and parks there for the bottom agent to pick up (items never
+# move onto floor). Requires enable_item_conveyors=True at env construction.
+# Reconstructed from the coordinated_temporal_conveyor_harder training render
+# (the original grid only exists on the training cluster); this reconstruction
+# is the canonical in-repo definition.
+coordinated_temporal_conveyor_harder = """
+01  >>vW   X
+  A  WvW
+WWWW WvW
+XP B WvW
+     WvW
+     WvW
+     WvW
+     WvW A
+     WvWPPB
+     W>>>>
+WWWWWWWWWWWW
 """
 
 general_conveyor_level_1 = """
@@ -204,6 +224,16 @@ WWWWWWW  X
 W  A     W
 W        W
 WWWPWBWWWW
+"""
+
+around_the_island_nerfed = """
+WW0WWWWW
+B      W
+W  A   W
+WWWWW  X
+W  A   W
+W      W
+WWPWWWWW
 """
 
 single_file = """
@@ -1094,6 +1124,11 @@ overcooked_v3_layouts = {
         coordinated_temporal_conveyor, possible_recipes=[[0, 0, 0]]
     ),
 
+    # coordinated_temporal_conveyor_harder
+    "coordinated_temporal_conveyor_harder": Layout.from_string(
+        coordinated_temporal_conveyor_harder, possible_recipes=[[0, 0, 0]]
+    ),
+
     # general_conveyor_level_1
     "general_conveyor_level_1": Layout.from_string(
         general_conveyor_level_1, possible_recipes=[[0, 0, 0]]
@@ -1166,6 +1201,10 @@ overcooked_v3_layouts = {
     "around_the_island": Layout.from_string(
         around_the_island, possible_recipes=[[0, 0, 0]],
     ),
+
+    "around_the_island_nerfed": Layout.from_string(
+        around_the_island, possible_recipes=[[0, 0, 0]],
+    ),    
 
     "single_file": Layout.from_string(
         single_file, possible_recipes=[[0, 0, 0]],
