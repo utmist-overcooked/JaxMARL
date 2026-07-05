@@ -23,6 +23,9 @@
   "attack_mode": "closest"
 "ANNEAL_LR": True
 
+# Checkpointing (interval is measured in PPO updates; 0 disables saving)
+"CHECKPOINT_INTERVAL": 0
+
 # WandB Params
 "ENTITY": ""
 "PROJECT": ""

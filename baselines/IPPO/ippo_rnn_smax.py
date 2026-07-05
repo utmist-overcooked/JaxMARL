@@ -2,6 +2,7 @@
 Based on PureJaxRL Implementation of PPO
 """
 
+import os
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
@@ -14,12 +15,17 @@ import distrax
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from jaxmarl.wrappers.baselines import SMAXLogWrapper
+from jaxmarl.wrappers.baselines import SMAXLogWrapper, save_params
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
 
 import wandb
 import functools
 import matplotlib.pyplot as plt
+
+
+RESULTS_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "results")
+)
 
 
 class ScannedRNN(nn.Module):
@@ -431,6 +437,43 @@ def make_train(config):
             metric["update_steps"] = update_steps
             jax.experimental.io_callback(callback, None, metric)
             update_steps = update_steps + 1
+
+            if config["CHECKPOINT_INTERVAL"] > 0:
+                should_checkpoint = jnp.logical_or(
+                    update_steps % config["CHECKPOINT_INTERVAL"] == 0,
+                    update_steps == config["NUM_UPDATES"],
+                )
+
+                def checkpoint(_):
+                    def save_checkpoint(params, completed_updates):
+                        env_steps = (
+                            int(completed_updates)
+                            * config["NUM_ENVS"]
+                            * config["NUM_STEPS"]
+                        )
+                        save_path = os.path.join(
+                            RESULTS_DIR,
+                            f"checkpoint_env_steps_{env_steps}.safetensors",
+                        )
+                        save_params(params, save_path)
+                        print(f"Saved checkpoint: {save_path}")
+
+                    jax.experimental.io_callback(
+                        save_checkpoint,
+                        None,
+                        train_state.params,
+                        update_steps,
+                        ordered=True,
+                    )
+                    return jnp.array(0, dtype=jnp.int32)
+
+                jax.lax.cond(
+                    should_checkpoint,
+                    checkpoint,
+                    lambda _: jnp.array(0, dtype=jnp.int32),
+                    operand=None,
+                )
+
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             return (runner_state, update_steps), metric
 
@@ -454,6 +497,13 @@ def make_train(config):
 @hydra.main(version_base=None, config_path="config", config_name="ippo_rnn_smax")
 def main(config):
     config = OmegaConf.to_container(config)
+    if config["CHECKPOINT_INTERVAL"] > 0:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        OmegaConf.save(
+            OmegaConf.create(config),
+            os.path.join(RESULTS_DIR, "config.yaml"),
+        )
+
     wandb.init(
         entity=config["ENTITY"],
         project=config["PROJECT"],
@@ -463,7 +513,8 @@ def main(config):
     )
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config), device=jax.devices()[0])
-    out = train_jit(rng)
+    out = jax.block_until_ready(train_jit(rng))
+    wandb.finish()
 
 
 if __name__ == "__main__":
