@@ -28,6 +28,7 @@ from .environments import (
     Overcooked,
     OvercookedV2,
     OvercookedV3,
+    OvercookedV3Macro,
     CoinGame,
     JaxNav,
     SUBMODULE_ENVIRONMENTS
@@ -124,6 +125,8 @@ def make(env_id: str, **env_kwargs):
         env = OvercookedV2(**env_kwargs)
     elif env_id == "overcooked_v3":
         env = OvercookedV3(**env_kwargs)
+    elif env_id == "overcooked_v3_macro":
+        env = OvercookedV3Macro(**env_kwargs)
 
     # 8. Coin Game
     elif env_id == "coin_game":
@@ -184,6 +187,7 @@ registered_envs = [
     "overcooked",
     "overcooked_v2",
     "overcooked_v3",
+    "overcooked_v3_macro",
     "coin_game",
     "jaxnav",
     "JaxRobotarium_navigation",
