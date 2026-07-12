@@ -1247,7 +1247,6 @@ class OvercookedV3(MultiAgentEnv):
             ) = jax.lax.scan(
                 _process_agent_button,
                 (
-                    new_mw_directions,
                     new_mw_paused,
                     new_mw_bounce,
                     new_btn_toggled,
@@ -1344,7 +1343,15 @@ class OvercookedV3(MultiAgentEnv):
             (interact_ingredients & DynamicObject.COOKED) != 0
         )
         pot_is_cooking = object_is_pot * (current_pot_timer > 0) * ~pot_is_cooked
-        pot_is_idle = object_is_pot * (current_pot_timer == 0) * ~pot_is_cooked
+        pot_is_burned = object_is_pot * (
+            (interact_ingredients & DynamicObject.BURNED) != 0
+        )
+        pot_is_idle = (
+            object_is_pot
+            * (current_pot_timer == 0)
+            * ~pot_is_cooked
+            * ~pot_is_burned
+        )
         any_pot_cooking = jnp.any(pot_timers > self.pot_burn_time)
 
         # Check if pot is ready.
