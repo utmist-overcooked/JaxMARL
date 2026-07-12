@@ -1,12 +1,15 @@
 # Byte-compiled / optimized / DLL files
-__pycache__/
+
+**pycache**/
 *.py[cod]
 *$py.class
+
 *.egg-info/
 *.ipynb
 *.DS_Store
 .vscode/
 .ipynb_checkpoints/
+
 docker/*
 *.pickle
 results/
@@ -15,10 +18,19 @@ tmp/
 wandb/
 outputs/
 models/
+
 venv/
+.venv/
+.venv*/
+
+.env
+.history/
+exports/
+
 **/*.msgpack
 *.bak
 *.bak2
+
 /checkpoints/*
 /baselines/*/checkpoints/*
 /baselines/*/results/*
@@ -26,5 +38,6 @@ venv/
 /logs/*/*
 /outputs/*
 /outputs/*/*
+
 build/
 *.csv
