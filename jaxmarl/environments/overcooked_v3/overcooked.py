@@ -1370,6 +1370,7 @@ class OvercookedV3(MultiAgentEnv):
             ) = jax.lax.scan(
                 _process_agent_button,
                 (
+                    new_mw_directions,
                     new_mw_paused,
                     new_mw_bounce,
                     new_btn_toggled,

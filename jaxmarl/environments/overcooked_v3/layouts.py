@@ -1113,49 +1113,6 @@ class Layout:
                 top-to-bottom, left-to-right. Default: all False.
             pressure_plate_config: List of (targets, action_type) per pressure
                 plate (by parse order). targets can be either a single barrier
-# Byte-compiled / optimized / DLL files
-
-**pycache**/
-*.py[cod]
-*$py.class
-
-*.egg-info/
-*.ipynb
-*.DS_Store
-.vscode/
-.ipynb_checkpoints/
-
-docker/*
-*.pickle
-results/
-tmp/
-*-checkpoint.py
-wandb/
-outputs/
-models/
-
-venv/
-.venv/
-.venv*/
-
-.env
-.history/
-exports/
-
-**/*.msgpack
-*.bak
-*.bak2
-
-/checkpoints/*
-/baselines/*/checkpoints/*
-/baselines/*/results/*
-/logs/*
-/logs/*/*
-/outputs/*
-/outputs/*/*
-
-build/
-*.csv
                 index (int) or a tuple/list of barrier indices to control.
                 Default: all pressure plates target barrier 0 with
                 ButtonAction.TOGGLE_BARRIER.
