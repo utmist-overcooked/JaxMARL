@@ -5,12 +5,26 @@ import jax.numpy as jnp
 
 from jaxmarl import make
 from jaxmarl.environments.overcooked_v3.common import Actions, DynamicObject
+from jaxmarl.environments.overcooked_v3.layouts import Layout
 from jaxmarl.environments.overcooked_v3.overcooked import OvercookedV3
 from jaxmarl.environments.overcooked_v3_macro import (
     MACRO_ACTION_NAMES,
     MacroActions,
     OvercookedV3Macro,
 )
+
+
+def _barrier_macro_env(rows):
+    """Create a one-agent macro environment from a barrier test grid."""
+    width = len(rows[0])
+    service_objects = "WBPX" + "W" * (width - 4)
+    service_access = "W   " + "W" * (width - 4)
+    layout = Layout.from_string(
+        "\n".join([service_objects, service_access, *rows]),
+        possible_recipes=[[0, 0, 0]],
+        barrier_config=[True],
+    )
+    return OvercookedV3Macro(layout=layout, max_macro_steps=10)
 
 
 def test_macro_env_registration_and_action_space():
@@ -146,3 +160,102 @@ def test_macro_step_env_jittable():
 
     assert next_state.time == 1
     assert info["current_macro_action"]["agent_0"] == MacroActions.get_ingredient_0
+
+
+def test_macro_navigation_replans_when_barrier_state_changes_under_jit():
+    env = _barrier_macro_env(
+        [
+            "WWWWWWW",
+            "W     W",
+            "WA#  0W",
+            "W     W",
+            "WWWWWWW",
+        ]
+    )
+    _, state = env.reset(jax.random.PRNGKey(0))
+    macros = jnp.array([MacroActions.get_ingredient_0], dtype=jnp.int32)
+
+    @jax.jit
+    def plan(current_state):
+        """Plan one compiled primitive action for the supplied barrier state."""
+        return env._macro_to_primitive_actions(current_state, macros)
+
+    closed_actions, closed_reachable = plan(state)
+    open_state = state.replace(
+        barrier_active=jnp.zeros_like(state.barrier_active)
+    )
+    open_actions, open_reachable = plan(open_state)
+
+    assert closed_actions[0] == Actions.down
+    assert open_actions[0] == Actions.right
+    assert closed_reachable[0]
+    assert open_reachable[0]
+
+
+def test_macro_navigation_retargets_when_nearest_target_is_blocked():
+    env = _barrier_macro_env(
+        [
+            "WWWWWWWW",
+            "W0  A#0W",
+            "WWWWWWWW",
+        ]
+    )
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+
+    _, next_state, _, _, info = env.step_env(
+        key,
+        state,
+        {"agent_0": int(MacroActions.get_ingredient_0)},
+    )
+
+    assert info["primitive_action"]["agent_0"] == Actions.left
+    assert next_state.agents.pos.x[0] == state.agents.pos.x[0] - 1
+    assert not next_state.macro_action_done[0]
+
+
+def test_macro_terminates_when_barrier_makes_every_target_unreachable():
+    env = _barrier_macro_env(
+        [
+            "WWWWWWW",
+            "WA#  0W",
+            "WWWWWWW",
+        ]
+    )
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+
+    _, next_state, _, _, info = env.step_env(
+        key,
+        state,
+        {"agent_0": int(MacroActions.get_ingredient_0)},
+    )
+
+    assert info["primitive_action"]["agent_0"] == Actions.stay
+    assert next_state.macro_action_done[0]
+    assert jnp.array_equal(next_state.agents.pos.x, state.agents.pos.x)
+    assert jnp.array_equal(next_state.agents.pos.y, state.agents.pos.y)
+
+
+def test_macro_walkability_honors_pressed_pressure_plate_override():
+    env = OvercookedV3Macro(layout="pressure_plate_demo")
+    _, state = env.reset(jax.random.PRNGKey(0))
+    plate_y, plate_x = state.pressure_plate_positions[0]
+    linked_barriers = state.pressure_plate_linked_barrier[0]
+    state = state.replace(
+        agents=state.agents.replace(
+            pos=state.agents.pos.replace(
+                x=state.agents.pos.x.at[0].set(plate_x),
+                y=state.agents.pos.y.at[0].set(plate_y),
+            )
+        ),
+        barrier_active=jnp.where(
+            linked_barriers, True, state.barrier_active
+        ),
+    )
+
+    walkable = env._current_walkable_mask(state)
+    barrier_y = state.barrier_positions[:, 0]
+    barrier_x = state.barrier_positions[:, 1]
+
+    assert jnp.all(walkable[barrier_y, barrier_x][linked_barriers])

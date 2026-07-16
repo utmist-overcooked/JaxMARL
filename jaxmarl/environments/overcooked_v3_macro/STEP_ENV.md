@@ -1,24 +1,22 @@
-# `OvercookedV3Macro.step_env` execution walkthrough
+# `OvercookedV3Macro.step_env` walkthrough
 
-This document describes exactly what happens during one call to
-`OvercookedV3Macro.step_env`.
-
-The most important point is that **one call to `step_env` performs one primitive
-Overcooked action per agent**. A macro such as `get_plate` is stored in the
-state and advanced over multiple calls:
+This document follows one call to `OvercookedV3Macro.step_env`. One call
+executes exactly one primitive Overcooked action per agent; a macro normally
+continues across several calls.
 
 ```text
-requested macro
-    -> keep the existing macro if it is still active
-    -> choose one primitive action from the current state
-    -> run one Overcooked V3 transition
-    -> decide whether the macro is finished
-    -> store the macro bookkeeping for the next call
+request macro
+  -> start it or retain the active macro
+  -> build its valid-target mask
+  -> remove currently closed barriers
+  -> flood distances from every valid destination
+  -> move, face, interact, or stay for one primitive tick
+  -> run the base Overcooked V3 transition
+  -> mark the macro complete, unreachable, timed out, or still active
 ```
 
-The primary implementation is
-[`overcooked_v3_macro/overcooked.py`](./overcooked.py). Primitive movement,
-interaction, collision, reward, and world-update behavior is inherited from
+The macro implementation is [`overcooked.py`](./overcooked.py). Movement,
+collision, interaction, reward, and world updates come from the base
 [`overcooked_v3/overcooked.py`](../overcooked_v3/overcooked.py).
 
 ## Primitive and macro actions
@@ -35,9 +33,9 @@ class Actions(IntEnum):
     interact = 5
 ```
 
-Evidence: [`overcooked_v3/common.py`, `Actions`](../overcooked_v3/common.py#L210-L217).
+Evidence: [`Actions`](../overcooked_v3/common.py#L210-L217).
 
-The macro environment exposes these thirteen macro actions:
+The policy selects one of thirteen macros:
 
 ```python
 class MacroActions(IntEnum):
@@ -56,12 +54,11 @@ class MacroActions(IntEnum):
     wait_for_nearest_pot = 12
 ```
 
-Evidence: [`overcooked_v3_macro/overcooked.py`, `MacroActions`](./overcooked.py#L45-L61).
+Evidence: [`MacroActions`](./overcooked.py#L43-L59).
 
-## Step 1: read and sanitize the requested macros
+## Step 1: read the policy requests
 
-The action dictionary contains one macro-action index per agent. `step_env`
-collects these into an array and clips every index to the valid macro range:
+`step_env` collects and clips one requested macro index per agent:
 
 ```python
 requested_macro_actions = jnp.array(
@@ -73,466 +70,317 @@ requested_macro_actions = jnp.clip(
 )
 ```
 
-Evidence: [`step_env`, requested actions](./overcooked.py#L197-L203).
+Evidence: [`step_env`](./overcooked.py#L191-L204).
 
-`get_avail_actions` currently reports every macro as available. Validity is
-therefore handled during execution rather than by policy-side action masking:
+The committed interface accepts a request only after the previous macro ends:
 
 ```python
-return {
-    f"agent_{i}": jnp.ones((self.num_macro_actions,), dtype=jnp.uint8)
-    for i in range(self.num_agents)
-}
+def _macro_replacement_mask(self, state, requested_macro_actions):
+    del requested_macro_actions
+    return state.macro_action_done
 ```
 
-Evidence: [`get_avail_actions`](./overcooked.py#L885-L890).
-
-## Step 2: accept a new macro or continue the active one
-
-An agent may start the newly requested macro only when its previous macro is
-done. Otherwise, the new request is ignored and `current_macro_actions` keeps
-the active macro:
+It then either installs the request or retains the active macro:
 
 ```python
 current_macro_actions = jnp.where(
-    state.macro_action_done,
+    replace_macro,
     requested_macro_actions,
     state.current_macro_actions,
 )
-macro_step_count = jnp.where(
-    state.macro_action_done, 0, state.macro_step_count
+```
+
+Evidence: [`_macro_replacement_mask`](./overcooked.py#L206-L211) and macro
+latching in [`_step_with_macro_replacements`](./overcooked.py#L222-L229).
+
+`OvercookedV3MacroInterruptible` changes only the replacement mask: requesting
+a different macro interrupts the active one.
+
+## Step 2: build the currently walkable grid
+
+Static walkability includes ordinary floor, player conveyors, pressure plates,
+and barrier tiles. At runtime, the planner removes barrier tiles that currently
+block movement.
+
+If pressure plates are enabled, barriers opened by a currently pressed linked
+plate remain walkable:
+
+```python
+opened_by_plate = jnp.any(
+    state.pressure_plate_linked_barrier & plate_pressed[:, None],
+    axis=0,
+)
+
+blocked_barriers = (
+    state.barrier_active_mask
+    & state.barrier_active
+    & ~opened_by_plate
+)
+
+return self._walkable_mask & (blocked_cells == 0)
+```
+
+Evidence: [`_current_walkable_mask`](./overcooked.py#L629-L659). This mirrors
+the pressure-plate override and active-barrier check used by base movement in
+[`OvercookedV3.step_agents`](../overcooked_v3/overcooked.py#L818-L875).
+
+The walkable mask is rebuilt from the current state on every primitive tick.
+Therefore, a barrier opening or closing affects the next planning decision.
+
+## Step 3: build the selected macro's valid-target mask
+
+The planner first creates one boolean grid describing all targets that are valid
+for this agent and macro. Only cheap mask construction is repeated for the
+different macro types; exactly one flood fill is performed per agent.
+
+Representative target masks are:
+
+```python
+# Ingredient pile
+static_layer == StaticObject.ingredient_pile(0)
+
+# Plate pile
+static_layer == StaticObject.PLATE_PILE
+
+# Pot that can accept the held ingredient
+self._valid_pot_placement_mask(state, agent.inventory)
+
+# Pot containing the ready configured recipe
+self._ready_recipe_pot_mask(state)
+
+# Empty or occupied counter-like object
+counter_mask & (dynamic_layer == DynamicObject.EMPTY)
+counter_mask & (dynamic_layer != DynamicObject.EMPTY)
+
+# Delivery and button targets
+static_layer == StaticObject.GOAL
+static_layer == StaticObject.BUTTON
+```
+
+Evidence: target-mask selection in
+[`_macro_to_primitive_action`](./overcooked.py#L349-L404), valid-pot rules in
+[`_valid_pot_placement_mask`](./overcooked.py#L745-L770), and ready-pot rules in
+[`_ready_recipe_pot_mask`](./overcooked.py#L772-L776).
+
+### Per-macro targets and prerequisites
+
+| Macro | Valid targets | Required inventory/action behavior |
+| --- | --- | --- |
+| `wait` | None | Emit `stay`. |
+| `get_ingredient_N` | Every pile for ingredient `N` | Inventory must be empty. |
+| `get_plate` | Every plate pile | Base pickup succeeds only with empty inventory. |
+| `put_ingredient_in_nearest_pot` | Non-full, same-type or empty, uncooked and unburned pots | Must hold an ingredient. |
+| `get_soup_from_nearest_pot` | Pots containing the cooked configured recipe | Must hold a plate. |
+| `deliver` | Every delivery goal | Must hold an object with `COOKED` set. |
+| `drop_on_nearest_counter` | Empty wall, moving-wall, or conveyor counter-like cells | Inventory must be non-empty. |
+| `pickup_from_nearest_counter` | Occupied counter-like cells | Inventory must be empty. |
+| `press_nearest_button` | Every button | Navigate beside it and interact. |
+| `stand_on_nearest_pressure_plate` | Every pressure-plate cell | Navigate onto it; do not interact. |
+| `wait_for_nearest_pot` | None | Emit `stay` until the waiting condition ends. |
+
+Inventory gates are applied in
+[`_macro_to_primitive_action`](./overcooked.py#L460-L498). The actual pickup,
+placement, and delivery effects are implemented by base
+[`process_interact`](../overcooked_v3/overcooked.py#L1242-L1381).
+
+## Step 4: turn object targets into navigation goals
+
+For an interaction macro, the agent must stand in a walkable cell directly
+beside a target. The four shifted target masks are combined into one mask of all
+valid interaction positions:
+
+```python
+interaction_goals = (
+    jnp.pad(target_mask[:-1, :], ((1, 0), (0, 0)))
+    | jnp.pad(target_mask[1:, :], ((0, 1), (0, 0)))
+    | jnp.pad(target_mask[:, :-1], ((0, 0), (1, 0)))
+    | jnp.pad(target_mask[:, 1:], ((0, 0), (0, 1)))
+) & walkable_mask
+```
+
+For `stand_on_nearest_pressure_plate`, the plate cells themselves are goals:
+
+```python
+pressure_plate_goals = (
+    (static_layer == StaticObject.PRESSURE_PLATE) & walkable_mask
 )
 ```
 
-Evidence: [`step_env`, macro latching](./overcooked.py#L205-L212).
+Evidence: goal construction in
+[`_macro_to_primitive_action`](./overcooked.py#L406-L427).
 
-For example, if `get_plate` is still active and the policy requests `deliver`,
-the agent continues `get_plate`. The `deliver` request is not queued; the policy
-must request it again after `macro_action_done` becomes true.
+All valid destinations participate simultaneously. There is no permanently
+stored target. If one target becomes unreachable while another remains
+reachable, the resulting field directs the agent toward the reachable one.
 
-## Step 3: translate each active macro into one primitive action
+## Step 5: flood a barrier-aware distance field
 
-Translation is vectorized across agents, but each agent is evaluated from the
-same pre-transition state:
+All goal cells start at distance zero. Each relaxation round assigns every
+walkable cell the minimum of its current distance and one plus the smallest
+neighbor distance:
 
 ```python
-return jax.vmap(
-    lambda agent_idx, macro_action: self._macro_to_primitive_action(
-        state, agent_idx, macro_action
+distances = jnp.where(goal_mask, 0, INF_DISTANCE).astype(jnp.int32)
+
+def relax(_iteration, current_distances):
+    padded = jnp.pad(
+        current_distances,
+        ((1, 1), (1, 1)),
+        constant_values=INF_DISTANCE,
     )
-)(agent_idxs, macro_actions)
-```
+    nearest_neighbor = jnp.minimum(
+        jnp.minimum(padded[:-2, 1:-1], padded[2:, 1:-1]),
+        jnp.minimum(padded[1:-1, :-2], padded[1:-1, 2:]),
+    )
+    relaxed = jnp.minimum(current_distances, nearest_neighbor + 1)
+    return jnp.where(walkable_mask, relaxed, INF_DISTANCE)
 
-Evidence: [`_macro_to_primitive_actions`](./overcooked.py#L308-L316).
-
-The default translation is `Actions.stay`. The matching macro branch replaces
-it with a movement, facing, interaction, or waiting action:
-
-```python
-agent = self._agent_at(state, agent_idx)
-primitive_action = jnp.array(Actions.stay, dtype=jnp.int32)
-
-# ...one jnp.where branch per macro action...
-
-return primitive_action.astype(jnp.int32)
-```
-
-Evidence: [`_macro_to_primitive_action`](./overcooked.py#L318-L388).
-
-### How an interaction macro approaches its target
-
-Pickup, placement, delivery, counter, and button macros share the same
-interaction-navigation behavior:
-
-1. Construct a mask of currently valid target cells.
-2. Select the target with the nearest reachable adjacent walkable cell.
-3. While not adjacent, emit one cardinal movement action.
-4. When adjacent but facing the wrong direction, emit the cardinal action toward
-   the target. A cardinal primitive both attempts movement and changes facing.
-   For the usual non-walkable interaction objects (piles, pots, goals, walls,
-   and buttons), movement is rejected and only the facing direction changes.
-5. When adjacent and facing the target, emit `Actions.interact`.
-6. If there is no target, emit `Actions.stay`.
-
-The final choice between moving, facing, and interacting is:
-
-```python
-adjacent = (jnp.abs(dx) + jnp.abs(dy)) == 1
-desired_dir = self._direction_from_delta(dx, dy)
-face_action = self._dir_to_action[desired_dir]
-interact_or_face = jnp.where(
-    agent.dir == desired_dir, Actions.interact, face_action
-)
-move_action = self._action_to_adjacent_cell(state, agent, target_y, target_x)
-action = jnp.where(adjacent, interact_or_face, move_action)
-return jnp.where(has_target, action, Actions.stay).astype(jnp.int32)
-```
-
-Evidence: [`_action_to_interact_with_cell`](./overcooked.py#L625-L645).
-
-### What each macro translates to
-
-#### `wait`
-
-`wait` has no matching replacement branch, so it retains the default
-`Actions.stay`. It is marked complete after this transition.
-
-```python
-primitive_action = jnp.array(Actions.stay, dtype=jnp.int32)
-# No `MacroActions.wait` replacement branch.
-```
-
-Evidence: default action in
-[`_macro_to_primitive_action`](./overcooked.py#L321-L323), and its completion
-condition in [`_macro_done_for_agent`](./overcooked.py#L475).
-
-#### `get_ingredient_0`, `get_ingredient_1`, and `get_ingredient_2`
-
-These macros require an empty inventory. They target the requested ingredient
-pile, navigate beside it, face it, and interact. If the inventory is not empty,
-the emitted primitive action is `stay`.
-
-```python
-inventory_empty = agent.inventory == DynamicObject.EMPTY
-target_mask = state.grid[:, :, 0] == StaticObject.ingredient_pile(
-    ingredient_idx
-)
-action = self._go_interact_with_static_object(state, agent, target_mask)
-return jnp.where(inventory_empty, action, Actions.stay)
-```
-
-Evidence: [`_go_interact_with_ingredient`](./overcooked.py#L390-L398), called by
-the three ingredient branches in
-[`_macro_to_primitive_action`](./overcooked.py#L324-L337).
-
-The base interaction code recognizes an ingredient pile and allows a pickup
-only with an empty inventory:
-
-```python
-object_is_ingredient_pile = (
-    fwd_pos_in_bounds & StaticObject.is_ingredient_pile(interact_item)
-)
-object_is_pile = object_is_plate_pile | object_is_ingredient_pile
-# ...
-successful_pickup = object_is_pile * inventory_is_empty + ...
-```
-
-Evidence: [`process_interact`, pile pickup](../overcooked_v3/overcooked.py#L1269-L1273)
-and [`successful_pickup`](../overcooked_v3/overcooked.py#L1314-L1319).
-
-#### `get_plate`
-
-This macro targets a plate-pile static object and uses the shared
-move/face/interact procedure:
-
-```python
-primitive_action = jnp.where(
-    macro_action == MacroActions.get_plate,
-    self._go_interact_with_static_object(
-        state, agent, state.grid[:, :, 0] == StaticObject.PLATE_PILE
-    ),
-    primitive_action,
+distances = lax.fori_loop(
+    0, self.height * self.width, relax, distances
 )
 ```
 
-Evidence: [`get_plate` translation](./overcooked.py#L339-L345). The base pickup
-rule is the same pile-plus-empty-inventory rule shown above.
+Evidence: [`_distance_to_goals`](./overcooked.py#L661-L682).
 
-#### `put_ingredient_in_nearest_pot`
+This dense formulation is regular and vectorizable under `jax.jit`, `jax.vmap`,
+and batched GPU training. It performs at most `height * width` relaxation rounds.
 
-This macro requires an ingredient in inventory. A pot is a valid target only if
-it is not full, contains the same ingredient type or is empty, and is neither
-cooked nor burned:
+Reachability is the value at the agent's current tile:
 
 ```python
-inventory_is_ingredient = DynamicObject.is_ingredient(inventory)
-pot_mask = self._valid_pot_placement_mask(state, inventory)
-action = self._go_interact_with_static_object(state, agent, pot_mask)
-return jnp.where(inventory_is_ingredient, action, Actions.stay)
+agent_distance = distances[agent.pos.y, agent.pos.x]
+has_path = agent_distance < INF_DISTANCE
+at_goal = agent_distance == 0
 ```
 
-```python
-return (
-    pot_mask
-    & DynamicObject.is_ingredient(inventory)
-    & (ingredient_counts < MAX_INGREDIENTS)
-    & same_type
-    & pot_not_finished
-)
-```
+Evidence: [`_macro_to_primitive_action`](./overcooked.py#L429-L432).
 
-Evidence: [`_put_ingredient_in_nearest_pot`](./overcooked.py#L410-L417) and
-[`_valid_pot_placement_mask`](./overcooked.py#L751-L776). The actual placement
-is performed by the base interaction rule
-[`successful_pot_placement`](../overcooked_v3/overcooked.py#L1334-L1336).
+The possible outcomes are:
 
-#### `get_soup_from_nearest_pot`
+1. The original target remains reachable through a detour: follow the detour.
+2. That target is cut off but another valid target is reachable: follow the
+   other target's distance gradient.
+3. No valid target is reachable from the agent's current connected region:
+   emit `stay` and mark the macro done.
 
-This macro requires a plate. It targets a pot containing the configured recipe
-with `COOKED` set, then uses `interact` to transfer the soup to the plate:
+Other agents are deliberately not removed from the flood-fill grid. Their
+occupancy is temporary and is handled only when choosing the immediate step.
 
-```python
-inventory_is_plate = agent.inventory == DynamicObject.PLATE
-pot_mask = self._ready_recipe_pot_mask(state)
-action = self._go_interact_with_static_object(state, agent, pot_mask)
-return jnp.where(inventory_is_plate, action, Actions.stay)
-```
+## Step 6: emit one primitive action
+
+### Moving
+
+When the agent is not yet at a goal, the planner scores its four neighboring
+cells by the new distance field. It excludes out-of-bounds, non-walkable, and
+currently occupied cells:
 
 ```python
-plated_recipe = state.recipe | DynamicObject.PLATE | DynamicObject.COOKED
-return pot_mask & ((pot_contents | DynamicObject.PLATE) == plated_recipe)
-```
-
-Evidence: [`_get_soup_from_nearest_pot`](./overcooked.py#L419-L423) and
-[`_ready_recipe_pot_mask`](./overcooked.py#L778-L782). The base environment's
-successful dish-pickup condition is
-[`successful_dish_pickup`](../overcooked_v3/overcooked.py#L1303-L1304).
-
-#### `deliver`
-
-This macro requires an inventory object with the `COOKED` bit. It approaches a
-goal tile and interacts with it:
-
-```python
-inventory_is_dish = (agent.inventory & DynamicObject.COOKED) != 0
-goal_mask = state.grid[:, :, 0] == StaticObject.GOAL
-action = self._go_interact_with_static_object(state, agent, goal_mask)
-return jnp.where(inventory_is_dish, action, Actions.stay)
-```
-
-Evidence: [`_deliver_to_goal`](./overcooked.py#L425-L429). The base environment
-applies a successful delivery when the forward object is a goal and the
-inventory is a dish:
-
-```python
-successful_delivery = object_is_goal * inventory_is_dish
-```
-
-Evidence: [`process_interact`, delivery](../overcooked_v3/overcooked.py#L1353).
-
-#### `drop_on_nearest_counter`
-
-This macro requires a non-empty inventory. It targets the nearest counter-like
-cell whose dynamic-object layer is empty, then interacts to place the held item:
-
-```python
-can_drop = agent.inventory != DynamicObject.EMPTY
-counter_mask = self._counter_like_static_mask(state.grid[:, :, 0])
-target_mask = counter_mask & (state.grid[:, :, 1] == DynamicObject.EMPTY)
-action = self._go_interact_with_static_object(state, agent, target_mask)
-return jnp.where(can_drop, action, Actions.stay)
-```
-
-Evidence: [`_drop_on_nearest_counter`](./overcooked.py#L431-L436). Counter-like
-objects include walls, moving walls, item conveyors, and player conveyors:
-[`_counter_like_static_mask`](./overcooked.py#L740-L749). The base drop rule is
-[`successful_drop`](../overcooked_v3/overcooked.py#L1348-L1351).
-
-#### `pickup_from_nearest_counter`
-
-This macro requires an empty inventory. It targets the nearest counter-like
-cell whose dynamic-object layer is non-empty, then interacts to pick up the
-item:
-
-```python
-can_pickup = agent.inventory == DynamicObject.EMPTY
-counter_mask = self._counter_like_static_mask(state.grid[:, :, 0])
-target_mask = counter_mask & (state.grid[:, :, 1] != DynamicObject.EMPTY)
-action = self._go_interact_with_static_object(state, agent, target_mask)
-return jnp.where(can_pickup, action, Actions.stay)
-```
-
-Evidence: [`_pickup_from_nearest_counter`](./overcooked.py#L438-L443), with the
-base pickup behavior in
-[`successful_pickup`](../overcooked_v3/overcooked.py#L1314-L1319).
-
-#### `press_nearest_button`
-
-This macro targets the nearest button and uses the shared interaction procedure:
-
-```python
-primitive_action = jnp.where(
-    macro_action == MacroActions.press_nearest_button,
-    self._go_interact_with_static_object(
-        state, agent, state.grid[:, :, 0] == StaticObject.BUTTON
-    ),
-    primitive_action,
-)
-```
-
-Evidence: [`press_nearest_button` translation](./overcooked.py#L371-L377). The
-base environment detects `interact` while a button is in front of the agent and
-then applies the configured button behavior:
-[`step_agents`, button processing](../overcooked_v3/overcooked.py#L986-L1034).
-
-#### `stand_on_nearest_pressure_plate`
-
-A pressure plate differs from interaction targets because the agent must enter
-the plate's walkable cell. The macro selects the nearest plate and moves onto it;
-it does not emit `interact`:
-
-```python
-target_mask = state.grid[:, :, 0] == StaticObject.PRESSURE_PLATE
-target_y, target_x, has_target = self._nearest_walkable_target(
-    agent, target_mask
-)
-return self._action_to_walkable_cell(state, agent, target_y, target_x, has_target)
-```
-
-Evidence: [`_go_to_nearest_pressure_plate`](./overcooked.py#L445-L450). Once
-already on the target, `_action_to_walkable_cell` emits `stay`:
-[`_action_to_walkable_cell`](./overcooked.py#L674-L687).
-
-#### `wait_for_nearest_pot`
-
-Despite its name, this macro does not navigate to a pot. It emits `stay` on
-every tick:
-
-```python
-primitive_action = jnp.where(
-    macro_action == MacroActions.wait_for_nearest_pot,
-    jnp.array(Actions.stay, dtype=jnp.int32),
-    primitive_action,
-)
-```
-
-Evidence: [`wait_for_nearest_pot` translation](./overcooked.py#L383-L388). It
-continues until any recipe pot is ready or no pot has a positive cooking timer;
-see Step 6 below.
-
-## Step 4: choose the next movement while reacting to other agents
-
-For a movement tick, the macro planner examines the four neighboring cells. It
-filters out cells that are out of bounds, statically non-walkable, or currently
-occupied by another agent. Among the remaining cells, it chooses the one with
-the smallest precomputed static distance to the destination:
-
-```python
-candidate_unoccupied = self._cell_unoccupied_by_other_agents(
-    state, agent, safe_y, safe_x
-)
-candidate_distances = self._distance_table[safe_y, safe_x, target_y, target_x]
 scores = jnp.where(
     candidate_in_bounds & candidate_walkable & candidate_unoccupied,
     candidate_distances,
     INF_DISTANCE,
 )
 best_idx = jnp.argmin(scores)
-has_step = scores[best_idx] < INF_DISTANCE
 action = self._move_actions[best_idx]
 return jnp.where(has_step, action, Actions.stay).astype(jnp.int32)
 ```
 
-Evidence: [`_next_action_avoiding_agents`](./overcooked.py#L689-L717) and the
-occupancy test in
-[`_cell_unoccupied_by_other_agents`](./overcooked.py#L719-L730).
+Evidence: [`_next_action_avoiding_agents`](./overcooked.py#L684-L717) and the
+occupancy check in
+[`_cell_unoccupied_by_other_agents`](./overcooked.py#L719-L731).
 
-This is one-step reactive avoidance, not a reserved multi-agent path. Because
-all agents choose from the same pre-transition state, two agents can still
-simultaneously select the same destination or try to swap cells. The base
-environment cancels same-cell collisions and swaps:
+### Facing and interacting
+
+At an interaction goal, the planner finds an adjacent valid target. If the
+agent already faces it, the primitive action is `interact`; otherwise, the
+cardinal action turns the agent toward it:
 
 ```python
-# Same destination: collided agents retain their original positions.
-new_agents = new_agents.replace(pos=_masked_positions(mask))
-
-# Swaps: both agents retain their original positions.
-swap_mask = _compute_swapped_agents(state.agents.pos, new_agents.pos)
-new_agents = new_agents.replace(pos=_masked_positions(swap_mask))
+adjacent_targets = candidate_in_bounds & target_mask[safe_y, safe_x]
+target_direction = jnp.argmax(adjacent_targets)
+face_action = self._dir_to_action[target_direction]
+interact_action = jnp.where(
+    agent.dir == target_direction, Actions.interact, face_action
+)
 ```
 
-Evidence: [`step_agents`, collision resolution](../overcooked_v3/overcooked.py#L888-L930).
-On the next `step_env` call, the still-active macro recomputes another primitive
-action from the resulting state.
+Evidence: [`_macro_to_primitive_action`](./overcooked.py#L438-L458).
 
-## Step 5: run one base Overcooked V3 transition
+At a pressure-plate goal, the agent emits `stay` because merely occupying the
+cell activates the plate. `wait` and `wait_for_nearest_pot` also emit `stay`.
+Any failed inventory prerequisite or unreachable navigation goal emits `stay`:
 
-The primitive-action array is converted back into the dictionary expected by
-the base environment:
+```python
+primitive_action = jnp.where(
+    navigation_macro & can_execute & has_path,
+    navigation_action,
+    Actions.stay,
+)
+macro_reachable = ~navigation_macro | has_path
+```
+
+Evidence: [`_macro_to_primitive_action`](./overcooked.py#L455-L500).
+
+### Simultaneous agent conflicts
+
+Agents plan from the same pre-transition state. If they simultaneously enter
+the same cell or swap cells, the base environment cancels those movements:
+
+Evidence: base collision and swap resolution in
+[`step_agents`](../overcooked_v3/overcooked.py#L888-L930).
+
+The macro remains active unless another completion condition fires. On the next
+tick it recomputes from the resulting positions. There is no path reservation,
+right-of-way, or deadlock negotiation.
+
+## Step 7: run one base Overcooked transition
+
+The chosen primitives are passed to the parent environment:
 
 ```python
 primitive_action_dict = {
     f"agent_{i}": primitive_actions[i] for i in range(self.num_agents)
 }
-
 obs, next_state, rewards, dones, info = super().step_env(
     key, state, primitive_action_dict
 )
 ```
 
-Evidence: [`OvercookedV3Macro.step_env`](./overcooked.py#L217-L223).
+Evidence: [`_step_with_macro_replacements`](./overcooked.py#L231-L240).
 
-The base transition then performs these world operations in order:
+The base transition applies agent movement, collisions, interactions, pot
+timers, buttons, moving walls, pressure plates, conveyors, barrier timers,
+orders, time, termination, observations, and rewards. Evidence:
+[`OvercookedV3.step_env`](../overcooked_v3/overcooked.py#L741-L800).
 
-1. Apply primitive agent movement, collision resolution, interactions, pot
-   timers, and button interactions through `step_agents`.
-2. Process moving walls.
-3. Process pressure plates.
-4. Process item conveyors.
-5. Process player conveyors.
-6. Process timed barriers.
-7. Process the order queue.
-8. Increment environment time.
-9. Check terminal state and construct observations, rewards, dones, and info.
+## Step 8: determine whether the macro is done
 
-The corresponding base code begins with:
+Completion is checked after the base transition. The action-specific rules are:
 
-```python
-state, reward, shaped_rewards = self.step_agents(key, state, acts)
-
-if self.enable_moving_walls:
-    state = self._process_moving_walls(state)
-if self.enable_pressure_plates:
-    state = self._process_pressure_plates(state)
-if self.enable_item_conveyors:
-    state = self._process_item_conveyors(state)
-if self.enable_player_conveyors:
-    state = self._process_player_conveyors(state)
-
-state = self._process_barrier_timers(state)
-```
-
-Evidence: [`OvercookedV3.step_env`](../overcooked_v3/overcooked.py#L741-L800).
-
-## Step 6: decide whether each macro is finished
-
-Completion is evaluated **after** the primitive transition, using `next_state`:
-
-```python
-macro_done = self._compute_macro_done(
-    next_state,
-    current_macro_actions,
-    primitive_actions,
-)
-```
-
-Evidence: [`OvercookedV3Macro.step_env`](./overcooked.py#L225-L230).
-
-The action-specific completion conditions are:
-
-| Macro | Marked done when |
+| Macro | Done when |
 | --- | --- |
-| `wait` | Always, after its one `stay` tick. |
-| `get_ingredient_N` | The agent holds ingredient `N`; the agent instead holds another object; or no pile of ingredient `N` exists. |
-| `get_plate` | The agent holds a plate; the agent instead holds another object; or no plate pile exists. |
-| `put_ingredient_in_nearest_pot` | The agent no longer holds an ingredient, normally because placement succeeded; or no pot remains valid for that ingredient. |
-| `get_soup_from_nearest_pot` | The agent holds a cooked object; the agent no longer holds a plate; or no recipe-ready pot remains. |
-| `deliver` | The agent no longer holds a cooked object, normally because delivery succeeded; or no goal exists. |
-| `drop_on_nearest_counter` | The inventory is empty, normally because the drop succeeded; or no empty counter-like target remains. |
-| `pickup_from_nearest_counter` | The inventory is non-empty, normally because pickup succeeded; or no occupied counter-like target remains. |
-| `press_nearest_button` | The emitted primitive action was `interact`; or no button exists. |
-| `stand_on_nearest_pressure_plate` | The agent is on a pressure plate; or no pressure plate exists. |
-| `wait_for_nearest_pot` | Any recipe pot is ready; or no pot has a positive cooking timer. |
+| `wait` | After its one `stay` tick. |
+| `get_ingredient_N` | The agent holds ingredient `N`, holds an incompatible object, or no such pile exists. |
+| `get_plate` | The agent holds a plate, holds an incompatible object, or no plate pile exists. |
+| `put_ingredient_in_nearest_pot` | The agent no longer holds an ingredient or no valid pot remains. |
+| `get_soup_from_nearest_pot` | The agent holds a cooked dish, no longer holds a plate, or no ready pot remains. |
+| `deliver` | The agent no longer holds a cooked dish or no goal exists. |
+| `drop_on_nearest_counter` | Inventory becomes empty or no empty counter remains. |
+| `pickup_from_nearest_counter` | Inventory becomes non-empty or no occupied counter remains. |
+| `press_nearest_button` | The emitted primitive was `interact` or no button exists. |
+| `stand_on_nearest_pressure_plate` | The agent occupies a plate or no plate exists. |
+| `wait_for_nearest_pot` | A recipe pot is ready or no pot is still cooking. |
 
-Evidence: all branches are in
-[`_macro_done_for_agent`](./overcooked.py#L465-L559).
+Every navigation macro also ends when its pre-transition flood field says no
+valid target is reachable:
 
-Because targets and completion masks are recomputed from current state on every
-tick, an interaction macro can retarget if its previous target becomes invalid
-but another valid target remains. If no valid target remains, its completion
-condition normally ends the macro after the current transition.
+```python
+return done | ~macro_reachable
+```
 
-There are also two unconditional termination guards:
+Evidence: [`_macro_done_for_agent`](./overcooked.py#L517-L613).
+
+Finally, every macro ends at `max_macro_steps` or when the environment ends:
 
 ```python
 macro_done = (
@@ -542,17 +390,11 @@ macro_done = (
 )
 ```
 
-Evidence: [`step_env`, termination guards](./overcooked.py#L231-L235).
+Evidence: [`_step_with_macro_replacements`](./overcooked.py#L242-L253).
 
-Thus every macro ends when its action-specific condition is met, when it reaches
-`max_macro_steps` (80 by default), or when the whole environment terminates.
-The step limit is especially important for persistent collisions or a target
-that exists according to its mask but cannot actually be reached.
+## Step 9: store bookkeeping and return diagnostics
 
-## Step 7: store macro state and expose debugging information
-
-The environment stores the active macro and completion result. The counter is
-reset to zero for completed macros and retained for continuing macros:
+The active macro, done flag, and step count are stored in `next_state`:
 
 ```python
 next_state = next_state.replace(
@@ -562,25 +404,41 @@ next_state = next_state.replace(
 )
 ```
 
-Evidence: [`step_env`, state bookkeeping](./overcooked.py#L237-L241).
+`info` reports:
 
-Finally, `info` exposes the macro, its completion flag, and the primitive action
-actually selected for every agent:
+- `current_macro_action`
+- `macro_action_done`
+- `macro_action_started`
+- `primitive_action`
 
-```python
-info["current_macro_action"] = {
-    f"agent_{i}": current_macro_actions[i] for i in range(self.num_agents)
-}
-info["macro_action_done"] = {
-    f"agent_{i}": macro_done[i] for i in range(self.num_agents)
-}
-info["primitive_action"] = {
-    f"agent_{i}": primitive_actions[i] for i in range(self.num_agents)
-}
+Evidence: state and info updates in
+[`_step_with_macro_replacements`](./overcooked.py#L255-L275).
+
+## Visualizing the flood fill
+
+The scripted rollout can append a synchronized planner panel to its GIF:
+
+```bash
+python scripts/scripted_overcooked_v3_macro_cramped_room.py \
+  --cooperative-barrier-demo \
+  --flood-fill \
+  --barrier-duration 30 \
+  --output artifacts/overcooked_v3_macro_cooperative_barrier_flood_fill.gif
 ```
 
-Evidence: [`step_env`, info fields](./overcooked.py#L243-L254).
+In this demo, agent 0 requests the plate behind a closed timed barrier and
+initially receives an unreachable field. Agent 1 navigates to the linked button
+and presses it. On the following tick the gate is open, agent 0's field becomes
+finite, and agent 0 follows it through the barrier to the plate.
 
-These fields are the most direct runtime evidence for tracing a rollout: they
-show which macro was latched, which single primitive action it produced on this
-tick, and whether the policy may select a new macro on the next tick.
+The left panel is the normal Overcooked render. The right panel uses:
+
+- Numeric labels for the current distance-to-goal field.
+- Purple `T` outlines for valid object targets.
+- Green `G` cells for valid navigation destinations.
+- A yellow `A0` outline for the planned agent.
+- Red cells for currently closed barriers.
+- `INF` for walkable cells outside every valid goal's reachable region.
+
+The header reports the active macro, emitted primitive action, and reachability
+flag. Implementation: [`scripted_overcooked_v3_macro_cramped_room.py`](../../../scripts/scripted_overcooked_v3_macro_cramped_room.py).

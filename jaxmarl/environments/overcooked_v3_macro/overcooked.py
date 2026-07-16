@@ -7,7 +7,6 @@ action emits one primitive Overcooked V3 action per environment step until the
 macro terminates, following the style of WeihaoTan's macro Overcooked env.
 """
 
-from collections import deque
 from enum import IntEnum
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -23,7 +22,6 @@ from jaxmarl.environments.overcooked_v3.common import (
     MAX_INGREDIENTS,
     Actions,
     Agent,
-    Direction,
     DynamicObject,
     Position,
     StaticObject,
@@ -147,22 +145,18 @@ class OvercookedV3Macro(OvercookedV3):
         self.macro_action_names = MACRO_ACTION_NAMES
         self.num_macro_actions = len(MacroActions)
 
-        (
-            walkable_mask,
-            next_action_table,
-            distance_table,
-        ) = self._build_navigation_tables(self.layout)
-        self._walkable_mask = jnp.array(walkable_mask)
-        self._next_action_table = jnp.array(next_action_table)
-        self._distance_table = jnp.array(distance_table)
-
-        y_grid, x_grid = np.meshgrid(
-            np.arange(self.height, dtype=np.int32),
-            np.arange(self.width, dtype=np.int32),
-            indexing="ij",
+        static = np.asarray(self.layout.static_objects)
+        self._walkable_mask = jnp.array(
+            np.isin(
+                static,
+                [
+                    StaticObject.EMPTY,
+                    StaticObject.PLAYER_CONVEYOR,
+                    StaticObject.PRESSURE_PLATE,
+                    StaticObject.BARRIER,
+                ],
+            )
         )
-        self._grid_y = jnp.array(y_grid)
-        self._grid_x = jnp.array(x_grid)
 
         self._dir_to_action = jnp.array(
             [Actions.up, Actions.down, Actions.right, Actions.left],
@@ -211,7 +205,7 @@ class OvercookedV3Macro(OvercookedV3):
             state.macro_action_done, 0, state.macro_step_count
         )
 
-        primitive_actions = self._macro_to_primitive_actions(
+        primitive_actions, macro_reachable = self._macro_to_primitive_actions(
             state, current_macro_actions
         )
         primitive_action_dict = {
@@ -227,6 +221,7 @@ class OvercookedV3Macro(OvercookedV3):
             next_state,
             current_macro_actions,
             primitive_actions,
+            macro_reachable,
         )
         macro_done = (
             macro_done
@@ -307,160 +302,193 @@ class OvercookedV3Macro(OvercookedV3):
 
     def _macro_to_primitive_actions(
         self, state: State, macro_actions: chex.Array
-    ) -> chex.Array:
+    ) -> Tuple[chex.Array, chex.Array]:
+        """Translate each macro into one primitive action and a reachability flag."""
+        walkable_mask = self._current_walkable_mask(state)
         agent_idxs = jnp.arange(self.num_agents)
         return jax.vmap(
             lambda agent_idx, macro_action: self._macro_to_primitive_action(
-                state, agent_idx, macro_action
+                state, agent_idx, macro_action, walkable_mask
             )
         )(agent_idxs, macro_actions)
 
     def _macro_to_primitive_action(
-        self, state: State, agent_idx: chex.Array, macro_action: chex.Array
-    ) -> chex.Array:
+        self,
+        state: State,
+        agent_idx: chex.Array,
+        macro_action: chex.Array,
+        walkable_mask: chex.Array,
+    ) -> Tuple[chex.Array, chex.Array]:
+        """Plan one primitive action for one macro using one dynamic flood fill."""
         agent = self._agent_at(state, agent_idx)
-        primitive_action = jnp.array(Actions.stay, dtype=jnp.int32)
+        static_layer = state.grid[:, :, 0]
+        dynamic_layer = state.grid[:, :, 1]
+        counter_mask = self._counter_like_static_mask(static_layer)
 
-        primitive_action = jnp.where(
+        target_mask = jnp.zeros((self.height, self.width), dtype=jnp.bool_)
+        target_mask = jnp.where(
             macro_action == MacroActions.get_ingredient_0,
-            self._go_interact_with_ingredient(state, agent, 0),
-            primitive_action,
+            static_layer == StaticObject.ingredient_pile(0),
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.get_ingredient_1,
-            self._go_interact_with_ingredient(state, agent, 1),
-            primitive_action,
+            static_layer == StaticObject.ingredient_pile(1),
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.get_ingredient_2,
-            self._go_interact_with_ingredient(state, agent, 2),
-            primitive_action,
+            static_layer == StaticObject.ingredient_pile(2),
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.get_plate,
-            self._go_interact_with_static_object(
-                state, agent, state.grid[:, :, 0] == StaticObject.PLATE_PILE
-            ),
-            primitive_action,
+            static_layer == StaticObject.PLATE_PILE,
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.put_ingredient_in_nearest_pot,
-            self._put_ingredient_in_nearest_pot(state, agent),
-            primitive_action,
+            self._valid_pot_placement_mask(state, agent.inventory),
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.get_soup_from_nearest_pot,
-            self._get_soup_from_nearest_pot(state, agent),
-            primitive_action,
+            self._ready_recipe_pot_mask(state),
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.deliver,
-            self._deliver_to_goal(state, agent),
-            primitive_action,
+            static_layer == StaticObject.GOAL,
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.drop_on_nearest_counter,
-            self._drop_on_nearest_counter(state, agent),
-            primitive_action,
+            counter_mask & (dynamic_layer == DynamicObject.EMPTY),
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.pickup_from_nearest_counter,
-            self._pickup_from_nearest_counter(state, agent),
-            primitive_action,
+            counter_mask & (dynamic_layer != DynamicObject.EMPTY),
+            target_mask,
         )
-        primitive_action = jnp.where(
+        target_mask = jnp.where(
             macro_action == MacroActions.press_nearest_button,
-            self._go_interact_with_static_object(
-                state, agent, state.grid[:, :, 0] == StaticObject.BUTTON
-            ),
-            primitive_action,
+            static_layer == StaticObject.BUTTON,
+            target_mask,
         )
-        primitive_action = jnp.where(
-            macro_action == MacroActions.stand_on_nearest_pressure_plate,
-            self._go_to_nearest_pressure_plate(state, agent),
-            primitive_action,
-        )
-        primitive_action = jnp.where(
-            macro_action == MacroActions.wait_for_nearest_pot,
-            jnp.array(Actions.stay, dtype=jnp.int32),
-            primitive_action,
-        )
-        return primitive_action.astype(jnp.int32)
 
-    def _go_interact_with_ingredient(
-        self, state: State, agent: Agent, ingredient_idx: int
-    ) -> chex.Array:
+        interaction_macro = (
+            (macro_action >= MacroActions.get_ingredient_0)
+            & (macro_action <= MacroActions.press_nearest_button)
+        )
+        pressure_plate_macro = (
+            macro_action == MacroActions.stand_on_nearest_pressure_plate
+        )
+        navigation_macro = interaction_macro | pressure_plate_macro
+
+        interaction_goals = (
+            jnp.pad(target_mask[:-1, :], ((1, 0), (0, 0)))
+            | jnp.pad(target_mask[1:, :], ((0, 1), (0, 0)))
+            | jnp.pad(target_mask[:, :-1], ((0, 0), (1, 0)))
+            | jnp.pad(target_mask[:, 1:], ((0, 0), (0, 1)))
+        ) & walkable_mask
+        pressure_plate_goals = (
+            (static_layer == StaticObject.PRESSURE_PLATE) & walkable_mask
+        )
+        goal_mask = jnp.where(
+            interaction_macro, interaction_goals, pressure_plate_goals
+        )
+        goal_mask &= navigation_macro
+
+        distances = self._distance_to_goals(walkable_mask, goal_mask)
+        agent_distance = distances[agent.pos.y, agent.pos.x]
+        has_path = agent_distance < INF_DISTANCE
+        at_goal = agent_distance == 0
+
+        move_action = self._next_action_avoiding_agents(
+            state, agent, walkable_mask, distances
+        )
+
+        candidate_x = agent.pos.x + self._dir_dx
+        candidate_y = agent.pos.y + self._dir_dy
+        candidate_in_bounds = (
+            (candidate_x >= 0)
+            & (candidate_x < self.width)
+            & (candidate_y >= 0)
+            & (candidate_y < self.height)
+        )
+        safe_x = jnp.clip(candidate_x, 0, self.width - 1)
+        safe_y = jnp.clip(candidate_y, 0, self.height - 1)
+        adjacent_targets = candidate_in_bounds & target_mask[safe_y, safe_x]
+        target_direction = jnp.argmax(adjacent_targets)
+        face_action = self._dir_to_action[target_direction]
+        interact_action = jnp.where(
+            agent.dir == target_direction, Actions.interact, face_action
+        )
+
+        navigation_action = jnp.where(at_goal, interact_action, move_action)
+        navigation_action = jnp.where(
+            pressure_plate_macro & at_goal, Actions.stay, navigation_action
+        )
+
         inventory_empty = agent.inventory == DynamicObject.EMPTY
-        target_mask = state.grid[:, :, 0] == StaticObject.ingredient_pile(
-            ingredient_idx
+        can_execute = jnp.ones((), dtype=jnp.bool_)
+        can_execute = jnp.where(
+            (macro_action >= MacroActions.get_ingredient_0)
+            & (macro_action <= MacroActions.get_ingredient_2),
+            inventory_empty,
+            can_execute,
         )
-        action = self._go_interact_with_static_object(state, agent, target_mask)
-        return jnp.where(inventory_empty, action, Actions.stay)
-
-    def _go_interact_with_static_object(
-        self, state: State, agent: Agent, target_mask: chex.Array
-    ) -> chex.Array:
-        target_y, target_x, has_target = self._nearest_interactable_target(
-            state, agent, target_mask
+        can_execute = jnp.where(
+            macro_action == MacroActions.put_ingredient_in_nearest_pot,
+            DynamicObject.is_ingredient(agent.inventory),
+            can_execute,
         )
-        return self._action_to_interact_with_cell(
-            state, agent, target_y, target_x, has_target
+        can_execute = jnp.where(
+            macro_action == MacroActions.get_soup_from_nearest_pot,
+            agent.inventory == DynamicObject.PLATE,
+            can_execute,
+        )
+        can_execute = jnp.where(
+            macro_action == MacroActions.deliver,
+            (agent.inventory & DynamicObject.COOKED) != 0,
+            can_execute,
+        )
+        can_execute = jnp.where(
+            macro_action == MacroActions.drop_on_nearest_counter,
+            ~inventory_empty,
+            can_execute,
+        )
+        can_execute = jnp.where(
+            macro_action == MacroActions.pickup_from_nearest_counter,
+            inventory_empty,
+            can_execute,
         )
 
-    def _put_ingredient_in_nearest_pot(
-        self, state: State, agent: Agent
-    ) -> chex.Array:
-        inventory = agent.inventory
-        inventory_is_ingredient = DynamicObject.is_ingredient(inventory)
-        pot_mask = self._valid_pot_placement_mask(state, inventory)
-        action = self._go_interact_with_static_object(state, agent, pot_mask)
-        return jnp.where(inventory_is_ingredient, action, Actions.stay)
-
-    def _get_soup_from_nearest_pot(self, state: State, agent: Agent) -> chex.Array:
-        inventory_is_plate = agent.inventory == DynamicObject.PLATE
-        pot_mask = self._ready_recipe_pot_mask(state)
-        action = self._go_interact_with_static_object(state, agent, pot_mask)
-        return jnp.where(inventory_is_plate, action, Actions.stay)
-
-    def _deliver_to_goal(self, state: State, agent: Agent) -> chex.Array:
-        inventory_is_dish = (agent.inventory & DynamicObject.COOKED) != 0
-        goal_mask = state.grid[:, :, 0] == StaticObject.GOAL
-        action = self._go_interact_with_static_object(state, agent, goal_mask)
-        return jnp.where(inventory_is_dish, action, Actions.stay)
-
-    def _drop_on_nearest_counter(self, state: State, agent: Agent) -> chex.Array:
-        can_drop = agent.inventory != DynamicObject.EMPTY
-        counter_mask = self._counter_like_static_mask(state.grid[:, :, 0])
-        target_mask = counter_mask & (state.grid[:, :, 1] == DynamicObject.EMPTY)
-        action = self._go_interact_with_static_object(state, agent, target_mask)
-        return jnp.where(can_drop, action, Actions.stay)
-
-    def _pickup_from_nearest_counter(self, state: State, agent: Agent) -> chex.Array:
-        can_pickup = agent.inventory == DynamicObject.EMPTY
-        counter_mask = self._counter_like_static_mask(state.grid[:, :, 0])
-        target_mask = counter_mask & (state.grid[:, :, 1] != DynamicObject.EMPTY)
-        action = self._go_interact_with_static_object(state, agent, target_mask)
-        return jnp.where(can_pickup, action, Actions.stay)
-
-    def _go_to_nearest_pressure_plate(self, state: State, agent: Agent) -> chex.Array:
-        target_mask = state.grid[:, :, 0] == StaticObject.PRESSURE_PLATE
-        target_y, target_x, has_target = self._nearest_walkable_target(
-            agent, target_mask
+        primitive_action = jnp.where(
+            navigation_macro & can_execute & has_path,
+            navigation_action,
+            Actions.stay,
         )
-        return self._action_to_walkable_cell(state, agent, target_y, target_x, has_target)
+        macro_reachable = ~navigation_macro | has_path
+        return primitive_action.astype(jnp.int32), macro_reachable
 
     def _compute_macro_done(
         self,
         state: State,
         macro_actions: chex.Array,
         primitive_actions: chex.Array,
+        macro_reachable: chex.Array,
     ) -> chex.Array:
+        """Evaluate action-specific completion and unreachable navigation goals."""
         agent_idxs = jnp.arange(self.num_agents)
         return jax.vmap(
-            lambda agent_idx, macro_action, primitive_action: self._macro_done_for_agent(
-                state, agent_idx, macro_action, primitive_action
+            lambda agent_idx, macro_action, primitive_action, reachable: (
+                self._macro_done_for_agent(
+                    state, agent_idx, macro_action, primitive_action, reachable
+                )
             )
-        )(agent_idxs, macro_actions, primitive_actions)
+        )(agent_idxs, macro_actions, primitive_actions, macro_reachable)
 
     def _macro_done_for_agent(
         self,
@@ -468,7 +496,9 @@ class OvercookedV3Macro(OvercookedV3):
         agent_idx: chex.Array,
         macro_action: chex.Array,
         primitive_action: chex.Array,
+        macro_reachable: chex.Array,
     ) -> chex.Array:
+        """Return whether one agent's macro has completed or become unreachable."""
         agent = self._agent_at(state, agent_idx)
         inventory = agent.inventory
 
@@ -556,7 +586,7 @@ class OvercookedV3Macro(OvercookedV3):
             | ~jnp.any(state.pot_cooking_timer > 0),
             done,
         )
-        return done
+        return done | ~macro_reachable
 
     # ------------------------------------------------------------------
     # Target Selection and Navigation
@@ -572,123 +602,70 @@ class OvercookedV3Macro(OvercookedV3):
             inventory=state.agents.inventory[agent_idx],
         )
 
-    def _nearest_interactable_target(
-        self, state: State, agent: Agent, target_mask: chex.Array
-    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
-        del state
-        ay = agent.pos.y
-        ax = agent.pos.x
+    def _current_walkable_mask(self, state: State) -> chex.Array:
+        """Return static walkability with currently blocking barriers removed."""
+        if self.enable_pressure_plates:
+            agent_on_plate = (
+                state.pressure_plate_positions[:, 0, None]
+                == state.agents.pos.y[None, :]
+            ) & (
+                state.pressure_plate_positions[:, 1, None]
+                == state.agents.pos.x[None, :]
+            )
+            plate_pressed = state.pressure_plate_active_mask & jnp.any(
+                agent_on_plate, axis=1
+            )
+            opened_by_plate = jnp.any(
+                state.pressure_plate_linked_barrier & plate_pressed[:, None],
+                axis=0,
+            )
+        else:
+            opened_by_plate = jnp.zeros_like(state.barrier_active)
 
-        candidate_x = self._grid_x[:, :, None] - self._dir_dx[None, None, :]
-        candidate_y = self._grid_y[:, :, None] - self._dir_dy[None, None, :]
-        candidate_in_bounds = (
-            (candidate_x >= 0)
-            & (candidate_x < self.width)
-            & (candidate_y >= 0)
-            & (candidate_y < self.height)
+        blocked_barriers = (
+            state.barrier_active_mask
+            & state.barrier_active
+            & ~opened_by_plate
         )
-        safe_x = jnp.clip(candidate_x, 0, self.width - 1)
-        safe_y = jnp.clip(candidate_y, 0, self.height - 1)
-        candidate_walkable = self._walkable_mask[safe_y, safe_x]
-        candidate_distances = self._distance_table[ay, ax, safe_y, safe_x]
-        candidate_distances = jnp.where(
-            candidate_in_bounds & candidate_walkable,
-            candidate_distances,
-            INF_DISTANCE,
-        )
-        best_distance = jnp.min(candidate_distances, axis=-1)
+        blocked_cells = jnp.zeros(
+            (self.height, self.width), dtype=jnp.int32
+        ).at[
+            state.barrier_positions[:, 0], state.barrier_positions[:, 1]
+        ].add(blocked_barriers.astype(jnp.int32))
+        return self._walkable_mask & (blocked_cells == 0)
 
-        scores = jnp.where(target_mask, best_distance, INF_DISTANCE)
-        flat_scores = scores.reshape((-1,))
-        flat_idx = jnp.argmin(flat_scores)
-        has_target = flat_scores[flat_idx] < INF_DISTANCE
-        target_y = flat_idx // self.width
-        target_x = flat_idx % self.width
-        return target_y.astype(jnp.int32), target_x.astype(jnp.int32), has_target
-
-    def _nearest_walkable_target(
-        self, agent: Agent, target_mask: chex.Array
-    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
-        ay = agent.pos.y
-        ax = agent.pos.x
-        distances = self._distance_table[ay, ax, self._grid_y, self._grid_x]
-        scores = jnp.where(
-            target_mask & self._walkable_mask, distances, INF_DISTANCE
-        )
-        flat_scores = scores.reshape((-1,))
-        flat_idx = jnp.argmin(flat_scores)
-        has_target = flat_scores[flat_idx] < INF_DISTANCE
-        target_y = flat_idx // self.width
-        target_x = flat_idx % self.width
-        return target_y.astype(jnp.int32), target_x.astype(jnp.int32), has_target
-
-    def _action_to_interact_with_cell(
-        self,
-        state: State,
-        agent: Agent,
-        target_y: chex.Array,
-        target_x: chex.Array,
-        has_target: chex.Array,
+    def _distance_to_goals(
+        self, walkable_mask: chex.Array, goal_mask: chex.Array
     ) -> chex.Array:
-        ax = agent.pos.x
-        ay = agent.pos.y
-        dx = target_x - ax
-        dy = target_y - ay
-        adjacent = (jnp.abs(dx) + jnp.abs(dy)) == 1
-        desired_dir = self._direction_from_delta(dx, dy)
-        face_action = self._dir_to_action[desired_dir]
-        interact_or_face = jnp.where(
-            agent.dir == desired_dir, Actions.interact, face_action
-        )
-        move_action = self._action_to_adjacent_cell(state, agent, target_y, target_x)
-        action = jnp.where(adjacent, interact_or_face, move_action)
-        return jnp.where(has_target, action, Actions.stay).astype(jnp.int32)
+        """Flood distances from all goals through the current walkable grid."""
+        distances = jnp.where(goal_mask, 0, INF_DISTANCE).astype(jnp.int32)
 
-    def _action_to_adjacent_cell(
-        self, state: State, agent: Agent, target_y: chex.Array, target_x: chex.Array
-    ) -> chex.Array:
-        ax = agent.pos.x
-        ay = agent.pos.y
-        candidate_x = target_x - self._dir_dx
-        candidate_y = target_y - self._dir_dy
-        candidate_in_bounds = (
-            (candidate_x >= 0)
-            & (candidate_x < self.width)
-            & (candidate_y >= 0)
-            & (candidate_y < self.height)
-        )
-        safe_x = jnp.clip(candidate_x, 0, self.width - 1)
-        safe_y = jnp.clip(candidate_y, 0, self.height - 1)
-        candidate_walkable = self._walkable_mask[safe_y, safe_x]
-        distances = self._distance_table[ay, ax, safe_y, safe_x]
-        scores = jnp.where(
-            candidate_in_bounds & candidate_walkable, distances, INF_DISTANCE
-        )
-        best_idx = jnp.argmin(scores)
-        dest_y = safe_y[best_idx]
-        dest_x = safe_x[best_idx]
-        has_dest = scores[best_idx] < INF_DISTANCE
-        action = self._next_action_avoiding_agents(state, agent, dest_y, dest_x)
-        return jnp.where(has_dest, action, Actions.stay).astype(jnp.int32)
+        def relax(_iteration, current_distances):
+            """Propagate known goal distances outward by one grid edge."""
+            padded = jnp.pad(
+                current_distances,
+                ((1, 1), (1, 1)),
+                constant_values=INF_DISTANCE,
+            )
+            nearest_neighbor = jnp.minimum(
+                jnp.minimum(padded[:-2, 1:-1], padded[2:, 1:-1]),
+                jnp.minimum(padded[1:-1, :-2], padded[1:-1, 2:]),
+            )
+            relaxed = jnp.minimum(current_distances, nearest_neighbor + 1)
+            return jnp.where(walkable_mask, relaxed, INF_DISTANCE)
 
-    def _action_to_walkable_cell(
-        self,
-        state: State,
-        agent: Agent,
-        target_y: chex.Array,
-        target_x: chex.Array,
-        has_target: chex.Array,
-    ) -> chex.Array:
-        ay = agent.pos.y
-        ax = agent.pos.x
-        already_there = (ay == target_y) & (ax == target_x)
-        action = self._next_action_avoiding_agents(state, agent, target_y, target_x)
-        action = jnp.where(already_there, Actions.stay, action)
-        return jnp.where(has_target, action, Actions.stay).astype(jnp.int32)
+        return lax.fori_loop(
+            0, self.height * self.width, relax, distances
+        )
 
     def _next_action_avoiding_agents(
-        self, state: State, agent: Agent, target_y: chex.Array, target_x: chex.Array
+        self,
+        state: State,
+        agent: Agent,
+        walkable_mask: chex.Array,
+        distances: chex.Array,
     ) -> chex.Array:
+        """Choose the free neighboring step with the lowest dynamic distance."""
         ax = agent.pos.x
         ay = agent.pos.y
         candidate_x = ax + self._move_dx
@@ -701,11 +678,11 @@ class OvercookedV3Macro(OvercookedV3):
         )
         safe_x = jnp.clip(candidate_x, 0, self.width - 1)
         safe_y = jnp.clip(candidate_y, 0, self.height - 1)
-        candidate_walkable = self._walkable_mask[safe_y, safe_x]
+        candidate_walkable = walkable_mask[safe_y, safe_x]
         candidate_unoccupied = self._cell_unoccupied_by_other_agents(
             state, agent, safe_y, safe_x
         )
-        candidate_distances = self._distance_table[safe_y, safe_x, target_y, target_x]
+        candidate_distances = distances[safe_y, safe_x]
         scores = jnp.where(
             candidate_in_bounds & candidate_walkable & candidate_unoccupied,
             candidate_distances,
@@ -723,18 +700,12 @@ class OvercookedV3Macro(OvercookedV3):
         cell_y: chex.Array,
         cell_x: chex.Array,
     ) -> chex.Array:
+        """Return which candidate cells are not occupied by another agent."""
         occupied = (state.agents.pos.x[:, None] == cell_x[None, :]) & (
             state.agents.pos.y[:, None] == cell_y[None, :]
         )
         own_cell = (agent.pos.x == cell_x) & (agent.pos.y == cell_y)
         return ~jnp.any(occupied & ~own_cell[None, :], axis=0)
-
-    def _direction_from_delta(self, dx: chex.Array, dy: chex.Array) -> chex.Array:
-        return jnp.select(
-            [dx == 1, dx == -1, dy == 1, dy == -1],
-            [Direction.RIGHT, Direction.LEFT, Direction.DOWN, Direction.UP],
-            default=Direction.UP,
-        ).astype(jnp.int32)
 
     # ------------------------------------------------------------------
     # Object Masks and Completion Helpers
@@ -785,87 +756,6 @@ class OvercookedV3Macro(OvercookedV3):
         self, state: State, agent: Agent, static_object: int
     ) -> chex.Array:
         return state.grid[agent.pos.y, agent.pos.x, 0] == static_object
-
-    # ------------------------------------------------------------------
-    # Navigation Table Construction
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_navigation_tables(layout: Layout):
-        static = np.asarray(layout.static_objects)
-        height, width = static.shape
-        walkable = np.isin(
-            static,
-            [
-                StaticObject.EMPTY,
-                StaticObject.PLAYER_CONVEYOR,
-                StaticObject.PRESSURE_PLATE,
-                StaticObject.BARRIER,
-            ],
-        )
-
-        distance_table = np.full(
-            (height, width, height, width), INF_DISTANCE, dtype=np.int32
-        )
-        next_action_table = np.full(
-            (height, width, height, width),
-            Actions.stay,
-            dtype=np.int32,
-        )
-
-        moves = [
-            (0, -1, Actions.up),
-            (0, 1, Actions.down),
-            (1, 0, Actions.right),
-            (-1, 0, Actions.left),
-        ]
-
-        for dest_y in range(height):
-            for dest_x in range(width):
-                if not walkable[dest_y, dest_x]:
-                    continue
-
-                distances = np.full((height, width), INF_DISTANCE, dtype=np.int32)
-                distances[dest_y, dest_x] = 0
-                queue = deque([(dest_y, dest_x)])
-
-                while queue:
-                    y, x = queue.popleft()
-                    for dx, dy, _action in moves:
-                        ny = y - dy
-                        nx = x - dx
-                        if not (0 <= ny < height and 0 <= nx < width):
-                            continue
-                        if not walkable[ny, nx]:
-                            continue
-                        if distances[ny, nx] != INF_DISTANCE:
-                            continue
-                        distances[ny, nx] = distances[y, x] + 1
-                        queue.append((ny, nx))
-
-                for src_y in range(height):
-                    for src_x in range(width):
-                        distance_table[
-                            src_y, src_x, dest_y, dest_x
-                        ] = distances[src_y, src_x]
-                        if distances[src_y, src_x] == 0:
-                            next_action_table[
-                                src_y, src_x, dest_y, dest_x
-                            ] = Actions.stay
-                            continue
-                        best_distance = distances[src_y, src_x]
-                        best_action = Actions.stay
-                        for dx, dy, action in moves:
-                            ny = src_y + dy
-                            nx = src_x + dx
-                            if not (0 <= ny < height and 0 <= nx < width):
-                                continue
-                            if distances[ny, nx] < best_distance:
-                                best_distance = distances[ny, nx]
-                                best_action = action
-                        next_action_table[src_y, src_x, dest_y, dest_x] = best_action
-
-        return walkable, next_action_table, distance_table
 
     # ------------------------------------------------------------------
     # Spaces and Metadata
