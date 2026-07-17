@@ -42,7 +42,14 @@ def select_actions(variant, actor, params, obs, env):
 
     if variant != "replan":
         logits = actor.apply(params, actor_obs)
-        return jnp.argmax(jnp.where(action_mask, logits, -1e9), axis=-1)
+        proposed_actions = jnp.argmax(
+            jnp.where(action_mask, logits, -1e9), axis=-1
+        )
+        if variant == "boundary":
+            return jnp.where(
+                obs["macro_done"], proposed_actions, obs["current_macro"]
+            )
+        return proposed_actions
 
     macro_done = obs["macro_done"]
     current_macro = obs["current_macro"]
@@ -101,8 +108,10 @@ def main():
     params = load_params(args.run_dir / "final_actor.safetensors")
 
     key = jax.random.PRNGKey(args.seed)
-    obs, state = env.reset(key)
-    states = [state.env_state]
+    obs, log_state = env.reset(key)
+    state = log_state.env_state
+    rollout_env = env._env._env
+    states = [state]
     action_labels = [("wait", "wait")]
     returns = [0.0]
     total_return = 0.0
@@ -117,21 +126,25 @@ def main():
             agent: actions[index] for index, agent in enumerate(env.agents)
         }
         key, step_key = jax.random.split(key)
-        obs, state, reward, _, _ = env.step(step_key, state, env_actions)
+        raw_obs, state, reward, done, _ = rollout_env.step_env(
+            step_key, state, env_actions
+        )
+        obs = env._env._augment(raw_obs, state)
         total_return += float(
             np.mean([np.asarray(reward[agent]) for agent in env.agents])
         )
-        states.append(state.env_state)
+        states.append(state)
         action_labels.append(action_names)
         returns.append(total_return)
+        if bool(np.asarray(done["__all__"])):
+            break
 
     frame_indices = list(range(0, len(states), args.frame_skip))
     if frame_indices[-1] != len(states) - 1:
         frame_indices.append(len(states) - 1)
     selected_states = [states[index] for index in frame_indices]
     stacked_states = jax.tree.map(lambda *values: jnp.stack(values), *selected_states)
-    base_env = env._env._env
-    visualizer = OvercookedV3Visualizer(base_env, tile_size=args.tile_size)
+    visualizer = OvercookedV3Visualizer(rollout_env, tile_size=args.tile_size)
     rendered = jax.device_get(visualizer.render_sequence(stacked_states))
     frames = [
         add_header(
