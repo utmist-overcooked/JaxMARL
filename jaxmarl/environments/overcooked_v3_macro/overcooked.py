@@ -41,7 +41,7 @@ INF_DISTANCE = np.int32(1_000_000)
 
 
 class MacroActions(IntEnum):
-    """Available macro actions exposed to policies."""
+    """Available macro and one-step primitive actions exposed to policies."""
 
     wait = 0
     get_ingredient_0 = 1
@@ -56,6 +56,10 @@ class MacroActions(IntEnum):
     press_nearest_button = 10
     stand_on_nearest_pressure_plate = 11
     wait_for_nearest_pot = 12
+    up = 13
+    down = 14
+    left = 15
+    right = 16
 
 
 MACRO_ACTION_NAMES: Tuple[str, ...] = tuple(action.name for action in MacroActions)
@@ -483,6 +487,18 @@ class OvercookedV3Macro(OvercookedV3):
             navigation_action,
             Actions.stay,
         )
+        primitive_action = jnp.where(
+            macro_action == MacroActions.up, Actions.up, primitive_action
+        )
+        primitive_action = jnp.where(
+            macro_action == MacroActions.down, Actions.down, primitive_action
+        )
+        primitive_action = jnp.where(
+            macro_action == MacroActions.left, Actions.left, primitive_action
+        )
+        primitive_action = jnp.where(
+            macro_action == MacroActions.right, Actions.right, primitive_action
+        )
         macro_reachable = ~navigation_macro | has_path
         return primitive_action.astype(jnp.int32), macro_reachable
 
@@ -515,7 +531,10 @@ class OvercookedV3Macro(OvercookedV3):
         agent = self._agent_at(state, agent_idx)
         inventory = agent.inventory
 
-        done = macro_action == MacroActions.wait
+        primitive_move = (macro_action >= MacroActions.up) & (
+            macro_action <= MacroActions.right
+        )
+        done = (macro_action == MacroActions.wait) | primitive_move
         done = jnp.where(
             macro_action == MacroActions.get_ingredient_0,
             (inventory == DynamicObject.ingredient(0))
@@ -804,6 +823,13 @@ class OvercookedV3Macro(OvercookedV3):
             inventory_empty = inventory == DynamicObject.EMPTY
             mask = jnp.zeros((self.num_macro_actions,), dtype=jnp.bool_)
             mask = mask.at[MacroActions.wait].set(True)
+            for action in (
+                MacroActions.up,
+                MacroActions.down,
+                MacroActions.left,
+                MacroActions.right,
+            ):
+                mask = mask.at[action].set(True)
             for ingredient_idx, action in enumerate(
                 (
                     MacroActions.get_ingredient_0,

@@ -35,10 +35,7 @@ def test_macro_env_registration_and_action_space():
     assert env.num_actions == len(MacroActions)
     assert env.action_space("agent_0").n == len(MacroActions)
     assert env.action_space("agent_0").n > OvercookedV3().action_space("agent_0").n
-    assert "right" not in MACRO_ACTION_NAMES
-    assert "down" not in MACRO_ACTION_NAMES
-    assert "left" not in MACRO_ACTION_NAMES
-    assert "up" not in MACRO_ACTION_NAMES
+    assert MACRO_ACTION_NAMES[-4:] == ("up", "down", "left", "right")
     assert "interact" not in MACRO_ACTION_NAMES
 
 
@@ -59,6 +56,10 @@ def test_available_actions_mask_obviously_invalid_macros():
 
     empty_mask = env.get_avail_actions(state)["agent_0"]
     assert empty_mask[MacroActions.wait]
+    assert empty_mask[MacroActions.up]
+    assert empty_mask[MacroActions.down]
+    assert empty_mask[MacroActions.left]
+    assert empty_mask[MacroActions.right]
     assert empty_mask[MacroActions.get_ingredient_0]
     assert empty_mask[MacroActions.get_plate]
     assert not empty_mask[MacroActions.put_ingredient_in_nearest_pot]
@@ -93,6 +94,39 @@ def test_wait_macro_emits_primitive_stay():
     assert jnp.array_equal(macro_state.agents.dir, next_macro_state.agents.dir)
     assert info["primitive_action"]["agent_0"] == int(Actions.stay)
     assert next_macro_state.macro_action_done[0]
+
+
+def test_primitive_movement_actions_move_one_step_and_finish():
+    env = _barrier_macro_env(
+        [
+            "W0WW#",
+            "W   W",
+            "W A W",
+            "W   W",
+            "WWWWW",
+        ]
+    )
+    expected_actions = (
+        (MacroActions.up, Actions.up, 0, -1),
+        (MacroActions.down, Actions.down, 0, 1),
+        (MacroActions.left, Actions.left, -1, 0),
+        (MacroActions.right, Actions.right, 1, 0),
+    )
+
+    for macro_action, primitive_action, dx, dy in expected_actions:
+        key = jax.random.PRNGKey(0)
+        _, state = env.reset(key)
+        _, next_state, _, _, info = env.step_env(
+            key,
+            state,
+            {"agent_0": int(macro_action)},
+        )
+
+        assert info["primitive_action"]["agent_0"] == primitive_action
+        assert next_state.agents.pos.x[0] == state.agents.pos.x[0] + dx
+        assert next_state.agents.pos.y[0] == state.agents.pos.y[0] + dy
+        assert next_state.macro_action_done[0]
+        assert next_state.macro_step_count[0] == 0
 
 
 def test_get_ingredient_macro_persists_until_pickup():

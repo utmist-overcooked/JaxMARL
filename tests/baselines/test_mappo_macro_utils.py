@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -11,12 +12,26 @@ MAPPO_DIR = Path(__file__).parents[2] / "baselines" / "MAPPO"
 sys.path.insert(0, str(MAPPO_DIR))
 
 from mappo_macro_common import (  # noqa: E402
+    _initial_best_eval_return,
+    Actor,
     add_annealed_shaped_reward,
     build_env,
     calculate_smdp_gae,
     initialize_config,
     metadata_batch,
 )
+
+
+def test_resumed_run_restores_previous_best_eval_return(tmp_path):
+    (tmp_path / "best_eval.json").write_text('{"eval_return": 12.5}')
+
+    assert _initial_best_eval_return(tmp_path, "checkpoints/latest.json") == 12.5
+
+
+def test_fresh_run_does_not_reuse_previous_best_eval_return(tmp_path):
+    (tmp_path / "best_eval.json").write_text('{"eval_return": 12.5}')
+
+    assert _initial_best_eval_return(tmp_path, None) == -jnp.inf
 
 
 def test_shaped_reward_anneals_over_primitive_step_horizon():
@@ -74,6 +89,22 @@ def test_macro_world_state_contains_actor_and_centralized_features():
 
     assert actor_size > env._env.base_obs_size
     assert env.world_state_size() == actor_size * env.num_agents + env.num_agents
+
+
+def test_macro_actor_uses_expanded_environment_action_space():
+    env = build_env(
+        {
+            "ENV_NAME": "overcooked_v3_macro",
+            "ENV_KWARGS": {"layout": "cramped_room"},
+        }
+    )
+    actor = Actor(env.num_actions, hidden_size=16)
+    obs = jnp.zeros((1, env.observation_space(env.agents[0]).shape[0]))
+
+    logits = actor.apply(actor.init(jax.random.PRNGKey(0), obs), obs)
+
+    assert logits.shape == (1, env.num_actions)
+    assert env.num_actions == 17
 
 
 def test_config_rejects_a_silently_truncated_timestep_budget():

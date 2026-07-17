@@ -27,6 +27,16 @@ from jaxmarl.wrappers.baselines import JaxMARLWrapper, LogWrapper
 _RUN_CONTEXT = {}
 
 
+def _initial_best_eval_return(output_dir, resume_from):
+    """Restore the best evaluation threshold for a resumed run."""
+    if output_dir is None or not resume_from:
+        return -np.inf
+    best_eval_path = output_dir / "best_eval.json"
+    if not best_eval_path.is_file():
+        return -np.inf
+    return float(json.loads(best_eval_path.read_text())["eval_return"])
+
+
 class MacroWorldStateWrapper(JaxMARLWrapper):
     """Add macro context for actors and a global state for the MAPPO critic."""
 
@@ -738,7 +748,9 @@ def run_experiment(config: Dict, make_train: Callable, experiment_name: str):
             {
                 "wandb": wandb,
                 "output_dir": output_dir,
-                "best_eval_return": -np.inf,
+                "best_eval_return": _initial_best_eval_return(
+                    output_dir, config.get("RESUME_FROM")
+                ),
             }
         )
 
