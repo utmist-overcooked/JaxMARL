@@ -288,6 +288,26 @@ def test_macro_walkability_honors_pressed_pressure_plate_override():
     assert jnp.all(walkable[barrier_y, barrier_x][linked_barriers])
 
 
+def test_macro_walkability_tracks_moving_wall_positions_under_jit():
+    env = OvercookedV3Macro(layout="moving_wall_bounce_demo")
+    _, state = env.reset(jax.random.PRNGKey(0))
+    active_walls = state.moving_wall_active_mask
+    initial_positions = state.moving_wall_positions[active_walls]
+    initial_walkable = env._current_walkable_mask(state)
+
+    @jax.jit
+    def move_walls_and_get_walkability(current_state):
+        next_state = env._process_moving_walls(current_state)
+        return next_state, env._current_walkable_mask(next_state)
+
+    next_state, next_walkable = move_walls_and_get_walkability(state)
+    next_positions = next_state.moving_wall_positions[active_walls]
+
+    assert jnp.all(~initial_walkable[initial_positions[:, 0], initial_positions[:, 1]])
+    assert jnp.all(next_walkable[initial_positions[:, 0], initial_positions[:, 1]])
+    assert jnp.all(~next_walkable[next_positions[:, 0], next_positions[:, 1]])
+
+
 def test_committed_interface_ignores_replacement_while_macro_is_running():
     env = OvercookedV3Macro(layout="cramped_room", max_macro_steps=10)
     key = jax.random.PRNGKey(0)

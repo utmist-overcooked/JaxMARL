@@ -145,19 +145,6 @@ class OvercookedV3Macro(OvercookedV3):
         self.macro_action_names = MACRO_ACTION_NAMES
         self.num_macro_actions = len(MacroActions)
 
-        static = np.asarray(self.layout.static_objects)
-        self._walkable_mask = jnp.array(
-            np.isin(
-                static,
-                [
-                    StaticObject.EMPTY,
-                    StaticObject.PLAYER_CONVEYOR,
-                    StaticObject.PRESSURE_PLATE,
-                    StaticObject.BARRIER,
-                ],
-            )
-        )
-
         self._dir_to_action = jnp.array(
             [Actions.up, Actions.down, Actions.right, Actions.left],
             dtype=jnp.int32,
@@ -629,7 +616,15 @@ class OvercookedV3Macro(OvercookedV3):
         )
 
     def _current_walkable_mask(self, state: State) -> chex.Array:
-        """Return static walkability with currently blocking barriers removed."""
+        """Return walkability for the current grid and barrier state."""
+        static_layer = state.grid[:, :, 0]
+        walkable_mask = (
+            (static_layer == StaticObject.EMPTY)
+            | (static_layer == StaticObject.PLAYER_CONVEYOR)
+            | (static_layer == StaticObject.PRESSURE_PLATE)
+            | (static_layer == StaticObject.BARRIER)
+        )
+
         if self.enable_pressure_plates:
             agent_on_plate = (
                 state.pressure_plate_positions[:, 0, None]
@@ -658,7 +653,7 @@ class OvercookedV3Macro(OvercookedV3):
         ).at[
             state.barrier_positions[:, 0], state.barrier_positions[:, 1]
         ].add(blocked_barriers.astype(jnp.int32))
-        return self._walkable_mask & (blocked_cells == 0)
+        return walkable_mask & (blocked_cells == 0)
 
     def _distance_to_goals(
         self, walkable_mask: chex.Array, goal_mask: chex.Array
