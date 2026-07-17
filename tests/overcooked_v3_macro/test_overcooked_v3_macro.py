@@ -11,6 +11,7 @@ from jaxmarl.environments.overcooked_v3_macro import (
     MACRO_ACTION_NAMES,
     MacroActions,
     OvercookedV3Macro,
+    OvercookedV3MacroInterruptible,
 )
 
 
@@ -50,6 +51,32 @@ def test_reset_adds_macro_state_fields():
     assert hasattr(state, "macro_step_count")
     assert jnp.all(state.macro_action_done)
     assert jnp.all(state.current_macro_actions == MacroActions.wait)
+
+
+def test_available_actions_mask_obviously_invalid_macros():
+    env = OvercookedV3Macro(layout="cramped_room")
+    _, state = env.reset(jax.random.PRNGKey(0))
+
+    empty_mask = env.get_avail_actions(state)["agent_0"]
+    assert empty_mask[MacroActions.wait]
+    assert empty_mask[MacroActions.get_ingredient_0]
+    assert empty_mask[MacroActions.get_plate]
+    assert not empty_mask[MacroActions.put_ingredient_in_nearest_pot]
+    assert not empty_mask[MacroActions.deliver]
+    assert not empty_mask[MacroActions.drop_on_nearest_counter]
+    assert not empty_mask[MacroActions.press_nearest_button]
+
+    ingredient_state = state.replace(
+        agents=state.agents.replace(
+            inventory=state.agents.inventory.at[0].set(
+                DynamicObject.ingredient(0)
+            )
+        )
+    )
+    ingredient_mask = env.get_avail_actions(ingredient_state)["agent_0"]
+    assert not ingredient_mask[MacroActions.get_ingredient_0]
+    assert ingredient_mask[MacroActions.put_ingredient_in_nearest_pot]
+    assert ingredient_mask[MacroActions.drop_on_nearest_counter]
 
 
 def test_wait_macro_emits_primitive_stay():
@@ -259,3 +286,68 @@ def test_macro_walkability_honors_pressed_pressure_plate_override():
     barrier_x = state.barrier_positions[:, 1]
 
     assert jnp.all(walkable[barrier_y, barrier_x][linked_barriers])
+
+
+def test_committed_interface_ignores_replacement_while_macro_is_running():
+    env = OvercookedV3Macro(layout="cramped_room", max_macro_steps=10)
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+    first = {
+        "agent_0": int(MacroActions.get_ingredient_0),
+        "agent_1": int(MacroActions.wait),
+    }
+    _, state, _, _, _ = env.step_env(key, state, first)
+    assert not state.macro_action_done[0]
+
+    replacement = {
+        "agent_0": int(MacroActions.deliver),
+        "agent_1": int(MacroActions.wait),
+    }
+    _, state, _, _, info = env.step_env(key, state, replacement)
+
+    assert state.current_macro_actions[0] == MacroActions.get_ingredient_0
+    assert not info["macro_action_started"]["agent_0"]
+
+
+def test_interruptible_interface_replaces_running_macro():
+    env = OvercookedV3MacroInterruptible(
+        layout="cramped_room", max_macro_steps=10
+    )
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+    first = {
+        "agent_0": int(MacroActions.get_ingredient_0),
+        "agent_1": int(MacroActions.wait),
+    }
+    _, state, _, _, _ = env.step_env(key, state, first)
+    assert not state.macro_action_done[0]
+
+    replacement = {
+        "agent_0": int(MacroActions.deliver),
+        "agent_1": int(MacroActions.wait),
+    }
+    _, state, _, _, info = env.step_env(key, state, replacement)
+
+    assert state.current_macro_actions[0] == MacroActions.deliver
+    assert info["macro_action_started"]["agent_0"]
+
+
+def test_interruptible_interface_repeating_macro_continues_without_reset():
+    env = OvercookedV3MacroInterruptible(
+        layout="cramped_room", max_macro_steps=10
+    )
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+    actions = {
+        "agent_0": int(MacroActions.get_ingredient_0),
+        "agent_1": int(MacroActions.wait),
+    }
+    _, state, _, _, _ = env.step_env(key, state, actions)
+    first_count = state.macro_step_count[0]
+    _, state, _, _, info = env.step_env(key, state, actions)
+
+    assert not info["macro_action_started"]["agent_0"]
+    expected_count = jnp.where(
+        state.macro_action_done[0], 0, first_count + 1
+    )
+    assert state.macro_step_count[0] == expected_count

@@ -196,13 +196,36 @@ class OvercookedV3Macro(OvercookedV3):
             requested_macro_actions, 0, self.num_macro_actions - 1
         )
 
+        replace_macro = self._macro_replacement_mask(
+            state, requested_macro_actions
+        )
+        return self._step_with_macro_replacements(
+            key, state, requested_macro_actions, replace_macro
+        )
+
+    def _macro_replacement_mask(
+        self, state: State, requested_macro_actions: chex.Array
+    ) -> chex.Array:
+        """Select new macros only for agents whose current macro has ended."""
+        del requested_macro_actions
+        return state.macro_action_done
+
+    def _step_with_macro_replacements(
+        self,
+        key: chex.PRNGKey,
+        state: State,
+        requested_macro_actions: chex.Array,
+        replace_macro: chex.Array,
+    ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
+        """Execute one primitive step with an explicit per-agent replacement mask."""
+
         current_macro_actions = jnp.where(
-            state.macro_action_done,
+            replace_macro,
             requested_macro_actions,
             state.current_macro_actions,
         )
         macro_step_count = jnp.where(
-            state.macro_action_done, 0, state.macro_step_count
+            replace_macro, 0, state.macro_step_count
         )
 
         primitive_actions, macro_reachable = self._macro_to_primitive_actions(
@@ -241,6 +264,9 @@ class OvercookedV3Macro(OvercookedV3):
         }
         info["macro_action_done"] = {
             f"agent_{i}": macro_done[i] for i in range(self.num_agents)
+        }
+        info["macro_action_started"] = {
+            f"agent_{i}": replace_macro[i] for i in range(self.num_agents)
         }
         info["primitive_action"] = {
             f"agent_{i}": primitive_actions[i] for i in range(self.num_agents)
@@ -773,8 +799,84 @@ class OvercookedV3Macro(OvercookedV3):
         return spaces.Discrete(self.num_macro_actions, dtype=jnp.uint32)
 
     def get_avail_actions(self, state: State) -> Dict[str, chex.Array]:
-        del state
+        """Mask macros that cannot make progress from the current state."""
+        static_layer = state.grid[:, :, 0]
+        dynamic_layer = state.grid[:, :, 1]
+        counter_mask = self._counter_like_static_mask(static_layer)
+
+        def agent_mask(agent_idx):
+            inventory = state.agents.inventory[agent_idx]
+            inventory_empty = inventory == DynamicObject.EMPTY
+            mask = jnp.zeros((self.num_macro_actions,), dtype=jnp.bool_)
+            mask = mask.at[MacroActions.wait].set(True)
+            for ingredient_idx, action in enumerate(
+                (
+                    MacroActions.get_ingredient_0,
+                    MacroActions.get_ingredient_1,
+                    MacroActions.get_ingredient_2,
+                )
+            ):
+                mask = mask.at[action].set(
+                    inventory_empty
+                    & jnp.any(
+                        static_layer
+                        == StaticObject.ingredient_pile(ingredient_idx)
+                    )
+                )
+            mask = mask.at[MacroActions.get_plate].set(
+                inventory_empty & jnp.any(static_layer == StaticObject.PLATE_PILE)
+            )
+            mask = mask.at[MacroActions.put_ingredient_in_nearest_pot].set(
+                jnp.any(self._valid_pot_placement_mask(state, inventory))
+            )
+            mask = mask.at[MacroActions.get_soup_from_nearest_pot].set(
+                (inventory == DynamicObject.PLATE)
+                & jnp.any(self._ready_recipe_pot_mask(state))
+            )
+            mask = mask.at[MacroActions.deliver].set(
+                ((inventory & DynamicObject.COOKED) != 0)
+                & jnp.any(static_layer == StaticObject.GOAL)
+            )
+            mask = mask.at[MacroActions.drop_on_nearest_counter].set(
+                ~inventory_empty
+                & jnp.any(counter_mask & (dynamic_layer == DynamicObject.EMPTY))
+            )
+            mask = mask.at[MacroActions.pickup_from_nearest_counter].set(
+                inventory_empty
+                & jnp.any(counter_mask & (dynamic_layer != DynamicObject.EMPTY))
+            )
+            mask = mask.at[MacroActions.press_nearest_button].set(
+                jnp.any(state.button_active_mask)
+            )
+            mask = mask.at[MacroActions.stand_on_nearest_pressure_plate].set(
+                jnp.any(state.pressure_plate_active_mask)
+            )
+            mask = mask.at[MacroActions.wait_for_nearest_pot].set(
+                jnp.any(state.pot_cooking_timer > 0)
+            )
+            return mask.astype(jnp.uint8)
+
+        masks = jax.vmap(agent_mask)(jnp.arange(self.num_agents))
         return {
-            f"agent_{i}": jnp.ones((self.num_macro_actions,), dtype=jnp.uint8)
-            for i in range(self.num_agents)
+            agent: masks[index] for index, agent in enumerate(self.agents)
         }
+
+
+class OvercookedV3MacroInterruptible(OvercookedV3Macro):
+    """Macro interface where changing the requested macro interrupts execution.
+
+    Repeating the active macro means continue. Requesting a different macro
+    replaces it immediately. This fixed action interface supports both the
+    every-step and learned-replanning MAPPO baselines.
+    """
+
+    def _macro_replacement_mask(
+        self, state: State, requested_macro_actions: chex.Array
+    ) -> chex.Array:
+        return state.macro_action_done | (
+            requested_macro_actions != state.current_macro_actions
+        )
+
+    @property
+    def name(self) -> str:
+        return "Overcooked V3 Macro Interruptible"

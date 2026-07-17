@@ -5,7 +5,7 @@ from .overcooked import (
     MacroActions,
     ObservationType,
     OvercookedV3Macro,
+    OvercookedV3MacroInterruptible,
     State,
     overcooked_v3_layouts,
 )
-
