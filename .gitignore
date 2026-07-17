@@ -21,3 +21,4 @@ venv/
 .env
 .history/
 exports/
+slurm-*.out
