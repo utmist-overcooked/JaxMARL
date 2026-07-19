@@ -274,8 +274,10 @@ class TrafficJunctionGrid(MultiAgentEnv):
         else:
             self.eff_dims = (dim, dim)
 
-        # Vocab/Base (following reference exactly, using original dim)
-        dim_sum = dim + dim
+        # Vocab/Base sized from the effective grid so every road cell gets a
+        # unique ID below OUTSIDE_CLASS (easy expands the grid to dim+1, so
+        # using the original dim would make road IDs collide with OUTSIDE_CLASS)
+        dim_sum = self.eff_dims[0] + self.eff_dims[1]
         base_map = {"easy": dim_sum, "medium": 2 * dim_sum, "hard": 4 * dim_sum}
         self.BASE = base_map[difficulty]
         self.OUTSIDE_CLASS = self.BASE

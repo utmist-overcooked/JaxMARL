@@ -82,12 +82,13 @@ class CommNetDiscrete(nn.Module):
         hard_attn: Enable IC3Net talk/silent gating
         comm_mask_zero: Debug option to disable all communication
         share_weights: Share weights across communication passes
-    
+        encoder_layers: Number of encoder MLP layers
+
     Input:
         obs: (B, N, obs_dim)
         alive_mask: (N,) optional binary mask for alive agents
         comm_action: (N,) optional talk/silent actions (1=talk, 0=silent)
-    
+
     Output:
         logits: (B, N, action_dim) environment action logits
         values: (B, N) state values
@@ -101,20 +102,27 @@ class CommNetDiscrete(nn.Module):
     hard_attn: bool = False
     comm_mask_zero: bool = False
     share_weights: bool = False
-    
+    encoder_layers: int = 1
+
     def setup(self):
         # Create communication mask (no self-communication)
         if self.comm_mask_zero:
             self.comm_mask = jnp.zeros((self.num_agents, self.num_agents))
         else:
             self.comm_mask = jnp.ones((self.num_agents, self.num_agents)) - jnp.eye(self.num_agents)
-        
-        # Encoder
-        self.encoder = nn.Dense(
-            self.hidden_dim,
-            kernel_init=orthogonal(jnp.sqrt(2)),
-            bias_init=constant(0.0)
-        )
+
+        # Encoder: multi-layer MLP for high-dim observations
+        enc_layers = []
+        for i in range(self.encoder_layers):
+            # Use 'encoder' name for single layer (backward compat with saved checkpoints)
+            name = 'encoder' if self.encoder_layers == 1 else f'enc_{i}'
+            enc_layers.append(nn.Dense(
+                self.hidden_dim,
+                kernel_init=orthogonal(jnp.sqrt(2)),
+                bias_init=constant(0.0),
+                name=name
+            ))
+        self.enc_layers = enc_layers
         
         # Communication modules
         # Note: Flax doesn't support nn.ModuleList in the same way as PyTorch
@@ -222,7 +230,11 @@ class CommNetDiscrete(nn.Module):
         hdim = self.hidden_dim
         
         # Encode observations: (B, N, obs_dim) -> (B, N, H)
-        x = self.encoder(obs)
+        x = obs
+        for i, layer in enumerate(self.enc_layers):
+            x = layer(x)
+            if i < len(self.enc_layers) - 1:
+                x = nn.relu(x)
         x = nn.tanh(x)
         
         # Initial hidden state

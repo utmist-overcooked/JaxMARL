@@ -74,6 +74,8 @@ def run_episode(env, network, params, config, has_talk, rng):
     hidden_dim = config.get("HIDDEN_DIM", 64)
     max_steps = config.get("MAX_STEPS", 50)
     deterministic = config.get("DETERMINISTIC", True)
+    # IndependentLSTM (ic/iric) returns 3 values; CommNetLSTM returns 4
+    is_independent = config.get("BASELINE", "ic3net") in ("ic", "iric")
 
     rng, _rng = jax.random.split(rng)
     obs, env_state = env.reset(_rng)
@@ -93,7 +95,11 @@ def run_episode(env, network, params, config, has_talk, rng):
 
         # Forward pass
         if recurrent:
-            if has_talk:
+            if is_independent:
+                logits, value, hstate = network.apply(
+                    params, obs_batch, carry=hstate)
+                talk_logits = None
+            elif has_talk:
                 logits, value, talk_logits, hstate = network.apply(
                     params, obs_batch, carry=hstate, comm_action=comm_action)
             else:
@@ -104,8 +110,12 @@ def run_episode(env, network, params, config, has_talk, rng):
             if has_talk:
                 logits, value, talk_logits = network.apply(
                     params, obs_batch, comm_action=comm_action)
-            else:
+            elif is_independent:
                 logits, value = network.apply(params, obs_batch)
+                talk_logits = None
+            else:
+                # CommNetDiscrete without hard attention returns talk_logits=None
+                logits, value, _ = network.apply(params, obs_batch)
                 talk_logits = None
 
         # Action selection: deterministic (argmax) or stochastic (sample)

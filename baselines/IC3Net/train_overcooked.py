@@ -122,32 +122,25 @@ def train_overcooked():
             # Stack agents: (B, N, obs_dim)
             obs_batch = jnp.stack(obs_list, axis=1)
             
-            # Forward pass with communication
+            # Forward pass with communication (rollout only; loss re-evaluates)
+            comm_in = comm_action
             logits, value, talk_logits = network.apply(
-                train_state.params, obs_batch, comm_action=comm_action
+                train_state.params, obs_batch, comm_action=comm_in
             )
-            
+
             # Sample actions
             rng, _rng = jax.random.split(rng)
             action_dist = distrax.Categorical(logits=logits)
             action = action_dist.sample(seed=_rng)
-            log_prob = action_dist.log_prob(action)
-            
+
             # Sample talk actions
             rng, _rng = jax.random.split(rng)
             talk_dist = distrax.Categorical(logits=talk_logits)
             action_talk = talk_dist.sample(seed=_rng)
-            log_prob_talk = talk_dist.log_prob(action_talk)
-            
-            # Combine log probs
-            log_prob = log_prob + log_prob_talk
-            
-            # Add entropy bonus
-            entropy = action_dist.entropy() + talk_dist.entropy()
-            
+
             # Update comm_action for next step
             comm_action = action_talk
-            
+
             # Step environment
             action_dict = {a: action[:, i] for i, a in enumerate(env.agents)}
             rng, _rng = jax.random.split(rng)
@@ -155,18 +148,19 @@ def train_overcooked():
             obsv, env_state, reward, done, info = jax.vmap(env.step)(
                 rng_step, env_state, action_dict
             )
-            
+
             # Stack rewards
             reward_batch = jnp.stack([reward[a] for a in env.agents], axis=1)
-            
-            return (train_state, env_state, obsv, comm_action, rng), (value, reward_batch, log_prob, entropy)
+
+            return (train_state, env_state, obsv, comm_action, rng), (
+                obs_batch, comm_in, action, action_talk, value, reward_batch)
         
         # Initialize comm (all agents talk)
         init_comm = jnp.ones((config["NUM_ENVS"], num_agents), dtype=jnp.int32)
         
         # Collect rollout
         init_carry = (train_state, env_state, obs, init_comm, rng)
-        final_carry, (values, rewards, log_probs, entropies) = jax.lax.scan(
+        final_carry, (obs_seq, comm_seq, actions, talk_actions, values, rewards) = jax.lax.scan(
             env_step, init_carry, None, length=config["NUM_STEPS"]
         )
         
@@ -204,18 +198,35 @@ def train_overcooked():
         advantages = returns - values
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
-        # Loss function
+        # Loss function: re-evaluate the network on the stored rollout so
+        # gradients actually flow through `params` (rollout outputs above were
+        # computed with the pre-update params and carry no dependency on the
+        # candidate params being differentiated)
         def loss_fn(params):
-            policy_loss = -jnp.mean(log_probs * advantages)
-            value_loss = jnp.mean((values - returns) ** 2)
+            def eval_step(obs_t, comm_t, action_t, talk_t):
+                logits, value, talk_logits = network.apply(
+                    params, obs_t, comm_action=comm_t
+                )
+                action_dist = distrax.Categorical(logits=logits)
+                talk_dist = distrax.Categorical(logits=talk_logits)
+                log_prob = action_dist.log_prob(action_t) + talk_dist.log_prob(talk_t)
+                entropy = action_dist.entropy() + talk_dist.entropy()
+                return log_prob, value, entropy
+
+            log_probs, new_values, entropies = jax.vmap(eval_step)(
+                obs_seq, comm_seq, actions, talk_actions
+            )
+
+            policy_loss = -jnp.mean(log_probs * jax.lax.stop_gradient(advantages))
+            value_loss = jnp.mean((new_values - jax.lax.stop_gradient(returns)) ** 2)
             entropy_loss = -jnp.mean(entropies)
-            
+
             loss = (
-                policy_loss 
+                policy_loss
                 + config["VALUE_COEFF"] * value_loss
                 + config["ENTROPY_COEFF"] * entropy_loss
             )
-            
+
             return loss, {
                 "loss": loss,
                 "policy_loss": policy_loss,

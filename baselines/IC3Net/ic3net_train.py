@@ -164,8 +164,12 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
                 if has_talk:
                     logits, _, talk_logits = network.apply(
                         stopped_params, obs_batch, comm_action=comm_action)
-                else:
+                elif is_independent:
                     logits, _ = network.apply(stopped_params, obs_batch)
+                    talk_logits = None
+                else:
+                    # CommNetDiscrete without hard attention returns talk_logits=None
+                    logits, _, _ = network.apply(stopped_params, obs_batch)
                     talk_logits = None
 
             # Sample environment actions
@@ -286,8 +290,11 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
                     if has_talk:
                         logits, value, talk_logits = network.apply(
                             params, transition_t.obs, comm_action=transition_t.talk_action)
-                    else:
+                    elif is_independent:
                         logits, value = network.apply(params, transition_t.obs)
+                        talk_logits = None
+                    else:
+                        logits, value, _ = network.apply(params, transition_t.obs)
                         talk_logits = None
                     action_dist = distrax.Categorical(logits=logits)
                     log_prob = action_dist.log_prob(transition_t.action)
@@ -304,8 +311,10 @@ def make_reinforce_step(config, env, network, has_talk, num_agents, obs_dim):
                 if has_talk:
                     _, last_val, _ = network.apply(
                         params, last_obs_batch, comm_action=comm_action)
-                else:
+                elif is_independent:
                     _, last_val = network.apply(params, last_obs_batch)
+                else:
+                    _, last_val, _ = network.apply(params, last_obs_batch)
 
             # Discounted returns
             def _compute_returns(next_value, transition_t):

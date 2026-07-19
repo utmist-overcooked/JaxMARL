@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+"""Render a trained IPPO Overcooked-V3 checkpoint as an animated GIF.
+
+Loads a msgpack checkpoint saved by baselines/IPPO/ippo_rnn_overcooked_v3.py,
+rolls out the policy on a chosen layout, and writes the episode frames to a GIF.
+Because the IPPO network definition has changed over time, this script inspects
+the parameter tree to detect which of three checkpoint formats it was saved
+with, and instantiates a matching network:
+
+- ActorCriticRNN (current):    auto-named layers (Dense_0, CNN_0, ...)
+- ActorCriticRNNCompat:        explicitly-named GRU weights (gru_Wi_z, ...)
+- ActorCriticRNNLegacy:        named 'cnn' / 'gru_cell' submodules
+
+Usage:
+    python scripts/generate_ippo_v3_gif.py \
+        --checkpoint path/to/model.msgpack \
+        --layout cramped_room --output out.gif --frames 240
+"""
 import argparse
 from pathlib import Path
 import os
@@ -21,6 +38,15 @@ from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 
 
 class ActorCriticRNNCompat(nn.Module):
+    """IPPO actor-critic matching checkpoints with explicitly-named GRU weights.
+
+    Re-implements the GRU cell by hand so parameter names line up with
+    checkpoints that stored individual gate matrices (gru_Wi_z, gru_Wh_z, ...)
+    instead of a single nn.GRUCell submodule.
+
+    Call: (hidden, (obs, dones)) -> (final_hidden, action_dist, value)
+      obs: (T, num_actors, H, W, C), dones: (T, num_actors)
+    """
     action_dim: int
     config: dict
 
@@ -98,6 +124,13 @@ class ActorCriticRNNCompat(nn.Module):
 
 
 class ActorCriticRNNLegacy(nn.Module):
+    """IPPO actor-critic matching older checkpoints with named submodules.
+
+    Uses a standard nn.GRUCell under the module names ('cnn', 'ln', 'gru_cell')
+    that legacy training runs saved their parameters with.
+
+    Call signature is identical to ActorCriticRNNCompat.
+    """
     action_dim: int
     config: dict
 
@@ -163,6 +196,24 @@ def run_episode(
     target_frames: int | None = None,
     sample_actions: bool = True,
 ):
+    """Roll out a checkpoint on `layout` and save the frames as a GIF.
+
+    Auto-detects the checkpoint format (see module docstring), infers hidden
+    sizes from the parameter shapes, and keeps stepping (resetting the env at
+    episode boundaries) until `target_frames` states have been collected.
+
+    Args:
+        checkpoint_path: msgpack file with the trained parameters
+        layout: overcooked_v3 layout name
+        output_gif: where to write the GIF (parent dirs are created)
+        max_steps: env episode cap
+        seed: PRNG seed for reset/action sampling
+        target_frames: total frames to render (defaults to max_steps + 1)
+        sample_actions: sample from the policy if True, else greedy argmax
+
+    Returns:
+        (num_frames, output_gif)
+    """
     env = jaxmarl.make("overcooked_v3", layout=layout, max_steps=max_steps)
 
     config = {
@@ -172,6 +223,8 @@ def run_episode(
         "ACTIVATION": "relu",
     }
 
+    # Unwrap the parameter tree: checkpoints may be saved as raw params or
+    # nested one or two levels deep under a "params" key (e.g. a TrainState)
     raw = checkpoint_path.read_bytes()
     restored = serialization.msgpack_restore(raw)
     params = restored["params"] if isinstance(restored, dict) and "params" in restored else restored
@@ -179,6 +232,8 @@ def run_episode(
         params = params["params"]
     params_for_apply = dict(params)
 
+    # Detect the checkpoint format from its parameter names and build the
+    # matching network, inferring layer sizes from the stored kernel shapes
     is_legacy = "cnn" in params_for_apply and "gru_cell" in params_for_apply
     is_dense_named = "Dense_0" in params_for_apply and "actor_fc" not in params_for_apply
     if is_legacy:
@@ -194,6 +249,8 @@ def run_episode(
         network = ActorCriticRNN(env.action_space(env.agents[0]).n, config=config)
     else:
         network = ActorCriticRNNCompat(env.action_space(env.agents[0]).n, config=config)
+        # Some checkpoints nested the CNN params one level down; flatten them
+        # so they line up with the Compat module's expected names
         if "CNN_0" in params_for_apply and "Dense_0" not in params_for_apply:
             params_for_apply.update(params_for_apply["CNN_0"])
 
@@ -210,6 +267,8 @@ def run_episode(
     state_seq = [state]
     desired_frames = target_frames if target_frames is not None else (max_steps + 1)
 
+    # Step the policy until enough frames are collected, resetting the env
+    # (and the GRU hidden state) whenever an episode ends
     while len(state_seq) < desired_frames:
         obs_batch = jnp.stack([obs[a] for a in env.agents]).reshape(
             num_agents, *env.observation_space(env.agents[0]).shape
@@ -245,7 +304,8 @@ def run_episode(
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Render an IPPO Overcooked-V3 checkpoint rollout as a GIF")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--layout", type=str, default="cramped_room")
     parser.add_argument("--output", type=str, default="outputs/ippo_v3_best_run_inference.gif")
