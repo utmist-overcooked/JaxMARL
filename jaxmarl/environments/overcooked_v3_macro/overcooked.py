@@ -145,7 +145,6 @@ class OvercookedV3Macro(OvercookedV3):
             **kwargs,
         )
         self.max_macro_steps = max_macro_steps
-        self.macro_action_set = jnp.array(list(MacroActions), dtype=jnp.int32)
         self.macro_action_names = MACRO_ACTION_NAMES
         self.num_macro_actions = len(MacroActions)
 
@@ -263,7 +262,13 @@ class OvercookedV3Macro(OvercookedV3):
             f"agent_{i}": primitive_actions[i] for i in range(self.num_agents)
         }
 
-        return obs, next_state, rewards, dones, info
+        return (
+            lax.stop_gradient(obs),
+            lax.stop_gradient(next_state),
+            rewards,
+            dones,
+            info,
+        )
 
     def _add_macro_fields(self, state: OvercookedV3State) -> State:
         return State(
