@@ -16,10 +16,11 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_MOVING_WALLS,
     MAX_BUTTONS,
     MAX_BARRIERS,
+    MAX_PRESSURE_PLATES,
     MAX_BUTTON_TARGETS,
 )
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 from dataclasses import dataclass, field
 import itertools
 
@@ -205,6 +206,112 @@ X     W
 WW1W0WW
 """
 
+# List of All Pressure Plate & Button Levels:
+
+# pressure_plate_demo, pressure_gated_conveyor_access, pressure_gated_circuit, pressure_gated_zones, twin_movement
+# button_triple_gate, button_gated_conveyor_access, button_gated_circuit, button_gated_zones
+
+# Original Pressure Plate Levels
+pressure_plate_demo = """
+WWWWWWW
+B #_AWW
+WWWW WW
+P #_  X
+WWWW WW
+0 #_AWW
+WWWWWWW
+"""
+
+pressure_gated_conveyor_access = """
+WWWWWWBWW
+WA  #   W
+W  _W1v0W
+WX  WWvWW
+W  _WWvWW
+WA  #  PW
+WWWWWWRWW
+"""
+
+pressure_gated_circuit = """
+WWWWWWWWW
+W   #   W
+W PWWW0 W
+W W _ W W
+W#W_A_W#W
+W W _ W W
+W XWWWB W
+W   #  AW
+WWWWWWRWW
+"""
+
+pressure_gated_zones = """
+WWWWWWW0W
+WP  #   1
+W _ # _ W
+W   #   W
+W###W###W
+W   #   W
+W _ # _AW
+WB  # AXW
+WWWWWWWWW
+"""
+
+twin_movement = """
+WWWWWWWWWWPWWWW
+WWWWWWWWWW#WWWW
+WWW_WWWW#   #WW
+WW___WWW W#W XW
+W__A__B# #A# #0
+WW___WWW W#W XW
+WWW_WWWW#   #WW
+WWWWWWWWWW#WWWW
+WWWWWWWWWW1WWWW
+"""
+
+# Button Adapted Versions
+button_triple_gate = """
+WWW!WWW
+B # AWW
+WWW! WW
+P #   X
+WWW! WW
+0 # AWW
+WWWWWWW
+"""
+
+button_gated_conveyor_access = """
+WWWWWWBWW
+WA  #   W
+W  !W1v0W
+WX  WWvWW
+W  !WWvWW
+WA  #  PW
+WWWWWWRWW
+"""
+
+button_gated_circuit = """
+WWWWWWWWW
+W   #   W
+W PWWW0 W
+W W ! W W
+W#W!A!W#W
+W W ! W W
+W XWWWB W
+W   #  AW
+WWWWWWRWW
+"""
+
+button_gated_zones = """
+WWWWWWW0W
+WP  #   1
+W ! # ! W
+W   #   W
+W###W###W
+W   #   W
+W ! # !AW
+WB  # AXW
+WWWWWWWWW
+"""
 
 # Moving wall demo - wall moves down, button reverses its direction
 moving_wall_demo = """
@@ -224,7 +331,7 @@ W  e !   W
 WWWWBWWWWW
 """
 
-# Barrier demo - togglable barriers that block all directions
+# Barrier demo - toggle barriers that block all directions
 barrier_demo = """
 WWWPWWW
 0A #  X
@@ -241,6 +348,16 @@ W ! ! W
 W  # AW
 WWWBWWW
 """
+
+# Mixed button demo - one button controls a moving wall, the other controls a barrier
+moving_wall_barrier_button_demo = """
+WWWWWWWW
+W0A ! sW
+W P #  W
+W B XA!W
+WWWWWWWW
+"""
+
 
 
 @dataclass
@@ -272,6 +389,9 @@ class Layout:
     button_info: List[Tuple[int, int, Tuple[int, ...], int]] = field(
         default_factory=list
     )
+
+    # Pressure Plates: list of (y, x, target_barrier_indices, action_type) tuples
+    pressure_plate_info: List[Tuple[int, int, Tuple[int, ...], int]] = field(default_factory=list)
 
     # Barriers: list of (y, x, active) tuples
     barrier_info: List[Tuple[int, int, bool]] = field(default_factory=list)
@@ -308,6 +428,7 @@ class Layout:
             StaticObject.PLATE_PILE: 'B',
             StaticObject.POT: 'P',
             StaticObject.RECIPE_INDICATOR: 'R',
+            StaticObject.PRESSURE_PLATE: '_',
         }
 
         item_conveyor_symbols = {
@@ -460,6 +581,11 @@ class Layout:
                 f"Too many barriers ({len(self.barrier_info)} > {MAX_BARRIERS})"
             )
 
+        if len(self.pressure_plate_info) > MAX_PRESSURE_PLATES:
+            errors.append(
+                f"Too many pressure plates ({len(self.pressure_plate_info)} > {MAX_PRESSURE_PLATES})"
+            )
+
         moving_wall_actions = {
             ButtonAction.TOGGLE_PAUSE,
             ButtonAction.TOGGLE_DIRECTION,
@@ -553,6 +679,63 @@ class Layout:
                     f"Barrier {idx} at {(y, x)} is not encoded as a barrier tile"
                 )
 
+        for idx, (y, x, target_idxs, action_type) in enumerate(self.pressure_plate_info):
+            if not _in_bounds(y, x):
+                errors.append(
+                    f"Pressure plate {idx} position {(y, x)} is outside layout bounds"
+                )
+                continue
+            if self.static_objects[y, x] != StaticObject.PRESSURE_PLATE:
+                errors.append(
+                    f"Pressure plate {idx} at {(y, x)} is not encoded as a pressure plate tile"
+                )
+
+            try:
+                action = ButtonAction(action_type)
+            except (TypeError, ValueError):
+                errors.append(
+                    f"Pressure plate {idx} has invalid action type {action_type!r}"
+                )
+                continue
+
+            if action not in barrier_actions:
+                errors.append(
+                    f"Pressure plate {idx} action {action.name} is not supported; "
+                    "pressure plates can only use barrier actions"
+                )
+                continue
+
+            if isinstance(target_idxs, list):
+                target_idxs = tuple(target_idxs)
+            elif not isinstance(target_idxs, tuple):
+                target_idxs = (target_idxs,)
+
+            if len(target_idxs) == 0:
+                errors.append(f"Pressure plate {idx} must target at least one barrier")
+                continue
+
+            if len(target_idxs) > MAX_BARRIERS:
+                errors.append(
+                    f"Pressure plate {idx} targets {len(target_idxs)} barriers, "
+                    f"but at most {MAX_BARRIERS} are supported"
+                )
+                continue
+
+            for target_idx in target_idxs:
+                try:
+                    target_idx = int(target_idx)
+                except (TypeError, ValueError):
+                    errors.append(
+                        f"Pressure plate {idx} target index {target_idx!r} must be an integer"
+                    )
+                    continue
+
+                if target_idx < 0 or target_idx >= len(self.barrier_info):
+                    errors.append(
+                        f"Pressure plate {idx} targets barrier {target_idx}, but only "
+                        f"{len(self.barrier_info)} barriers exist"
+                    )
+
         if self.possible_recipes is None:
             if not info['has_recipe_indicator']:
                 errors.append("Layout has no recipe indicator and no possible_recipes specified")
@@ -588,13 +771,18 @@ class Layout:
 
     @staticmethod
     def _is_agent_walkable_tile(obj) -> bool:
-        return obj in (StaticObject.EMPTY, StaticObject.PLAYER_CONVEYOR)
+        return obj in (
+            StaticObject.EMPTY,
+            StaticObject.PLAYER_CONVEYOR,
+            StaticObject.PRESSURE_PLATE,
+        )
 
     @staticmethod
     def _is_interaction_access_tile(obj) -> bool:
         return obj in (
             StaticObject.EMPTY,
             StaticObject.PLAYER_CONVEYOR,
+            StaticObject.PRESSURE_PLATE,
             StaticObject.BARRIER,
         )
 
@@ -791,6 +979,7 @@ class Layout:
         moving_wall_bounce=None,
         button_config=None,
         barrier_config=None,
+        pressure_plate_config=None,
         strict_rectangular=True
     ):
         """Parse a string representation of the layout.
@@ -826,6 +1015,9 @@ class Layout:
             Buttons (interact to trigger linked wall action):
             !: button (linked to wall by button_config)
 
+            Pressure Plate (triggers when an agent overlaps):
+            _: pressure plate (linked to barriers by pressure_plate_config)
+
             Barriers (togglable blocking tiles):
             #: barrier (blocks all movement when active)
 
@@ -844,6 +1036,11 @@ class Layout:
                 Default: all (0, ButtonAction.TOGGLE_DIRECTION).
             barrier_config: List of bools per barrier. Parse order is row-major:
                 top-to-bottom, left-to-right. Default: all False.
+            pressure_plate_config: List of (targets, action_type) per pressure
+                plate (by parse order). targets can be either a single barrier
+                index (int) or a tuple/list of barrier indices to control.
+                Default: all pressure plates target barrier 0 with
+                ButtonAction.TOGGLE_BARRIER.
 
         Legacy:
             O: onion pile - will be interpreted as ingredient 0
@@ -870,6 +1067,8 @@ class Layout:
             "B": StaticObject.PLATE_PILE,
             "P": StaticObject.POT,
             "R": StaticObject.RECIPE_INDICATOR,
+            "#": StaticObject.BARRIER,
+            "_": StaticObject.PRESSURE_PLATE,
         }
 
         # Add ingredient piles 0-9
@@ -912,6 +1111,7 @@ class Layout:
         moving_wall_positions = []  # (y, x, direction) before bounce applied
         button_positions = []       # (y, x)
         barrier_positions = []      # (y, x)
+        pressure_plate_positions = []   # (y, x)
 
         num_ingredients = 0
         includes_recipe_indicator = False
@@ -944,6 +1144,9 @@ class Layout:
                 elif char == "!":
                     static_objects[r, c] = StaticObject.BUTTON
                     button_positions.append((r, c))
+                elif char == "_":
+                    static_objects[r, c] = StaticObject.PRESSURE_PLATE
+                    pressure_plate_positions.append((r, c))
                 elif char == "#":
                     static_objects[r, c] = StaticObject.BARRIER
                     barrier_positions.append((r, c))
@@ -1023,6 +1226,39 @@ class Layout:
             for (y, x), active in zip(barrier_positions, barrier_config)
         ]
 
+        # Build pressure plate info with config.
+        # pressure_plate_config entries support either:
+        # - (barrier_idx, action_type)
+        # - ((barrier_idx_1, barrier_idx_2, ...), action_type)
+        if pressure_plate_config is None:
+            pressure_plate_config = [(0, ButtonAction.TOGGLE_BARRIER)] * len(pressure_plate_positions)
+        if len(pressure_plate_config) != len(pressure_plate_positions):
+            raise ValueError(
+                f"pressure_plate_config length ({len(pressure_plate_config)}) must match "
+                f"number of pressure plates ({len(pressure_plate_positions)})"
+            )
+        pressure_plate_info = []
+        for (y, x), (barrier_targets, action_type) in zip(pressure_plate_positions, pressure_plate_config):
+            if isinstance(barrier_targets, int):
+                normalized_targets = (barrier_targets,)
+            elif isinstance(barrier_targets, (tuple, list)):
+                if len(barrier_targets) == 0:
+                    raise ValueError("pressure_plate_config barrier target tuple/list cannot be empty")
+                normalized_targets = tuple(int(idx) for idx in barrier_targets)
+            else:
+                raise ValueError(
+                    "pressure_plate_config entries must use an int or tuple/list of ints as the first value"
+                )
+
+            for barrier_idx in normalized_targets:
+                if barrier_idx < 0 or barrier_idx >= len(barrier_positions):
+                    raise ValueError(
+                        f"pressure plate target barrier index {barrier_idx} is out of range for "
+                        f"{len(barrier_positions)} barriers"
+                    )
+
+            pressure_plate_info.append((y, x, normalized_targets, action_type))
+
         layout = Layout(
             agent_positions=agent_positions,
             static_objects=static_objects,
@@ -1032,6 +1268,7 @@ class Layout:
             player_conveyor_info=player_conveyor_info,
             moving_wall_info=moving_wall_info,
             button_info=button_info,
+            pressure_plate_info=pressure_plate_info,
             barrier_info=barrier_info,
         )
 
@@ -1040,6 +1277,7 @@ class Layout:
 
 # Pre-defined layouts
 overcooked_v3_layouts = {
+
     # Original Overcooked-AI layouts
     "cramped_room": Layout.from_string(
         cramped_room, possible_recipes=[[0, 0, 0]], swap_agents=True
@@ -1088,16 +1326,163 @@ overcooked_v3_layouts = {
     "barrier_demo": Layout.from_string(
         barrier_demo,
         possible_recipes=[[0, 0, 0]],
-        barrier_config=[False, True],  # First barrier off, second barrier on initially
+        barrier_config=[False, True],
     ),
 
     # Timed barrier demo with button
     "timed_barrier_demo": Layout.from_string(
         timed_barrier_demo,
         possible_recipes=[[0, 0, 0]],
-        barrier_config=[True, True],  # Barrier starts active
+        barrier_config=[True, True],
         button_config=[(0, ButtonAction.TIMED_BARRIER), (1, ButtonAction.TIMED_BARRIER)],  # Button controls barrier 0 with timed toggle
     ),
+
+    # Original Pressure Plate Layouts
+    "pressure_plate_demo": Layout.from_string(
+        pressure_plate_demo,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,
+            True,
+            True,
+        ],
+    ),
+
+    "pressure_gated_conveyor_access": Layout.from_string(
+        pressure_gated_conveyor_access,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,
+            True,
+        ],
+    ),
+
+    "pressure_gated_circuit": Layout.from_string(
+        pressure_gated_circuit,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,
+            True,
+            True,
+            True,
+        ],
+    ),
+
+    "pressure_gated_zones": Layout.from_string(
+        pressure_gated_zones,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            ((0, 1, 2, 3, 4, 5), ButtonAction.TOGGLE_BARRIER),
+            ((0, 1, 2, 6, 7, 8), ButtonAction.TOGGLE_BARRIER),
+            ((3, 4, 5, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+            ((6, 7, 8, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[True] * 12,
+    ),
+
+    "twin_movement": Layout.from_string(
+        twin_movement,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (4, ButtonAction.TOGGLE_BARRIER),
+            (5, ButtonAction.TOGGLE_BARRIER),
+            (6, ButtonAction.TOGGLE_BARRIER),
+            (7, ButtonAction.TOGGLE_BARRIER),
+            (9, ButtonAction.TOGGLE_BARRIER),
+            (8, ButtonAction.TOGGLE_BARRIER),
+            (10, ButtonAction.TOGGLE_BARRIER),
+            (11, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[True] * 12,
+    ),
+
+    # Button-Adapted Layouts
+    "button_triple_gate": Layout.from_string(
+        button_triple_gate,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,
+            True,
+            True,
+        ],
+    ),
+
+    "button_gated_conveyor_access": Layout.from_string(
+        button_gated_conveyor_access,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,
+            True,
+        ],
+    ),
+
+    "button_gated_circuit": Layout.from_string(
+        button_gated_circuit,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[
+            True,
+            True,
+            True,
+            True,
+        ],
+    ),
+
+    "button_gated_zones": Layout.from_string(
+        button_gated_zones,
+        possible_recipes=[[0, 0, 0]],
+        button_config=[
+            ((0, 1, 2, 3, 4, 5), ButtonAction.TOGGLE_BARRIER),
+            ((0, 1, 2, 6, 7, 8), ButtonAction.TOGGLE_BARRIER),
+            ((3, 4, 5, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+            ((6, 7, 8, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+        ],
+        barrier_config=[True] * 12,
+    ),
+
+    "moving_wall_barrier_button_demo": Layout.from_string(
+        moving_wall_barrier_button_demo,
+        possible_recipes=[[0, 0, 0]],
+        barrier_config=[True],
+        button_config=[
+            ((0,), ButtonAction.TOGGLE_DIRECTION),
+            ((0,), ButtonAction.TOGGLE_BARRIER),
+        ],
+    ),
+
     "middle_conveyor": Layout.from_string(
         middle_conveyor, possible_recipes=[[0, 0, 0]],
     ),
