@@ -1,5 +1,6 @@
 import os
 import copy
+import inspect
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -27,6 +28,30 @@ from jaxmarl.wrappers.baselines import (
     LogWrapper,
     CTRolloutManager,
 )
+
+
+def _ensure_flax_scan_jax_compatibility():
+    api_util = jax.api_util
+    linear_util = jax.extend.linear_util
+
+    if not hasattr(api_util, "debug_info"):
+        def _debug_info(*args, **kwargs):
+            return None
+
+        api_util.debug_info = _debug_info
+
+    wrap_init_sig = inspect.signature(linear_util.wrap_init)
+    if "debug_info" not in wrap_init_sig.parameters:
+        original_wrap_init = linear_util.wrap_init
+
+        def _wrap_init_compat(f, params=None, debug_info=None):
+            return original_wrap_init(f, params=params)
+
+        linear_util.wrap_init = _wrap_init_compat
+
+
+_ensure_flax_scan_jax_compatibility()
+
 
 class ScannedRNN(nn.Module):
 
@@ -114,6 +139,12 @@ def make_train(config, env):
         transition_steps=config["EPS_DECAY"] * config["NUM_UPDATES"],
     )
 
+    rew_shaping_anneal = optax.linear_schedule(
+        init_value=1.0,
+        end_value=config.get("REW_SHAPING_MIN_COEFF", 0.0),
+        transition_steps=config.get("REW_SHAPING_HORIZON", config["TOTAL_TIMESTEPS"]),
+    )
+
     def get_greedy_actions(q_vals, valid_actions):
         unavail_actions = 1 - valid_actions
         q_vals = q_vals - (unavail_actions * 1e10)
@@ -152,6 +183,24 @@ def make_train(config, env):
 
     def unbatchify(x: jnp.ndarray):
         return {agent: x[i] for i, agent in enumerate(env.agents)}
+
+    def apply_reward_config(rewards, infos, timesteps):
+        if "shaped_reward" in infos:
+            shaped_reward = infos.pop("shaped_reward")
+            shaped_reward["__all__"] = batchify(shaped_reward).sum(axis=0)
+            anneal_factor = rew_shaping_anneal(timesteps)
+            rewards = jax.tree.map(
+                lambda r, s: r
+                + config.get("SHAPED_REWARD_COEFF", 0.0) * s * anneal_factor,
+                rewards,
+                shaped_reward,
+            )
+            infos["shaped_reward"] = shaped_reward["__all__"]
+            infos["anneal_factor"] = jnp.full_like(
+                shaped_reward["__all__"], anneal_factor
+            )
+        rewards = jax.tree.map(lambda x: config.get("REW_SCALE", 1) * x, rewards)
+        return rewards, infos
 
     def train(rng):
 
@@ -249,12 +298,29 @@ def make_train(config, env):
         # TRAINING LOOP
         def _update_step(runner_state, unused):
 
-            train_state, buffer_state, test_state, rng = runner_state
+            train_state, buffer_state, test_state, env_state, last_obs, last_dones, hs, rng = runner_state
 
             # SAMPLE PHASE
             def _step_env(carry, _):
                 hs, last_obs, last_dones, env_state, rng = carry
-                rng, rng_a, rng_s = jax.random.split(rng, 3)
+                rng, rng_a, rng_s, rng_reset = jax.random.split(rng, 4)
+
+                # Auto-reset any environment whose episode ended on the last step
+                ep_done = last_dones["__all__"]  # (num_envs,)
+                reset_obs, reset_state = wrapped_env.batch_reset(rng_reset)
+                env_state = jax.tree.map(
+                    lambda r, s: jnp.where(ep_done.reshape((-1,) + (1,) * (s.ndim - 1)), r, s),
+                    reset_state, env_state,
+                )
+                last_obs = jax.tree.map(
+                    lambda r, o: jnp.where(ep_done.reshape((-1,) + (1,) * (o.ndim - 1)), r, o),
+                    reset_obs, last_obs,
+                )
+                # Reset hidden states for envs whose episode ended
+                hs = jax.tree.map(
+                    lambda h: jnp.where(ep_done[None, :, None], jnp.zeros_like(h), h),
+                    hs,
+                )
 
                 # (num_agents, 1 (dummy time), num_envs, obs_size)
                 _obs = batchify(last_obs)[:, np.newaxis]
@@ -285,30 +351,23 @@ def make_train(config, env):
                 new_obs, new_env_state, rewards, dones, infos = wrapped_env.batch_step(
                     rng_s, env_state, actions
                 )
+                rewards, infos = apply_reward_config(
+                    rewards, infos, train_state.timesteps
+                )
                 timestep = Timestep(
                     obs=last_obs,
                     actions=actions,
-                    rewards=jax.tree.map(lambda x:config.get("REW_SCALE", 1)*x, rewards),
+                    rewards=rewards,
                     dones=last_dones,
                     avail_actions=avail_actions,
                 )
                 return (new_hs, new_obs, dones, new_env_state, rng), (timestep, infos)
 
-            # step the env (should be a complete rollout)
+            # step the env (rollout continues from previous episode state)
             rng, _rng = jax.random.split(rng)
-            init_obs, env_state = wrapped_env.batch_reset(_rng)
-            init_dones = {
-                agent: jnp.zeros((config["NUM_ENVS"]), dtype=bool)
-                for agent in env.agents + ["__all__"]
-            }
-            init_hs = ScannedRNN.initialize_carry(
-                config["HIDDEN_SIZE"], len(env.agents), config["NUM_ENVS"]
-            )
-            expl_state = (init_hs, init_obs, init_dones, env_state)
-            rng, _rng = jax.random.split(rng)
-            _, (timesteps, infos) = jax.lax.scan(
+            (hs, last_obs, last_dones, env_state, _), (timesteps, infos) = jax.lax.scan(
                 _step_env,
-                (*expl_state, _rng),
+                (hs, last_obs, last_dones, env_state, _rng),
                 None,
                 config["NUM_STEPS"],
             )
@@ -395,8 +454,14 @@ def make_train(config, env):
                     )
 
                     chosen_action_q_vals = jnp.sum(chosen_action_q_vals, axis=0)[:-1]
+                    # Huber (smooth-L1) instead of MSE for stability against
+                    # large transient TD errors (see qmix_rnn.py for rationale).
                     loss = jnp.mean(
-                        (chosen_action_q_vals - jax.lax.stop_gradient(vdn_target)) ** 2
+                        optax.huber_loss(
+                            chosen_action_q_vals,
+                            jax.lax.stop_gradient(vdn_target),
+                            delta=config.get("HUBER_DELTA", 10.0),
+                        )
                     )
 
                     return loss, chosen_action_q_vals.mean()
@@ -447,7 +512,6 @@ def make_train(config, env):
             )
 
             # UPDATE METRICS
-            print(type(env))
             train_state = train_state.replace(n_updates=train_state.n_updates + 1)
             metrics = {
                 "env_step": train_state.timesteps,
@@ -482,7 +546,7 @@ def make_train(config, env):
 
                 jax.debug.callback(callback, metrics, original_seed)
 
-            runner_state = (train_state, buffer_state, test_state, rng)
+            runner_state = (train_state, buffer_state, test_state, env_state, last_obs, last_dones, hs, rng)
 
             return runner_state, None
 
@@ -551,7 +615,16 @@ def make_train(config, env):
 
         # train
         rng, _rng = jax.random.split(rng)
-        runner_state = (train_state, buffer_state, test_state, _rng)
+        init_obs, env_state = wrapped_env.batch_reset(_rng)
+        init_dones = {
+            agent: jnp.zeros((config["NUM_ENVS"]), dtype=bool)
+            for agent in env.agents + ["__all__"]
+        }
+        init_hs = ScannedRNN.initialize_carry(
+            config["HIDDEN_SIZE"], len(env.agents), config["NUM_ENVS"]
+        )
+        rng, _rng = jax.random.split(rng)
+        runner_state = (train_state, buffer_state, test_state, env_state, init_obs, init_dones, init_hs, _rng)
 
         runner_state, metrics = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]
@@ -570,6 +643,14 @@ def env_from_config(config):
         env_name = f"{config['ENV_NAME']}_{config['MAP_NAME']}"
         env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
         env = SMAXLogWrapper(env)
+    elif env_name.lower() == "overcooked_v3":
+        env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"
+        env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
+        env.observation_spaces = {
+            agent: env.observation_space(agent) for agent in env.agents
+        }
+        env.action_spaces = {agent: env.action_space(agent) for agent in env.agents}
+        env = LogWrapper(env)
     # overcooked needs a layout
     elif "overcooked" in env_name.lower():
         env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"
@@ -585,6 +666,70 @@ def env_from_config(config):
         env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
         env = LogWrapper(env)
     return env, env_name
+
+
+def get_greedy_rollout(params, config, env, max_steps=None):
+    """Run one greedy rollout for Overcooked V3 GIF generation.
+
+    ``params`` are the agent (RNNQNetwork) parameters. VDN keeps no mixer, so
+    these are simply ``train_state.params``.
+    """
+    from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
+
+    if not config["ENV_NAME"].lower() == "overcooked_v3":
+        raise ValueError("GIF rollout is currently implemented for overcooked_v3.")
+
+    rollout_steps = max_steps or config["ENV_KWARGS"].get("max_steps", 400)
+    rollout_env = CTRolloutManager(env, batch_size=1)
+    network = RNNQNetwork(
+        action_dim=rollout_env.max_action_space,
+        hidden_dim=config["HIDDEN_SIZE"],
+    )
+
+    def batchify(x: dict):
+        return jnp.stack([x[agent] for agent in env.agents], axis=0)
+
+    def unbatchify(x: jnp.ndarray):
+        return {agent: x[i] for i, agent in enumerate(env.agents)}
+
+    def get_greedy_actions(q_vals, valid_actions):
+        unavail_actions = 1 - valid_actions
+        q_vals = q_vals - (unavail_actions * 1e10)
+        return jnp.argmax(q_vals, axis=-1)
+
+    key = jax.random.PRNGKey(config.get("GIF_SEED", config["SEED"]))
+    key, reset_key = jax.random.split(key)
+    obs, env_state = rollout_env.batch_reset(reset_key)
+    dones = {
+        agent: jnp.zeros((1,), dtype=bool) for agent in env.agents + ["__all__"]
+    }
+    hstate = ScannedRNN.initialize_carry(config["HIDDEN_SIZE"], len(env.agents), 1)
+
+    state_seq = [jax.tree.map(lambda x: x[0], env_state.env_state)]
+
+    for _ in range(rollout_steps):
+        key, step_key = jax.random.split(key)
+        _obs = batchify(obs)[:, np.newaxis]
+        _dones = batchify(dones)[:, np.newaxis]
+        hstate, q_vals = jax.vmap(network.apply, in_axes=(None, 0, 0, 0))(
+            params,
+            hstate,
+            _obs,
+            _dones,
+        )
+        q_vals = q_vals.squeeze(axis=1)
+        valid_actions = rollout_env.get_valid_actions(env_state.env_state)
+        actions = get_greedy_actions(q_vals, batchify(valid_actions))
+        obs, env_state, _, dones, _ = rollout_env.batch_step(
+            step_key, env_state, unbatchify(actions)
+        )
+        state_seq.append(jax.tree.map(lambda x: x[0], env_state.env_state))
+        # Render the full requested horizon (one complete episode); do not break
+        # early so GIFs are always a full episode in length.
+
+    state_seq = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq)
+    viz = OvercookedV3Visualizer(env._env)
+    return state_seq, viz
 
 
 def single_run(config):
@@ -603,7 +748,7 @@ def single_run(config):
             env_name.upper(),
             f"jax_{jax.__version__}",
         ],
-        name=f"{alg_name}_{env_name}",
+        name=config.get("WANDB_NAME", f"{alg_name}_{env_name}"),
         config=config,
         mode=config["WANDB_MODE"],
     )
@@ -635,6 +780,21 @@ def single_run(config):
                 f'{alg_name}_{env_name}_seed{config["SEED"]}_vmap{i}.safetensors',
             )
             save_params(params, save_path)
+
+    gif_path = config.get("SAVE_GIF_PATH")
+    if gif_path:
+        model_state = outs["runner_state"][0]
+        # VDN has no mixer; params are the per-agent Q-network params directly.
+        params = jax.tree.map(lambda x: x[0], model_state.params)
+        state_seq, viz = get_greedy_rollout(
+            params,
+            config,
+            env,
+            max_steps=config.get("GIF_NUM_STEPS", config.get("TEST_NUM_STEPS", None)),
+        )
+        os.makedirs(os.path.dirname(gif_path), exist_ok=True)
+        viz.animate(state_seq, filename=gif_path)
+        print(f"Saved GIF to: {gif_path}", flush=True)
 
 
 def tune(default_config):

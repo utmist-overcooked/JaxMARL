@@ -1,12 +1,10 @@
-"""Configuration settings for Overcooked V3."""
-
-# Pot timing.
-POT_COOK_TIME = 20        # Full pot becomes cooked after exactly 20 env steps
-POT_BURN_TIME = 40        # Cooked soup expires/burns after this many ready steps
+# Pot timing (matching CoGrid defaults)
+POT_COOK_TIME = 60        # Steps to cook (CoGrid: cooking_time=90)
+POT_BURN_TIME = 90        # Steps in burning window before burned (CoGrid: burning_time=60)
 
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
-BURN_PENALTY = -5.0       # Penalty when a cooked pot burns before pickup
+BURN_PENALTY = -5.0       # Penalty when pot burns
 ORDER_EXPIRED_PENALTY = -10.0  # Penalty when order expires
 
 # Order queue defaults
@@ -16,13 +14,17 @@ DEFAULT_MAX_ORDERS = 5
 
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
-    "INGREDIENT_PICKUP": 0.1,     # Picking up an ingredient from a pile
-    "PLACEMENT_IN_POT": 0.2,      # Adding correct ingredient to pot
-    "SOUP_IN_DISH": 0.6,          # Picking up cooked soup with plate
-    "PLATE_PICKUP": 0.1,          # Picking up a plate when useful
-    "PLATE_PICKUP_DURING_COOKING": 0.0,  # Disabled ablation; keep key for compatibility
-    "DISH_TO_GOAL_PROGRESS": 0.0, # Logged only; no Euclidean distance reward
-    "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
+    "PLACEMENT_IN_POT": 1.0,      # Adding correct ingredient to pot
+    "SOUP_IN_DISH": 10.0,         # Picking up cooked soup with plate
+    "PLATE_PICKUP": 1.0,          # Picking up a plate when useful
+    "POT_START_COOKING": 5.0,     # Starting to cook a correct recipe (restored to cogridpots_dense value that cooked fresh)
+    "HANDOFF_DROP": 0.25,         # Dropping useful item onto a middle handoff counter (RESTORED: key signal for the CTC conveyor handoff)
+    "HANDOFF_PICKUP": 0.25,       # Picking useful item up from a middle handoff counter (RESTORED)
+    "TASK_PROGRESS": 0.05,        # Moving closer to the current useful object (restored: dense pull empty->plate->pot->goal)
+    "TASK_FACING": 0.01,          # Facing a useful object after a movement action
+    "INVALID_MOVE": -0.002,       # Trying to move into a blocked cell
+    "INGREDIENT_WASTE": -0.004,   # Dropping a wrong-type ingredient onto a conveyor (wastes it)
+    "IDLE_PENALTY": -0.001,       # Small penalty for choosing the no-op 'stay' action (discourages freezing)
 }
 
 # Maximum number of pots to track (for fixed array sizes)

@@ -128,6 +128,7 @@ class State:
 
     # Delivery tracking
     new_correct_delivery: bool = False
+    cumulative_deliveries: chex.Array = jnp.array(0, dtype=jnp.int32)
 
 
 # =============================================================================
@@ -209,6 +210,7 @@ class OvercookedV3(MultiAgentEnv):
         order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
         order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
         order_queue_mode: str = "random",
+        plate_pickup_guard: int = 1,
         # Conveyor belt settings
         enable_item_conveyors: Optional[bool] = None,
         enable_player_conveyors: Optional[bool] = None,
@@ -220,6 +222,12 @@ class OvercookedV3(MultiAgentEnv):
         # Reward settings
         delivery_reward: float = DELIVERY_REWARD,
         shaped_rewards: bool = True,
+        dish_to_target_progress_reward: float = 0.0,
+        dish_to_target_row: int = -1,
+        dish_to_target_col: int = -1,
+        dish_to_target_agent: int = -1,
+        ingredient_to_pot_progress_reward: float = 0.0,
+        plate_to_pot_progress_reward: float = 0.0,
         # Random initialization
         random_reset: bool = False,
         random_agent_positions: bool = False,
@@ -239,6 +247,7 @@ class OvercookedV3(MultiAgentEnv):
             order_expiration_time: Steps before order expires
             order_queue_mode: "random" or "alternating"; alternating produces
                 onion, tomato, onion, tomato orders
+            plate_pickup_guard: Maximum rewarded plates per useful full pot
             enable_item_conveyors: Whether item conveyors move items. If None,
                 inferred from whether the layout contains item conveyors.
             enable_player_conveyors: Whether player conveyors push agents. If
@@ -251,6 +260,12 @@ class OvercookedV3(MultiAgentEnv):
                 Can be int (same for all) or list of ints per barrier.
             delivery_reward: Reward for correct delivery
             shaped_rewards: Whether to use shaped intermediate rewards
+            dish_to_target_progress_reward: Signed L2 progress reward for an
+                agent carrying cooked soup toward a fixed curriculum target.
+            dish_to_target_row: Target grid row for dish-to-target shaping.
+            dish_to_target_col: Target grid column for dish-to-target shaping.
+            dish_to_target_agent: Agent index for dish-to-target shaping, or -1
+                to apply it to every agent.
             random_reset: Randomize state on reset
             random_agent_positions: Randomize agent positions only
         """
@@ -299,6 +314,9 @@ class OvercookedV3(MultiAgentEnv):
         self.max_orders = max_orders
         self.order_generation_rate = order_generation_rate
         self.order_expiration_time = order_expiration_time
+        if plate_pickup_guard < 0:
+            raise ValueError("plate_pickup_guard must be non-negative")
+        self.plate_pickup_guard = plate_pickup_guard
         if order_queue_mode not in ("random", "alternating"):
             raise ValueError("order_queue_mode must be 'random' or 'alternating'")
         if order_queue_mode == "alternating" and layout.num_ingredients < 2:
@@ -373,6 +391,22 @@ class OvercookedV3(MultiAgentEnv):
         # Reward settings
         self.delivery_reward = delivery_reward
         self.shaped_rewards_enabled = shaped_rewards
+        self.dish_to_target_progress_reward = dish_to_target_progress_reward
+        self.dish_to_target_row = dish_to_target_row
+        self.dish_to_target_col = dish_to_target_col
+        self.dish_to_target_agent = dish_to_target_agent
+        self.ingredient_to_pot_progress_reward = ingredient_to_pot_progress_reward
+        self.plate_to_pot_progress_reward = plate_to_pot_progress_reward
+        target_enabled = dish_to_target_progress_reward != 0.0
+        if target_enabled and (dish_to_target_row < 0 or dish_to_target_col < 0):
+            raise ValueError(
+                "dish_to_target_row and dish_to_target_col must be set when "
+                "dish_to_target_progress_reward is non-zero"
+            )
+        if target_enabled and not (dish_to_target_agent == -1 or 0 <= dish_to_target_agent < num_agents):
+            raise ValueError(
+                "dish_to_target_agent must be -1 or a valid agent index"
+            )
 
         # Random reset
         self.random_reset = random_reset
@@ -503,7 +537,7 @@ class OvercookedV3(MultiAgentEnv):
 
     def _get_obs_shape(self) -> Tuple[int, ...]:
         """Calculate observation shape based on observation type."""
-        if self.agent_view_size:
+        if self.agent_view_size is not None:
             view_size = self.agent_view_size * 2 + 1
             view_width = min(self.width, view_size)
             view_height = min(self.height, view_size)
@@ -517,13 +551,13 @@ class OvercookedV3(MultiAgentEnv):
                 # Layers breakdown:
                 # - agent_layer: 1 (pos) + 4 (dir) + (2 + num_ing) (inv) = 7 + num_ing
                 # - other_agent_layers: same = 7 + num_ing
-                # - static_layers: 10 (wall, goal, pot, recipe, plate, item_conv, player_conv, moving_wall, button, barrier)
+                # - static_layers: 11 (wall, goal, pot, recipe, plate, item_conv, player_conv, moving_wall, button, barrier, garbage)
                 # - ingredient_pile_layers: num_ing
                 # - ingredients_layers: 2 + num_ing
                 # - recipe_layers: 2 + num_ing
                 # - extra_layers: 1 (pot timer)
-                # Total: 29 + 5 * num_ingredients
-                num_layers = 29 + 5 * num_ingredients
+                # Total: 30 + 5 * num_ingredients
+                num_layers = 30 + 5 * num_ingredients
                 return (view_height, view_width, num_layers)
             elif obs_type == ObservationType.FEATURIZED:
                 # Simplified feature vector
@@ -591,7 +625,17 @@ class OvercookedV3(MultiAgentEnv):
         order_expirations = jnp.zeros(self.max_orders, dtype=jnp.int32)
         order_active_mask = jnp.zeros(self.max_orders, dtype=jnp.bool_)
         if self.enable_order_queue and self.order_queue_mode == "alternating":
-            first_order_type = jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32)
+            # Randomize whether the episode starts with onion or tomato so the
+            # agent practices both types from a fresh start (removes the
+            # always-onion-first bias). Subsequent orders still alternate
+            # correctly because generation alternates relative to the newest
+            # queued order, not a fixed global index.
+            key, ord_key = jax.random.split(key)
+            first_order_type = jax.lax.select(
+                jax.random.bernoulli(ord_key),
+                jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
+                jnp.array(SoupType.TOMATO_SOUP, dtype=jnp.int32),
+            )
             order_types = order_types.at[0].set(first_order_type)
             order_expirations = order_expirations.at[0].set(self.order_expiration_time)
             order_active_mask = order_active_mask.at[0].set(True)
@@ -633,6 +677,7 @@ class OvercookedV3(MultiAgentEnv):
             terminal=False,
             recipe=recipe,
             new_correct_delivery=False,
+            cumulative_deliveries=jnp.array(0, dtype=jnp.int32),
         )
 
         # Optional random initialization
@@ -859,6 +904,120 @@ class OvercookedV3(MultiAgentEnv):
     # Agent Movement, Collisions, and Button Interactions
     # -------------------------------------------------------------------------
 
+    def _task_target_mask(self, state: State, agent: Agent) -> chex.Array:
+        """Boolean grid mask of cells the agent should head toward for its
+        current Overcooked subtask (used by dense task-progress shaping)."""
+        static = state.grid[:, :, 0]
+        dyn = state.grid[:, :, 1]
+        H, W = static.shape
+
+        pot_mask = static == StaticObject.POT
+        plate_pile_mask = static == StaticObject.PLATE_PILE
+        goal_mask = static == StaticObject.GOAL
+        ingredient_pile_mask = StaticObject.is_ingredient_pile(static)
+        pile_idx = jnp.maximum(static - StaticObject.INGREDIENT_PILE_BASE, 0)
+        pile_ingredient = jnp.left_shift(DynamicObject.BASE_INGREDIENT, 2 * pile_idx)
+        useful_pile_mask = ingredient_pile_mask & ((state.recipe & pile_ingredient) != 0)
+
+        counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(dyn)
+        cooked = (dyn & DynamicObject.COOKED) != 0
+        burned = (dyn & DynamicObject.BURNED) != 0
+        pot_needs_ingredient = pot_mask & (counts < 3) & ~cooked & ~burned
+        pot_full = pot_mask & (counts == 3) & ~burned  # cooking or ready
+        has_servable_pot = jnp.any(pot_full)
+
+        # Handoff counters: counter tiles walkable both above and below.
+        counter_mask = (
+            (static == StaticObject.WALL)
+            | (static == StaticObject.ITEM_CONVEYOR)
+            | (static == StaticObject.PLAYER_CONVEYOR)
+        )
+        walkable = (static == StaticObject.EMPTY) | (
+            static == StaticObject.PLAYER_CONVEYOR
+        )
+        above_walkable = jnp.concatenate(
+            [jnp.zeros((1, W), dtype=bool), walkable[:-1, :]], axis=0
+        )
+        below_walkable = jnp.concatenate(
+            [walkable[1:, :], jnp.zeros((1, W), dtype=bool)], axis=0
+        )
+        handoff_mask = counter_mask & above_walkable & below_walkable
+        handoff_useful_ingredient = (
+            handoff_mask & DynamicObject.is_ingredient(dyn) & ((state.recipe & dyn) != 0)
+        )
+        handoff_useful_plate = (
+            handoff_mask & (dyn == DynamicObject.PLATE) & has_servable_pot
+        )
+        handoff_empty = handoff_mask & (dyn == DynamicObject.EMPTY)
+
+        inv = agent.inventory
+        inv_empty = inv == DynamicObject.EMPTY
+        inv_ingredient = DynamicObject.is_ingredient(inv)
+        inv_plate = inv == DynamicObject.PLATE
+        inv_dish = (inv & DynamicObject.COOKED) != 0
+
+        empty_target = jnp.where(has_servable_pot, plate_pile_mask, useful_pile_mask)
+        empty_target = empty_target | handoff_useful_ingredient | handoff_useful_plate
+        ingredient_target = pot_needs_ingredient | handoff_empty
+        plate_target = pot_full | handoff_empty
+        dish_target = goal_mask
+
+        false_grid = jnp.zeros_like(static, dtype=bool)
+        return jnp.where(
+            inv_empty,
+            empty_target,
+            jnp.where(
+                inv_ingredient,
+                ingredient_target,
+                jnp.where(
+                    inv_plate, plate_target, jnp.where(inv_dish, dish_target, false_grid)
+                ),
+            ),
+        )
+
+    def _dense_task_shaping(
+        self, state: State, new_agents: Agent, actions: chex.Array
+    ) -> chex.Array:
+        """Per-agent dense shaping: TASK_PROGRESS (move toward subtask target),
+        TASK_FACING (face it), INVALID_MOVE (penalise blocked moves). Signed
+        progress (old-new, clipped) so retreating cancels approach."""
+        static = state.grid[:, :, 0]
+        H, W = static.shape
+        yy, xx = jnp.meshgrid(jnp.arange(H), jnp.arange(W), indexing="ij")
+
+        def _min_dist(pos, mask):
+            dist = jnp.abs(yy - pos.y) + jnp.abs(xx - pos.x)
+            masked = jnp.where(mask, dist, 1_000_000)
+            return jnp.min(masked), jnp.any(mask)
+
+        def _agent_reward(old_agent, new_agent, action):
+            mask = self._task_target_mask(state, old_agent)
+            old_d, valid = _min_dist(old_agent.pos, mask)
+            new_d, _ = _min_dist(new_agent.pos, mask)
+            progress = jnp.clip(old_d - new_d, -1.0, 1.0)
+            reward = valid * progress * SHAPED_REWARDS.get("TASK_PROGRESS", 0.0)
+
+            is_movement = action < Actions.stay
+            same_position = (old_agent.pos.x == new_agent.pos.x) & (
+                old_agent.pos.y == new_agent.pos.y
+            )
+            reward += (is_movement & same_position) * SHAPED_REWARDS.get("INVALID_MOVE", 0.0)
+
+            # Small penalty for the no-op 'stay' action to discourage the agent
+            # freezing in place (greedy value policies can get absorbed in a
+            # state where staying has the highest Q). Does not touch interact.
+            reward += (action == Actions.stay) * SHAPED_REWARDS.get("IDLE_PENALTY", 0.0)
+
+            fwd = new_agent.get_fwd_pos()
+            fy = jnp.clip(fwd.y, 0, H - 1)
+            fx = jnp.clip(fwd.x, 0, W - 1)
+            reward += (is_movement & valid & mask[fy, fx]) * SHAPED_REWARDS.get(
+                "TASK_FACING", 0.0
+            )
+            return reward
+
+        return jax.vmap(_agent_reward)(state.agents, new_agents, actions)
+
     def step_agents(
         self,
         key: chex.PRNGKey,
@@ -941,11 +1100,11 @@ class OvercookedV3(MultiAgentEnv):
 
         # Interaction phase
         def _interact_wrapper(carry, x):
-            agent, action = x
+            agent_idx, agent, action = x
             is_interact = action == Actions.interact
 
             def _interact(carry, agent):
-                grid, correct_delivery, reward, pot_timers = carry
+                grid, correct_delivery, reward, pot_timers, live_inventories = carry
 
                 (
                     new_grid,
@@ -958,11 +1117,15 @@ class OvercookedV3(MultiAgentEnv):
                 ) = self.process_interact(
                     grid,
                     agent,
-                    new_agents.inventory,
+                    live_inventories,
                     state.recipe,
                     pot_timers,
                     state.pot_positions,
                     state.pot_active_mask,
+                    state.cumulative_deliveries,
+                )
+                new_live_inventories = live_inventories.at[agent_idx].set(
+                    new_agent.inventory
                 )
 
                 carry = (
@@ -970,6 +1133,7 @@ class OvercookedV3(MultiAgentEnv):
                     correct_delivery | new_correct_delivery,
                     reward + interact_reward,
                     new_pot_timers,
+                    new_live_inventories,
                 )
                 return carry, (new_agent, shaped_reward, event_metrics)
 
@@ -984,39 +1148,119 @@ class OvercookedV3(MultiAgentEnv):
                 agent,
             )
 
-        carry = (grid, False, 0.0, state.pot_cooking_timer)
-        xs = (new_agents, actions)
-        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards, event_metrics) = (
+        carry = (
+            grid,
+            False,
+            0.0,
+            state.pot_cooking_timer,
+            new_agents.inventory,
+        )
+        xs = (jnp.arange(self.num_agents), new_agents, actions)
+        (
+            new_grid,
+            new_correct_delivery,
+            reward,
+            new_pot_timers,
+            _live_inventories,
+        ), (new_agents, shaped_rewards, event_metrics) = (
             jax.lax.scan(_interact_wrapper, carry, xs)
         )
 
         # Once an agent is carrying plated soup, shape by signed Euclidean
-        # progress toward the nearest delivery zone. The sign is important:
-        # positive-only progress lets the agent move toward delivery, move away
-        # for free, and repeat forever without actually delivering.
-        goal_positions = jnp.asarray(self._goal_positions, dtype=jnp.float32)
+        # progress. The default target is the nearest delivery zone; curriculum
+        # runs can redirect this to a fixed handoff square. The sign is
+        # important: positive-only progress lets the agent move toward the
+        # target, move away for free, and repeat forever without finishing.
+        dish_target_enabled = self.dish_to_target_progress_reward != 0.0
 
-        def _nearest_goal_distance(pos):
-            dx = goal_positions[:, 1] - pos.x.astype(jnp.float32)
-            dy = goal_positions[:, 0] - pos.y.astype(jnp.float32)
-            return jnp.min(jnp.sqrt(dx * dx + dy * dy))
+        if dish_target_enabled:
+            target_y = jnp.array(self.dish_to_target_row, dtype=jnp.float32)
+            target_x = jnp.array(self.dish_to_target_col, dtype=jnp.float32)
 
-        old_goal_distance = jax.vmap(_nearest_goal_distance)(state.agents.pos)
-        new_goal_distance = jax.vmap(_nearest_goal_distance)(new_agents.pos)
+            def _dish_target_distance(pos):
+                dx = target_x - pos.x.astype(jnp.float32)
+                dy = target_y - pos.y.astype(jnp.float32)
+                return jnp.sqrt(dx * dx + dy * dy)
+
+            progress_reward_weight = self.dish_to_target_progress_reward
+        else:
+            goal_positions = jnp.asarray(self._goal_positions, dtype=jnp.float32)
+
+            def _dish_target_distance(pos):
+                dx = goal_positions[:, 1] - pos.x.astype(jnp.float32)
+                dy = goal_positions[:, 0] - pos.y.astype(jnp.float32)
+                return jnp.min(jnp.sqrt(dx * dx + dy * dy))
+
+            progress_reward_weight = 0.0  # DISH_TO_GOAL_PROGRESS removed; TASK_PROGRESS handles dish->goal
+
+        old_target_distance = jax.vmap(_dish_target_distance)(state.agents.pos)
+        new_target_distance = jax.vmap(_dish_target_distance)(new_agents.pos)
         carrying_dish_before = (state.agents.inventory & DynamicObject.COOKED) != 0
         carrying_dish_after = (new_agents.inventory & DynamicObject.COOKED) != 0
+        agent_target_mask = (
+            (self.dish_to_target_agent < 0)
+            | (jnp.arange(self.num_agents) == self.dish_to_target_agent)
+        )
         dish_to_goal_progress = (
             carrying_dish_before
             & carrying_dish_after
             & self.shaped_rewards_enabled
-        ) * (old_goal_distance - new_goal_distance)
+            & agent_target_mask
+        ) * (old_target_distance - new_target_distance)
         dish_to_goal_reward = (
-            dish_to_goal_progress * SHAPED_REWARDS["DISH_TO_GOAL_PROGRESS"]
+            dish_to_goal_progress * progress_reward_weight
         )
         shaped_rewards = shaped_rewards + dish_to_goal_reward
         event_metrics = event_metrics.at[
             :, self.EVENT_NAMES.index("dish_to_goal_progress")
         ].set(dish_to_goal_progress)
+
+        # Item -> pot progress shaping. Mirrors the dish-to-target reward but
+        # fires earlier in the pipeline: a dense signed gradient for carrying an
+        # ingredient (to fill/cook a pot) or a plate (to serve a cooked pot)
+        # toward the nearest pot. This bootstraps the cook->plate chain on hard
+        # maze layouts where epsilon-greedy never randomly chains the steps. Sign
+        # is signed (old - new) so retreating cancels approach -> no farming loop.
+        if (
+            self.ingredient_to_pot_progress_reward != 0.0
+            or self.plate_to_pot_progress_reward != 0.0
+        ):
+            pot_pos = state.pot_positions.astype(jnp.float32)  # (MAX_POTS, 2) [y, x]
+            pot_mask = state.pot_active_mask
+
+            def _nearest_pot_distance(pos):
+                dy = pot_pos[:, 0] - pos.y.astype(jnp.float32)
+                dx = pot_pos[:, 1] - pos.x.astype(jnp.float32)
+                d = jnp.sqrt(dx * dx + dy * dy)
+                d = jnp.where(pot_mask, d, jnp.inf)
+                return jnp.min(d)
+
+            old_pot_distance = jax.vmap(_nearest_pot_distance)(state.agents.pos)
+            new_pot_distance = jax.vmap(_nearest_pot_distance)(new_agents.pos)
+            pot_progress = (old_pot_distance - new_pot_distance) * self.shaped_rewards_enabled
+
+            carrying_ing = DynamicObject.is_ingredient(
+                state.agents.inventory
+            ) & DynamicObject.is_ingredient(new_agents.inventory)
+            shaped_rewards = (
+                shaped_rewards
+                + carrying_ing * pot_progress * self.ingredient_to_pot_progress_reward
+            )
+
+            carrying_plate = (state.agents.inventory == DynamicObject.PLATE) & (
+                new_agents.inventory == DynamicObject.PLATE
+            )
+            shaped_rewards = (
+                shaped_rewards
+                + carrying_plate * pot_progress * self.plate_to_pot_progress_reward
+            )
+
+        # Dense task shaping (TASK_PROGRESS / TASK_FACING / INVALID_MOVE) toward
+        # the agent's current subtask object.
+        if self.shaped_rewards_enabled:
+            shaped_rewards = shaped_rewards + self._dense_task_shaping(
+                state, new_agents, actions
+            )
 
         # Update pot timers. A full pot cooks for pot_cook_time steps, then
         # stays ready for pot_burn_time steps before expiring/burning.
@@ -1263,6 +1507,7 @@ class OvercookedV3(MultiAgentEnv):
                 grid=new_grid,
                 pot_cooking_timer=new_pot_timers,
                 new_correct_delivery=new_correct_delivery,
+                cumulative_deliveries=state.cumulative_deliveries + new_correct_delivery.astype(jnp.int32),
                 moving_wall_directions=new_mw_directions,
                 moving_wall_paused=new_mw_paused,
                 moving_wall_bounce=new_mw_bounce,
@@ -1288,6 +1533,7 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
+        cumulative_deliveries: chex.Array = None,
     ):
         """Process an interact action for an agent."""
         inventory = agent.inventory
@@ -1322,6 +1568,9 @@ class OvercookedV3(MultiAgentEnv):
         object_is_conveyor = fwd_pos_in_bounds & (
             (interact_item == StaticObject.ITEM_CONVEYOR)
             | (interact_item == StaticObject.PLAYER_CONVEYOR)
+        )
+        object_is_garbage_can = fwd_pos_in_bounds & (
+            interact_item == StaticObject.GARBAGE_CAN
         )
         object_has_no_ingredients = interact_ingredients == 0
 
@@ -1405,7 +1654,69 @@ class OvercookedV3(MultiAgentEnv):
             * object_has_no_ingredients
             * ~inventory_is_empty
         )
-        successful_drop = successful_counter_drop | successful_pot_placement
+        successful_garbage_drop = object_is_garbage_can * ~inventory_is_empty
+        successful_drop = (
+            successful_counter_drop | successful_pot_placement | successful_garbage_drop
+        )
+
+        # Handoff-counter shaping: reward passing useful items across a "handoff"
+        # counter (a counter tile with walkable cells both above and below), which
+        # is the core coordination mechanic on conveyor maps.
+        if self.shaped_rewards_enabled:
+            H = grid.shape[0]
+            static_objs = grid[:, :, 0]
+            walkable_map = (static_objs == StaticObject.EMPTY) | (
+                static_objs == StaticObject.PLAYER_CONVEYOR
+            )
+            above_walkable = (fwd_pos.y - 1 >= 0) & walkable_map[
+                jnp.clip(fwd_pos.y - 1, 0, H - 1), fwd_pos.x
+            ]
+            below_walkable = (fwd_pos.y + 1 < H) & walkable_map[
+                jnp.clip(fwd_pos.y + 1, 0, H - 1), fwd_pos.x
+            ]
+            is_handoff_counter = (
+                (object_is_wall | object_is_conveyor) & above_walkable & below_walkable
+            )
+            pot_ing_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
+                grid[:, :, 1]
+            )
+            full_unburned_pots = (
+                (static_objs == StaticObject.POT)
+                & (pot_ing_counts == 3)
+                & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
+            )
+            has_plate_target = jnp.any(full_unburned_pots)
+            useful_drop_item = (
+                inventory_is_ingredient & ((recipe & inventory) != 0)
+            ) | (inventory_is_plate & has_plate_target)
+            counter_item_is_ingredient = DynamicObject.is_ingredient(interact_ingredients)
+            counter_item_is_plate = interact_ingredients == DynamicObject.PLATE
+            useful_pickup_item = (
+                counter_item_is_ingredient & ((recipe & interact_ingredients) != 0)
+            ) | (counter_item_is_plate & has_plate_target)
+            successful_counter_pickup = (
+                (object_is_wall | object_is_conveyor)
+                * ~object_has_no_ingredients
+                * inventory_is_empty
+            )
+            shaped_reward += (
+                is_handoff_counter & successful_counter_drop & useful_drop_item
+            ) * SHAPED_REWARDS.get("HANDOFF_DROP", 0.0)
+            shaped_reward += (
+                is_handoff_counter & successful_counter_pickup & useful_pickup_item
+            ) * SHAPED_REWARDS.get("HANDOFF_PICKUP", 0.0)
+
+            # Penalize wasting an ingredient: dropping a wrong-type ingredient
+            # (one the current order doesn't need) onto a conveyor, which carries
+            # it off to a dead end. Targets the "order switched -> dump food on
+            # the conveyor" behavior without penalizing correct-type handoffs.
+            waste_drop = (
+                successful_counter_drop
+                & object_is_conveyor
+                & inventory_is_ingredient
+                & ((recipe & inventory) == 0)
+            )
+            shaped_reward += waste_drop * SHAPED_REWARDS.get("INGREDIENT_WASTE", 0.0)
 
         # Delivery
         successful_delivery = object_is_goal * inventory_is_dish
@@ -1435,20 +1746,19 @@ class OvercookedV3(MultiAgentEnv):
         is_ingredient_pickup_useful = (
             ingredients_in_grid + ingredients_in_inventories
         ) < ingredients_needed
-        if self.shaped_rewards_enabled:
-            shaped_reward += (
-                successful_ingredient_pickup
-                * is_ingredient_pickup_useful
-                * SHAPED_REWARDS["INGREDIENT_PICKUP"]
-            )
+        # INGREDIENT_PICKUP reward removed (handled by TASK_PROGRESS navigation shaping).
 
         new_ingredients = (
-            successful_drop * merged_ingredients + no_effect * interact_ingredients
+            successful_counter_drop * merged_ingredients
+            + successful_pot_placement * merged_ingredients
+            + no_effect * interact_ingredients
         )
 
         # Start cooking only when the final ingredient is placed.
         pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
         auto_cook = successful_pot_placement & pot_full_after_drop
+        if self.shaped_rewards_enabled:
+            shaped_reward += auto_cook * SHAPED_REWARDS["POT_START_COOKING"]
 
         # Update pot timer
         # Find which pot this is
@@ -1495,35 +1805,30 @@ class OvercookedV3(MultiAgentEnv):
         if self.shaped_rewards_enabled:
             inventory_is_plate_now = new_inventory == DynamicObject.PLATE
             successful_plate_pickup = successful_pickup * inventory_is_plate_now
-            # Count plates already committed to the task, whether held or
-            # dropped on counters. The previous gate only counted inventories,
-            # so pickup->drop->pickup from a plate pile could repeatedly earn
-            # PLATE_PICKUP while a full pot existed.
-            num_plates_in_grid = jnp.sum((grid[:, :, 1] & DynamicObject.PLATE) != 0)
-            num_plates_in_inventory = jnp.sum(
-                (all_inventories & DynamicObject.PLATE) != 0
+            # Gate plate shaping by active soup demand. With guard=1, reward
+            # one bare plate in hand per full unburned pot, preventing repeated
+            # pickup/drop farming when the kitchen already has enough held plates.
+            def _active_pot_needs_plate(pot_idx):
+                pot_y, pot_x = pot_positions[pot_idx]
+                pot_ingredients = grid[pot_y, pot_x, 1]
+                # Only count a pot as needing a plate once its soup is READY
+                # (cooked), not while it is still cooking. This stops plate
+                # pickup/drop spam during the cook timer; the dense TASK_PROGRESS
+                # pull still guides the agent toward the plate meanwhile.
+                pot_is_cooked = (pot_ingredients & DynamicObject.COOKED) != 0
+                pot_is_unburned = (pot_ingredients & DynamicObject.BURNED) == 0
+                return pot_active_mask[pot_idx] & pot_is_cooked & pot_is_unburned
+
+            num_active_pots = jnp.sum(
+                jax.vmap(_active_pot_needs_plate)(jnp.arange(MAX_POTS))
             )
-            num_plates_in_play = num_plates_in_grid + num_plates_in_inventory
-            pot_ingredient_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
-                grid[:, :, 1]
-            )
-            full_unburned_pots = (
-                (grid[:, :, 0] == StaticObject.POT)
-                & (pot_ingredient_counts == 3)
-                & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
-            )
-            num_useful_pots = jnp.sum(full_unburned_pots)
-            is_plate_pickup_useful = num_plates_in_play < num_useful_pots
+            num_plates_in_hand = jnp.sum(all_inventories == DynamicObject.PLATE)
+            plate_guard_limit = self.plate_pickup_guard * num_active_pots
+            is_plate_pickup_useful = num_plates_in_hand < plate_guard_limit
             shaped_reward += (
                 is_plate_pickup_useful
                 * successful_plate_pickup
                 * SHAPED_REWARDS["PLATE_PICKUP"]
-            )
-            shaped_reward += (
-                any_pot_cooking
-                * is_plate_pickup_useful
-                * successful_plate_pickup
-                * SHAPED_REWARDS["PLATE_PICKUP_DURING_COOKING"]
             )
 
         correct_delivery = successful_delivery & is_correct_recipe
@@ -1642,6 +1947,13 @@ class OvercookedV3(MultiAgentEnv):
             return state
 
         grid = state.grid
+        # Snapshot of item layer before the scan.  Reading source items from the
+        # snapshot rather than the updated carry prevents the cascade where an item
+        # moved by an earlier conveyor is immediately moved again by the next one
+        # in the same tick.  Each item therefore advances exactly one cell per tick,
+        # giving smooth loop circulation.  Destination occupancy is still read from
+        # the carry so two conveyors cannot both write to the same cell.
+        grid_snapshot = grid
 
         def _move_item_on_conveyor(grid, conveyor_idx):
             pos = state.item_conveyor_positions[conveyor_idx]
@@ -1649,7 +1961,8 @@ class OvercookedV3(MultiAgentEnv):
             is_active = state.item_conveyor_active_mask[conveyor_idx]
 
             y, x = pos[0], pos[1]
-            current_item = grid[y, x, 1]
+            # Read from snapshot to prevent same-tick cascades
+            current_item = grid_snapshot[y, x, 1]
             has_item = current_item != 0
 
             # Calculate destination
@@ -1666,8 +1979,8 @@ class OvercookedV3(MultiAgentEnv):
             dest_x = jnp.clip(raw_dest_x, 0, self.width - 1)
             dest_y = jnp.clip(raw_dest_y, 0, self.height - 1)
 
-            # Check if destination can receive item
-            dest_static = grid[dest_y, dest_x, 0]
+            # Check if destination can receive item (use carry for occupancy check)
+            dest_static = grid_snapshot[dest_y, dest_x, 0]
             dest_item = grid[dest_y, dest_x, 1]
             dest_can_receive = (
                 dest_in_bounds
@@ -1677,16 +1990,18 @@ class OvercookedV3(MultiAgentEnv):
                     | (dest_static == StaticObject.PLAYER_CONVEYOR)
                     | (dest_static == StaticObject.GOAL)
                     | (dest_static == StaticObject.MOVING_WALL)
+                    | (dest_static == StaticObject.GARBAGE_CAN)
                 )
                 & (dest_item == 0)
             )
 
             should_move = is_active & has_item & dest_can_receive
+            should_discard = should_move & (dest_static == StaticObject.GARBAGE_CAN)
             should_disappear = is_active & has_item & ~dest_in_bounds
 
             # Move item
             new_grid = jax.lax.select(
-                should_disappear,
+                should_disappear | should_discard,
                 grid.at[y, x, 1].set(0),
                 jax.lax.select(
                     should_move,
@@ -2209,6 +2524,7 @@ class OvercookedV3(MultiAgentEnv):
             StaticObject.MOVING_WALL,
             StaticObject.BUTTON,
             StaticObject.BARRIER,
+            StaticObject.GARBAGE_CAN,
         ])
         static_layers = static_objects[..., None] == static_encoding
 

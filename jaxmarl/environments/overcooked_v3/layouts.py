@@ -32,6 +32,58 @@ W   W
 WBWXW
 """
 
+asymm_advantages_recipes_center = """
+WWWWWWWWW
+0 WXR01 X
+1   P   W
+W A PA  W
+WWWBWBWWW
+"""
+
+asymm_advantages_recipes_right = """
+WWWWWWWWW
+0 WXW01 X
+1   P   R
+W A PA  W
+WWWBWBWWW
+"""
+
+asymm_advantages_recipes_left = """
+WWWWWWWWW
+0 WXW01 X
+1   P   R
+R A PA  W
+WWWBWBWWW
+"""
+
+two_rooms = """
+WWWWWB10W
+W   W   R
+P A W A W
+W   W   X
+WWWWWWWWW
+"""
+
+around_the_island = """
+WW0W0WWWWW
+B        W
+W  A     W
+WWWWWWW  X
+W  A     W
+W        W
+WWWPWWWWWW
+"""
+
+around_the_island_nerfed = """
+WW0WWWWW
+B      W
+W  A   W
+WWWWW  X
+W  A   W
+W      W
+WWPWWWWW
+"""
+
 asymm_advantages = """
 WWWWWWWWW
 O WXWOW X
@@ -114,22 +166,22 @@ XWWWWWWWWWW 2
 maze_conveyor_hell  = """
 01 W   W WWW
 A  W W W  WW
-vW W W W  WW
-vW   W    Wv
-vWWWWWWWW Wv
-vW>>>>>>> Wv
-vW WWWWWWPWv
-A       WXW 
+v< W W W  WW
+v^   W    WW
+v^v<<<<<< WW
+v^>>>>>>^ WW
+>^ WWWWWWPWW
+A       WXWW
 B          W
 """
 
 coordinated_temporal_conveyor = """
->>>>>>vW   X
-      vW  A 
-     WvW    
-     Wv   PB
-  A  WvWWWWW
-01    v>>>>W
+>>>>vW   X
+    vW  A 
+   WvW    
+   Wv   PB
+A  WvWWWWW
+01 Wv>>>>W
 """
 
 general_conveyor_level_1 = """
@@ -392,6 +444,7 @@ class Layout:
             StaticObject.PLATE_PILE: 'B',
             StaticObject.POT: 'P',
             StaticObject.RECIPE_INDICATOR: 'R',
+            StaticObject.GARBAGE_CAN: 'G',
         }
 
         item_conveyor_symbols = {
@@ -835,6 +888,7 @@ class Layout:
             P = Pot
             B = Plate (Bowl) Pile
             X = Delivery Zone (Goal)
+            G = Garbage Can
             A = Agent Start Position
             R = Recipe Indicator (randomized recipes)
             0-9 = Ingredient Piles (0=onion, 1=tomato, 2=lettuce, etc.)
@@ -886,6 +940,7 @@ class Layout:
             B: plate (bowl) pile
             P: pot location
             R: recipe of the day indicator
+            G: garbage can
             0-9: Ingredient x pile
             ' ' (space): empty cell
 
@@ -954,6 +1009,7 @@ class Layout:
             "B": StaticObject.PLATE_PILE,
             "P": StaticObject.POT,
             "R": StaticObject.RECIPE_INDICATOR,
+            "G": StaticObject.GARBAGE_CAN,
         }
 
         # Add ingredient piles 0-9
@@ -1138,6 +1194,16 @@ overcooked_v3_layouts = {
     ),
 
     # V2-style layouts with recipe indicators
+    "asymm_advantages_recipes_center": Layout.from_string(
+        asymm_advantages_recipes_center
+    ),
+    "asymm_advantages_recipes_right": Layout.from_string(
+        asymm_advantages_recipes_right
+    ),
+    "asymm_advantages_recipes_left": Layout.from_string(
+        asymm_advantages_recipes_left
+    ),
+    "two_rooms": Layout.from_string(two_rooms),
     "cramped_room_v2": Layout.from_string(
         cramped_room_v2, possible_recipes=[[0, 0, 0]]
     ),
@@ -1195,12 +1261,36 @@ overcooked_v3_layouts = {
         middle_conveyor, possible_recipes=[[0, 0, 0]],
     ),
 
+    "coordinated_temporal_conveyor": Layout.from_string(
+        coordinated_temporal_conveyor, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "maze_conveyor_hell": Layout.from_string(
+        maze_conveyor_hell, possible_recipes=[[0, 0, 0]],
+    ),
+
     "follow_the_leader": Layout.from_string(
         follow_the_leader, possible_recipes=[[0, 0, 0]],
     ),
 
     "around_the_island": Layout.from_string(
         around_the_island, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "around_the_island_nerfed": Layout.from_string(
+        around_the_island_nerfed, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "race_against_the_clock": Layout.from_string(
+        race_against_the_clock, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "maze_conveyor_hell": Layout.from_string(
+        maze_conveyor_hell, possible_recipes=[[0, 0, 0]],
+    ),
+
+    "coordinated_temporal_conveyor": Layout.from_string(
+        coordinated_temporal_conveyor, possible_recipes=[[0, 0, 0]],
     ),
 
     "single_file": Layout.from_string(

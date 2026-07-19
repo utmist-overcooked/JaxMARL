@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/ippo_rnn_overcooked_v2/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 "ENV_NAME": "overcooked_v2"
 "ENV_KWARGS": 
   "layout" : "grounded_coord_simple"
@@ -17,17 +21,18 @@
 
 "TOTAL_TIMESTEPS": 3e7
 "REW_SHAPING_HORIZON": 1.5e7
+"SHAPED_REWARD_SCALE": 1.0
 
-"FC_DIM_SIZE": 128
+"FC_DIM_SIZE": 64
 "GRU_HIDDEN_DIM": 128
 
 "CLIP_EPS": 0.2
-"ENT_COEF": 0.01
+"ENT_COEF": 0.04
 "GAMMA": 0.99
 "GAE_LAMBDA": 0.95
 "SCALE_CLIP_EPS": False
 "VF_COEF": 0.5
-"MAX_GRAD_NORM": 0.25
+"MAX_GRAD_NORM": 0.5
 "ACTIVATION": "relu"
 "SEED": 0
 "NUM_SEEDS": 1
@@ -35,3 +40,5 @@
 "ENTITY": ""
 "PROJECT": ""
 "WANDB_MODE" : "online"
+"USE_RICH_MONITOR": True
+

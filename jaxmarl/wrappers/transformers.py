@@ -27,9 +27,45 @@ class TransformersCTRolloutManager(CTRolloutManager):
                 self._env.get_obs = self.spread_wrapped_get_obs
             self.global_state = lambda obs, state: obs['world_state']
         
+        # OVERCOOKED (v2 / v3)
+        elif 'overcooked' in env.name.lower():
+            # The grid observation is already a matrix: every cell becomes an entity
+            # token. Cells carry no implicit order for the transformer, so we append
+            # normalized (row, col) coordinates — without them the kitchen would be an
+            # unordered bag of cells and all spatial structure would be lost.
+            super().__init__(env, batch_size, training_agents=None, preprocess_obs=True)
+            self._preprocess_obs = self.overcooked_grid_to_matrix
+            self.global_state = self.overcooked_global_state
+
         else:
-            raise NotImplementedError('This implemention currently supports only MPE_spread and SMAX')
-        
+            raise NotImplementedError('This implemention currently supports only MPE_spread, SMAX and Overcooked')
+
+    @staticmethod
+    def _grid_coords(height, width):
+        """Normalized (row, col) per cell, flattened row-major to match reshape."""
+        rows = jnp.repeat(jnp.arange(height), width) / max(height - 1, 1)
+        cols = jnp.tile(jnp.arange(width), height) / max(width - 1, 1)
+        return jnp.stack((rows, cols), axis=-1)  # (height*width, 2)
+
+    @partial(jax.jit, static_argnums=0)
+    def overcooked_grid_to_matrix(self, obs, extra_feats):
+        """(H, W, C) grid -> (H*W, C + 2 coords + n_agents agent-id) entity tokens."""
+        height, width, channels = obs.shape
+        tokens = obs.reshape(height * width, channels)
+        coords = self._grid_coords(height, width)
+        agent_id = jnp.tile(extra_feats, (height * width, 1))
+        return jnp.concatenate((tokens, coords, agent_id), axis=-1)
+
+    @partial(jax.jit, static_argnums=0)
+    def overcooked_global_state(self, obs, state):
+        """Every agent's grid stacked on the feature axis, as (H*W, n_agents*C + 2)."""
+        grids = [
+            obs[agent].reshape(obs[agent].shape[0] * obs[agent].shape[1], -1)
+            for agent in self.agents
+        ]
+        height, width = obs[self.agents[0]].shape[0], obs[self.agents[0]].shape[1]
+        coords = self._grid_coords(height, width)
+        return jnp.concatenate(grids + [coords], axis=-1)
 
     @partial(jax.jit, static_argnums=0)
     def smax_obs_vec_to_matrix(self, obs, extra_feats):

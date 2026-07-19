@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/ippo_ff_mpe_facmac/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 "LR": 2.5e-4
 "NUM_ENVS": 2048
 "NUM_STEPS": 10

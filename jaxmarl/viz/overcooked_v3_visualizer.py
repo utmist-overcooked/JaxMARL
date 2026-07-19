@@ -114,11 +114,40 @@ class OvercookedV3Visualizer:
         return self._render_state(state, agent_view_size)
 
     def animate(self, state_seq, filename="animation.gif", agent_view_size=None):
-        """Animate a gif from a state sequence and save to file."""
-        if not HAS_IMAGEIO:
-            raise ImportError("imageio is required for animation. Install with: pip install imageio")
+        """Animate a gif from a state sequence and save to file.
+
+        Writes one frame per env step so the GIF always spans the full episode.
+        GIF encoders merge byte-identical consecutive frames, which would shorten
+        clips of (near-)static policies; we stamp an imperceptible per-frame
+        marker on a single corner pixel and disable optimization so every step
+        is kept.
+        """
         frame_seq = self.render_sequence(state_seq, agent_view_size)
-        imageio.mimsave(filename, frame_seq, "GIF", duration=0.5)
+        try:
+            from PIL import Image
+
+            frames = np.array(frame_seq, dtype=np.uint8, copy=True)
+            # Imperceptible per-frame marker so no two consecutive frames are
+            # identical -> the encoder cannot collapse a static episode.
+            marker = (np.arange(frames.shape[0]) % 256).astype(np.uint8)
+            frames[:, -1, -1, -1] = marker
+            imgs = [Image.fromarray(f) for f in frames]
+            imgs[0].save(
+                filename,
+                save_all=True,
+                append_images=imgs[1:],
+                duration=50,  # ms/frame; full-episode GIFs need brisk playback
+                loop=0,
+                optimize=False,
+                disposal=1,
+            )
+        except ImportError:
+            if not HAS_IMAGEIO:
+                raise ImportError(
+                    "Pillow or imageio is required for animation. "
+                    "Install with: pip install pillow"
+                )
+            imageio.mimsave(filename, frame_seq, "GIF", duration=0.5)
 
     def render_sequence(self, state_seq, agent_view_size=None):
         """Render a sequence of states to images."""
@@ -763,10 +792,23 @@ class OvercookedV3Visualizer:
             
             return img
 
+        def _render_garbage_can(cell, img):
+            """Render garbage can as a solid pink discard tile."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["pink"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.15, 0.85, 0.18, 0.82), COLORS["grey"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.25, 0.75, 0.28, 0.72), COLORS["pink"]
+            )
+            return img
+
 
         # Build render function lookup
         # Map static object types to render functions
-        render_fns = [_render_empty] * 26  # Enough for all object types (up to 25)
+        render_fns = [_render_empty] * 27  # Static ids up to 25 plus ingredient-pile fallback.
         render_fns[StaticObject.EMPTY] = _render_empty
         render_fns[StaticObject.WALL] = _render_wall
         render_fns[StaticObject.AGENT] = _render_agent
@@ -780,6 +822,7 @@ class OvercookedV3Visualizer:
         render_fns[StaticObject.MOVING_WALL] = _render_moving_wall
         render_fns[StaticObject.BUTTON] = _render_button
         render_fns[StaticObject.BARRIER] = _render_barrier
+        render_fns[StaticObject.GARBAGE_CAN] = _render_garbage_can
 
         # Handle ingredient piles (10-19)
         is_ingredient_pile = (static_object >= StaticObject.INGREDIENT_PILE_BASE) & \

@@ -163,7 +163,24 @@ def run_episode(
     target_frames: int | None = None,
     sample_actions: bool = True,
 ):
-    env = jaxmarl.make("overcooked_v3", layout=layout, max_steps=max_steps)
+    # Match the CTC training env config (order queue + conveyors) so the rendered
+    # policy behaves as it did during training. Item conveyors auto-enable from the
+    # layout, but the order queue and pot timings must be set explicitly.
+    env = jaxmarl.make(
+        "overcooked_v3",
+        layout=layout,
+        max_steps=max_steps,
+        pot_cook_time=20,
+        pot_burn_time=40,
+        enable_order_queue=True,
+        max_orders=5,
+        order_generation_rate=1.0,
+        order_expiration_time=0,
+        order_queue_mode="alternating",
+        plate_pickup_guard=1,
+        enable_item_conveyors=True,
+        enable_player_conveyors=False,
+    )
 
     config = {
         "CNN_OUT_DIM": 64,

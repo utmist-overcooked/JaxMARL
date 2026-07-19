@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/ippo_ff_mabrax/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 "LR": 1e-3
 "NUM_ENVS": 64
 "NUM_STEPS": 300

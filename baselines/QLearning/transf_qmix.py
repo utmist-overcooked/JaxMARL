@@ -7,9 +7,19 @@ The implementation closely follows the original one https://github.com/mttga/pym
 - The embeddings can be normalized with batch norm in order to stabilize the self-attention gradients.
 - It's added the possibility to perform $n$ training updates of the network at each update step. 
 
-Currently supports only MPE_spread and SMAX. Remember that to use the transformers in your environment you need 
+Supports MPE_spread, SMAX and Overcooked. Remember that to use the transformers in your environment you need
 to reshape the observations and states to matrices. See: jaxmarl.wrappers.transformers
+
+For Overcooked the grid observation is tokenized cell-wise: each of the H*W cells is an
+entity token carrying its channel features plus normalized (row, col) coordinates.
 """
+
+# Must precede any nn.scan tracing: flax 0.10.4 expects a newer jax debug_info API than
+# jax 0.4.38 provides, which otherwise breaks ScannedTransformer.
+try:
+    from baselines.QLearning import jax_flax_compat  # noqa: F401
+except ImportError:  # when run as a script, this dir is already on sys.path
+    import jax_flax_compat  # noqa: F401
 
 import os
 import copy
@@ -394,6 +404,39 @@ def make_train(config, env):
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     )
 
+    # Dense reward shaping (overcooked). Ported from qmix_rnn so the transformer
+    # teacher gets the same reward treatment as the other value-based teachers.
+    # The anneal is keyed to ENV steps, so REW_SHAPING_HORIZON has the same meaning
+    # here as in the other trainers.
+    rew_shaping_anneal = optax.linear_schedule(
+        init_value=1.0,
+        end_value=config.get("REW_SHAPING_MIN_COEFF", 0.0),
+        transition_steps=config.get("REW_SHAPING_HORIZON", config["TOTAL_TIMESTEPS"]),
+    )
+
+    def _batchify(x: dict):
+        return jnp.stack([x[agent] for agent in env.agents], axis=0)
+
+    def apply_reward_config(rewards, infos, rollout_steps):
+        """rollout_steps counts scan steps; env steps = rollout_steps * NUM_ENVS."""
+        if "shaped_reward" in infos:
+            shaped_reward = infos.pop("shaped_reward")
+            shaped_reward["__all__"] = _batchify(shaped_reward).sum(axis=0)
+            env_steps = rollout_steps * config["NUM_ENVS"]
+            anneal_factor = rew_shaping_anneal(env_steps)
+            rewards = jax.tree.map(
+                lambda r, s: r
+                + config.get("SHAPED_REWARD_COEFF", 0.0) * s * anneal_factor,
+                rewards,
+                shaped_reward,
+            )
+            infos["shaped_reward"] = shaped_reward["__all__"]
+            infos["anneal_factor"] = jnp.full_like(
+                shaped_reward["__all__"], anneal_factor
+            )
+        rewards = jax.tree.map(lambda x: config.get("REW_SCALE", 1) * x, rewards)
+        return rewards, infos
+
     def train(rng):
 
         # INIT ENV
@@ -410,6 +453,9 @@ def make_train(config, env):
             key_a = jax.random.split(key_a, env.num_agents)
             actions = {agent: wrapped_env.batch_sample(key_a[i], agent) for i, agent in enumerate(env.agents)}
             obs, env_state, rewards, dones, infos = wrapped_env.batch_step(key_s, env_state, actions)
+            # must mirror the real rollout, or the buffer's structure won't match
+            # (shaping replaces the per-agent shaped_reward dict and adds anneal_factor)
+            rewards, infos = apply_reward_config(rewards, infos, 0)
             transition = Transition(obs, actions, rewards, dones, infos)
             return env_state, transition
         _, sample_traj = jax.lax.scan(
@@ -615,8 +661,8 @@ def make_train(config, env):
 
                 # STEP ENV
                 obs, env_state, rewards, dones, infos = wrapped_env.batch_step(key_s, env_state, actions)
-                # reward scaling
-                rewards = jax.tree.map(lambda x:config.get("REW_SCALE", 1)*x, rewards)
+                # dense shaping (required on overcooked; a no-op for envs without it) + scaling
+                rewards, infos = apply_reward_config(rewards, infos, t)
                 transition = Transition(last_obs, actions, rewards, dones, infos)
 
                 step_state = (env_state, obs, dones, hstate, rng, t+1)
@@ -826,10 +872,32 @@ def make_train(config, env):
 
             if config.get('WANDB_ONLINE_REPORT', False):
                 def callback(metrics, infos):
-                    info_metrics = {
-                        k:v[...,0][infos["returned_episode"][..., 0]].mean()
-                        for k,v in infos.items() if k!="returned_episode"
-                    }
+                    # infos have mixed rank across envs: SMAX/MPE carry a trailing agent
+                    # axis, overcooked's event metrics are already (time, n_envs).
+                    def to_time_env(x):
+                        while x.ndim > 2:
+                            x = x[..., 0]
+                        return x
+                    mask = to_time_env(infos["returned_episode"]).astype(bool)
+                    any_episode_ended = bool(mask.any())
+                    info_metrics = {}
+                    for k, v in infos.items():
+                        if k == "returned_episode":
+                            continue
+                        if k.startswith("returned_episode"):
+                            # LogWrapper episode stats are only meaningful on the step an
+                            # episode ends. With a truncated BPTT window (NUM_STEPS <
+                            # max_steps) most rollouts contain no episode end, so masking
+                            # would yield an empty slice -> NaN. Log only when one ended.
+                            if any_episode_ended:
+                                info_metrics[k] = to_time_env(v)[mask].mean()
+                        else:
+                            # Per-step counters (event/*, shaped_reward, anneal_factor):
+                            # plain mean over EVERY axis, including the agent axis, exactly
+                            # as qmix_rnn does. Do NOT use to_time_env here: it takes
+                            # [..., 0], which would silently report agent_0 only and halve
+                            # the true event rate.
+                            info_metrics[k] = v.mean()
                     wandb.log(
                         {
                             **metrics['running_metrics'],
@@ -884,16 +952,29 @@ def make_train(config, env):
                 _rng,
             )
             step_state, (rewards, dones, infos) = jax.lax.scan(
-                _greedy_env_step, step_state, None, config["NUM_STEPS"]
+                # Training may use a truncated BPTT window (NUM_STEPS < max_steps) for
+                # memory, but the greedy eval must run a FULL episode or the delivery
+                # metrics are cut short.
+                _greedy_env_step, step_state, None,
+                config.get("TEST_NUM_STEPS", config["NUM_STEPS"])
             )
+            # Greedy eval deliberately does NOT apply reward shaping, so test returns
+            # stay the true env return. But overcooked still reports shaped_reward as a
+            # per-agent dict; flatten it so every info leaf is an array.
+            if isinstance(infos.get("shaped_reward"), dict):
+                infos = {**infos, "shaped_reward": _batchify(infos["shaped_reward"]).sum(axis=0)}
             # compute the metrics of the first episode that is done for each parallel env
             def first_episode_returns(rewards, dones):
                 first_done = jax.lax.select(jnp.argmax(dones)==0., dones.size, jnp.argmax(dones))
                 first_episode_mask = jnp.where(jnp.arange(dones.size) <= first_done, True, False)
                 return jnp.where(first_episode_mask, rewards, 0.).sum()
             all_dones = dones['__all__']
+            def drop_agent_axis(i):
+                # SMAX/MPE infos carry a trailing per-agent axis; overcooked's are
+                # already (time, n_envs), so only index an agent axis that exists.
+                return i[..., 0] if i.ndim == all_dones.ndim + 1 else i
             first_returns = jax.tree.map(lambda r: jax.vmap(first_episode_returns, in_axes=1)(r, all_dones), rewards)
-            first_infos   = jax.tree.map(lambda i: jax.vmap(first_episode_returns, in_axes=1)(i[..., 0], all_dones), infos)
+            first_infos   = jax.tree.map(lambda i: jax.vmap(first_episode_returns, in_axes=1)(drop_agent_axis(i), all_dones), infos)
             metrics = {
                 'test_returns': first_returns['__all__'],# episode returns
                 **{'test_'+k:v for k,v in first_infos.items()}
@@ -943,6 +1024,15 @@ def env_from_config(config):
     elif "mpe" in env_name.lower():
         env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
         env = MPELogWrapper(env)
+    elif "overcooked" in env_name.lower():
+        env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"
+        env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
+        # CTRolloutManager needs these dicts; the overcooked envs expose them as methods
+        env.observation_spaces = {
+            agent: env.observation_space(agent) for agent in env.agents
+        }
+        env.action_spaces = {agent: env.action_space(agent) for agent in env.agents}
+        env = LogWrapper(env)
     else:
         raise NotImplementedError(f"Environment {env_name} not implemented.")
     return env, env_name
@@ -963,7 +1053,7 @@ def single_run(config):
             env_name.upper(),
             f"jax_{jax.__version__}",
         ],
-        name=f"{alg_name}_{env_name}",
+        name=config.get("WANDB_NAME", f"{alg_name}_{env_name}"),
         config=config,
         mode=config["WANDB_MODE"],
     )

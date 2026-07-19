@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/ippo_rnn_smax/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 "LR": 0.004
 "NUM_ENVS": 128
 "NUM_STEPS": 128

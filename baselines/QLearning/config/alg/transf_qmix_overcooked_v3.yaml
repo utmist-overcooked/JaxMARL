@@ -1,0 +1,89 @@
+# TransfQMix on Overcooked-V3 (coordinated_temporal_conveyor).
+# Entities = grid cells: the (H, W, C) full-obs grid is tokenized cell-wise into H*W
+# tokens, each carrying its channel features + normalized (row, col) coords, so the
+# transformer attends over the kitchen layout. See jaxmarl/wrappers/transformers.py.
+"ALG_NAME": "transf_qmix"
+
+# rollout / buffer
+# MEMORY: attention is O(tokens^2) and the learn step replays it over BUFFER_BATCH_SIZE
+# trajectories x NUM_STEPS x 61 tokens. The QMIX teacher's full-episode BPTT
+# (NUM_STEPS=400) x BUFFER_BATCH_SIZE=32 needs ~30GB on a 16GB card. So we use a
+# truncated 128-step BPTT window (the recurrent CLS token still carries state across
+# the episode) and a smaller learn batch. The greedy eval still runs a FULL 400-step
+# episode via TEST_NUM_STEPS, so delivery metrics stay comparable to the other teachers.
+"NUM_ENVS": 4
+"NUM_STEPS": 128
+"N_MINI_UPDATES": 4
+"BUFFER_SIZE": 512
+"BUFFER_BATCH_SIZE": 8
+"TOTAL_TIMESTEPS": 15.e+6
+
+# transformer agent
+"AGENT_INIT_SCALE": 1.
+"AGENT_HIDDEN_DIM": 64
+"AGENT_TRANSF_NUM_LAYERS": 2
+"AGENT_TRANSF_NUM_HEADS": 4
+"AGENT_TRANSF_DIM_FF": 128
+
+# transformer mixer
+"MIXER_INIT_SCALE": 1.
+"MIXER_TRANSF_NUM_LAYERS": 2
+"MIXER_TRANSF_NUM_HEADS": 4
+"MIXER_TRANSF_DIM_FF": 128
+
+"USE_FAST_ATTENTION": False  # fast_attention.py is not present in this repo
+"SCALE_INPUTS": True         # batch-norm the token embeddings
+"EMBEDDER_USE_RELU": True
+
+# exploration / optim
+"EPSILON_START": 1.0
+"EPSILON_FINISH": 0.05
+# UNITS: the explorer is fed `t` = per-env rollout steps, NOT env steps
+# (env_step = t * NUM_ENVS). Total t over the run = TOTAL_TIMESTEPS / NUM_ENVS = 3.75M.
+# Setting this in env-step units (6e6) exceeds total t, so epsilon would never finish
+# annealing -- the agent stays >=40% random forever and never exploits.
+# 750k t == 3M env steps, matching the QMIX baseline's effective schedule (it reached
+# greedy by ~3M env steps and started delivering at ~3.9M). A random policy NEVER places
+# an ingredient in a pot, so nothing can happen until epsilon actually decays.
+"EPSILON_ANNEAL_TIME": 750000
+"MAX_GRAD_NORM": 10.
+"TARGET_UPDATE_INTERVAL": 10
+"LR": 0.00025                    # from the QMIX sweep winner
+"LR_DECAY_TYPE": None
+"LR_EXP_DECAY_RATE": 0.00002
+"LR_WARMUP": 10
+"EPS_ADAM": 0.0000000001
+"TD_LAMBDA_LOSS": False
+"TD_LAMBDA": 0.6
+"GAMMA": 0.99
+
+# rewards — same env reward table as every other teacher; shaping strength/anneal
+# taken from the QMIX sweep winner (the best-known value-based recipe on this map).
+"REW_SCALE": 1.
+"SHAPED_REWARD_COEFF": 5.0
+"REW_SHAPING_MIN_COEFF": 0.5
+"REW_SHAPING_HORIZON": 15.e+6
+
+# eval
+"VERBOSE": False
+"WANDB_ONLINE_REPORT": True
+"NUM_TEST_EPISODES": 8    # greedy eval batch also pays the O(tokens^2) attention cost
+"TEST_NUM_STEPS": 400     # == max_steps: eval a full episode even though BPTT is 128
+"TEST_INTERVAL": 500000
+
+# ENV — the common CTC teacher env (identical to IPPO / MAPPO / QMIX teachers)
+"ENV_NAME": "overcooked_v3"
+"ENV_KWARGS":
+  "layout": "coordinated_temporal_conveyor"
+  "agent_view_size": null      # full observation (teacher)
+  "max_steps": 400
+  "pot_cook_time": 60
+  "pot_burn_time": 90
+  "enable_order_queue": true
+  "max_orders": 5
+  "order_generation_rate": 1.0
+  "order_expiration_time": 0
+  "order_queue_mode": "alternating"
+  "plate_pickup_guard": 1
+  "enable_item_conveyors": true
+  "enable_player_conveyors": false

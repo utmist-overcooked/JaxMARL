@@ -1,0 +1,85 @@
+hydra:
+  run:
+    dir: ${oc.env:SCRATCH,.}/jaxmarl/outputs/mappo_rnn_overcooked_v3_fsq_qmix_distill/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+# ── Student environment ──────────────────────────────────────────────────
+# Mirrors the QMIX teacher's CTC training env EXACTLY (so the teacher's full-obs
+# Q-values stay in-distribution), except the student is partially observed
+# (agent_view_size) and must learn to communicate via the FSQ channel.
+# Teacher run: wandb ocv3_ctc_comparison/urm30dyu (qmix_ctc_15m_handoff_20260702).
+# NOTE: pot cook/burn = 60/90 here to match the QMIX run's env (its overrides set
+# pot_cook_time=60/pot_burn_time=90), unlike the IPPO teacher's 20/40.
+"ENV_KWARGS":
+  "layout": "coordinated_temporal_conveyor"
+  "agent_view_size": 2          # student partial view; teacher gets full obs
+  "shaped_rewards": True
+  "random_agent_positions": False   # keep teacher targets in-distribution
+  "max_steps": 400
+  "pot_cook_time": 60
+  "pot_burn_time": 90
+  "enable_order_queue": True
+  "max_orders": 5
+  "order_generation_rate": 1.0
+  "order_expiration_time": 0
+  "order_queue_mode": "alternating"
+  "plate_pickup_guard": 1
+  "enable_item_conveyors": True
+  "enable_player_conveyors": False
+
+# ── Optimisation ─────────────────────────────────────────────────────────
+"LR": 0.00025
+"ANNEAL_LR": True
+"LR_WARMUP": 0.05
+
+"NUM_ENVS": 256
+"NUM_STEPS": 256
+"UPDATE_EPOCHS": 4
+"NUM_MINIBATCHES": 64
+
+"TOTAL_TIMESTEPS": 3e7
+"REW_SHAPING_HORIZON": 1.5e7
+"SHAPED_REWARD_SCALE": 1.0
+
+# ── Student network ──────────────────────────────────────────────────────
+"FC_DIM_SIZE": 64
+"GRU_HIDDEN_DIM": 128
+
+# ── FSQ communication ────────────────────────────────────────────────────
+"FSQ_LEVELS": [5, 5, 5]
+
+# ── Distillation (QMIX teacher → FSQ student) ───────────────────────────
+# TEACHER_ACTOR_PATH: the QMIX agent ..._vmap0.safetensors (or a dir with one).
+"TEACHER_ACTOR_PATH": "checkpoints/qmix_ctc_15m_handoff_20260702/overcooked_v3_coordinated_temporal_conveyor/qmix_rnn_overcooked_v3_coordinated_temporal_conveyor_seed42_vmap0.safetensors"
+# Teacher GRU width — must match the trained QMIX checkpoint (HIDDEN_SIZE).
+"TEACHER_HIDDEN_SIZE": 256
+"DISTILL_COEF": 1.0
+# QMIX Q-values have a tiny across-action spread (~0.01), so we standardize them
+# per action-vector (zero mean/unit std) before the KL; the teacher target then
+# reflects the greedy action ranking. Temperature sharpens on that calibrated
+# scale (verified: real QMIX greedy delivers ~4/episode on CTC).
+"TEACHER_Q_STANDARDIZE": True
+"DISTILL_TEMPERATURE": 0.5
+"DISTILL_DECAY_FRACTION": 0.30
+
+# ── PPO ──────────────────────────────────────────────────────────────────
+"CLIP_EPS": 0.2
+"ENT_COEF": 0.04
+"GAMMA": 0.99
+"GAE_LAMBDA": 0.95
+"VF_COEF": 0.5
+"MAX_GRAD_NORM": 0.5
+"ACTIVATION": "relu"
+"SEED": 0
+"NUM_SEEDS": 1
+
+# ── Logging / bookkeeping ────────────────────────────────────────────────
+"ENTITY": ""
+"PROJECT": ""
+"WANDB_MODE": "disabled"
+"WANDB_RUN_NAME": ""
+"WANDB_DIR": "${oc.env:SCRATCH,.}/jaxmarl/mappo_overcooked_v3_fsq_qmix_distill"
+"USE_RICH_MONITOR": True
+"DISABLE_CHECKPOINTS": False
+
+# CARBS sweep (not wired for distillation; TUNE must stay False)
+"TUNE": False

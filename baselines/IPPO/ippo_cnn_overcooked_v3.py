@@ -37,6 +37,7 @@ import hydra
 from omegaconf import OmegaConf
 import wandb
 from baselines.IC3Net.monitor import TrainingMonitorInterface
+from baselines.IPPO import wandb_logging as wandb_logs
 
 
 def _save_model_params(params, save_path):
@@ -69,7 +70,6 @@ EVENT_METRIC_NAMES = (
     "order_expired",
     "order_added",
 )
-_ACTIVE_MONITOR = None
 _ACTIVE_SHAPED_REWARD_KEYS = (
     "INGREDIENT_PICKUP",
     "PLACEMENT_IN_POT",
@@ -99,6 +99,10 @@ def _build_reward_structure(config: Dict[str, Any]) -> Dict[str, Any]:
         reward_name: float(reward_value)
         for reward_name, reward_value in SHAPED_REWARDS.items()
     }
+    dish_target_reward = float(_env_kwarg(config, "dish_to_target_progress_reward", 0.0))
+    dish_target_enabled = dish_target_reward != 0.0
+    if dish_target_enabled:
+        raw_shaped_rewards["DISH_TO_GOAL_PROGRESS"] = dish_target_reward
 
     reward_rows = [
         {
@@ -130,6 +134,9 @@ def _build_reward_structure(config: Dict[str, Any]) -> Dict[str, Any]:
                 ),
                 "active_in_learning": active,
                 "note": (
+                    "Redirected to a fixed curriculum target square."
+                    if reward_name == "DISH_TO_GOAL_PROGRESS" and dish_target_enabled
+                    else
                     "Configured but not currently added by the environment."
                     if not used_by_env
                     else "Weight is zero; event may still be logged."
@@ -189,6 +196,10 @@ def _build_reward_structure(config: Dict[str, Any]) -> Dict[str, Any]:
             ),
             "order_expiration_time": order_expiration_time,
             "max_steps": int(_env_kwarg(config, "max_steps", 400)),
+            "dish_to_target_enabled": dish_target_enabled,
+            "dish_to_target_row": int(_env_kwarg(config, "dish_to_target_row", -1)),
+            "dish_to_target_col": int(_env_kwarg(config, "dish_to_target_col", -1)),
+            "dish_to_target_agent": int(_env_kwarg(config, "dish_to_target_agent", -1)),
         },
         "shaped_rewards": raw_shaped_rewards,
         "rewards": reward_rows,
@@ -254,76 +265,18 @@ def _log_reward_structure_to_wandb(config: Dict[str, Any]) -> None:
     wandb.log({"reward_structure/table": table, **flat_metrics}, step=0)
 
 
-def _to_python_value(value):
-    arr = np.asarray(value)
-    if arr.shape == () or arr.size == 1:
-        return arr.reshape(()).item()
-    return arr.tolist()
-
-
-def _flatten_metric_dict(metric: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
-    flat = {}
-    for key, value in metric.items():
-        name = f"{prefix}/{key}" if prefix else str(key)
-        if isinstance(value, dict):
-            flat.update(_flatten_metric_dict(value, name))
-        else:
-            flat[name] = _to_python_value(value)
-    return flat
-
-
-def _first_scalar(value, default=0):
-    if isinstance(value, (list, tuple)):
-        return _first_scalar(value[0], default) if value else default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _monitor_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    keys = (
-        ("env_step", "env_step"),
-        ("base_reward_per_step", "base_rew/step"),
-        ("combined_reward_per_step", "combined_rew/step"),
-        ("combined_reward", "combined_rew"),
-        ("delivery", "delivery"),
-        ("event/pickup", "pickup"),
-        ("event/drop", "drop"),
-        ("event/pot_placement", "pot_place"),
-        ("event/pot_start_cooking", "pot_start"),
-        ("event/dish_pickup", "dish_pickup"),
-        ("event/dish_to_goal_progress", "dish_to_goal"),
-        ("event/pot_burn", "pot_burn"),
-        ("event/order_expired", "order_expired"),
-        ("event/order_added", "order_added"),
-        ("order/front_type", "order_front"),
-        ("order/active_count", "orders_active"),
-        ("loss/total", "loss"),
-        ("loss/value", "value_loss"),
-        ("loss/entropy", "entropy"),
-        ("anneal_factor", "anneal"),
-    )
-    return {label: payload[key] for key, label in keys if key in payload}
-
-
 def _log_training_metrics(metric: Dict[str, Any]) -> None:
     """Move JAX-side metrics to Python for W&B and terminal progress logging.
 
     The training loop is JIT-compiled, so ordinary Python logging cannot run
     inside it. jax.debug.callback calls this function after each PPO update.
     """
-    payload = _flatten_metric_dict(metric)
-    env_step = _first_scalar(payload.get("env_step", payload.get("update_step", 0)))
-    update_step = _first_scalar(payload.get("update_step", 0))
-    payload["env_step"] = env_step
-    payload["update_step"] = update_step
+    wandb_logs.log_training_metrics(metric)
 
-    if wandb.run is not None:
-        wandb.log(payload, step=env_step)
 
-    if _ACTIVE_MONITOR is not None:
-        _ACTIVE_MONITOR.update(update_step, _monitor_payload(payload))
+def _log_history_table_to_wandb() -> None:
+    """Upload table-backed charts as a fallback when scalar history is flaky."""
+    wandb_logs.log_history_table_to_wandb()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -769,9 +722,9 @@ def make_train(config):
 
 @hydra.main(version_base=None, config_path="config", config_name="ippo_cnn_overcooked_v3")
 def main(config):
-    global _ACTIVE_MONITOR
-
     config = OmegaConf.to_container(config)
+    capture_wandb_history_table = bool(config.get("WANDB_LOG_HISTORY_TABLE", False))
+    wandb_logs.reset_wandb_logging(capture_wandb_history_table)
 
     # W&B receives both config and per-update metrics. The actual x-axis is
     # env_step rather than W&B's implicit row number, which makes runs with
@@ -784,8 +737,7 @@ def main(config):
         name=config.get("WANDB_NAME") or f'ippo_cnn_v3_{config["ENV_KWARGS"]["layout"]}',
     )
     if wandb.run is not None:
-        wandb.define_metric("env_step")
-        wandb.define_metric("*", step_metric="env_step")
+        wandb_logs.define_wandb_metrics()
 
     rng = jax.random.PRNGKey(config["SEED"])
     rngs = jax.random.split(rng, config["NUM_SEEDS"])
@@ -815,7 +767,7 @@ def main(config):
 
     try:
         with TrainingMonitorInterface(config["NUM_UPDATES"], monitor_config) as monitor:
-            _ACTIVE_MONITOR = monitor
+            wandb_logs.set_active_monitor(monitor)
             monitor.log(
                 "Compiling + training IPPO CNN v3 on "
                 f"{config['ENV_KWARGS']['layout']} for {config['TOTAL_TIMESTEPS']:,} "
@@ -839,8 +791,7 @@ def main(config):
             )
             model_path = _save_model_params(train_state.params, save_path)
             if wandb.run is not None:
-                completed_env_steps = config["NUM_UPDATES"] * config["NUM_STEPS"] * config["NUM_ENVS"]
-                wandb.log({"saved_model_path": model_path}, step=int(completed_env_steps))
+                wandb.run.summary["saved_model_path"] = model_path
 
             # Generate one rollout from the saved policy and animate it. This is
             # the GIF we inspect after training to see what behavior emerged.
@@ -855,8 +806,10 @@ def main(config):
             viz = OvercookedV3Visualizer(env_viz)
             viz.animate(state_seq, filename=gif_path)
             print(f"** GIF saved to: {gif_path} **", flush=True)
+
+            _log_history_table_to_wandb()
     finally:
-        _ACTIVE_MONITOR = None
+        wandb_logs.set_active_monitor(None)
         wandb.finish()
 
 

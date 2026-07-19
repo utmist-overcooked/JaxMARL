@@ -33,6 +33,7 @@ class StaticObject(IntEnum):
     MOVING_WALL = 22
     BUTTON = 23
     BARRIER = 24
+    GARBAGE_CAN = 25
 
     @staticmethod
     def is_ingredient_pile(obj):

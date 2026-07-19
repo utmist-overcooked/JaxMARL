@@ -34,6 +34,7 @@ import hydra
 from omegaconf import OmegaConf
 import wandb
 from baselines.IC3Net.monitor import TrainingMonitorInterface
+from baselines.IPPO import wandb_logging as wandb_logs
 from baselines.IPPO.ippo_cnn_overcooked_v3 import (
     EVENT_METRIC_NAMES,
     _log_reward_structure_to_wandb,
@@ -48,74 +49,12 @@ def _save_model_params(params, save_path):
     return model_path
 
 
-_ACTIVE_MONITOR = None
-
-
-def _to_python_value(value):
-    arr = np.asarray(value)
-    if arr.shape == () or arr.size == 1:
-        return arr.reshape(()).item()
-    return arr.tolist()
-
-
-def _flatten_metric_dict(metric: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
-    flat = {}
-    for key, value in metric.items():
-        name = f"{prefix}/{key}" if prefix else str(key)
-        if isinstance(value, dict):
-            flat.update(_flatten_metric_dict(value, name))
-        else:
-            flat[name] = _to_python_value(value)
-    return flat
-
-
-def _first_scalar(value, default=0):
-    if isinstance(value, (list, tuple)):
-        return _first_scalar(value[0], default) if value else default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _monitor_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    keys = (
-        ("env_step", "env_step"),
-        ("base_reward_per_step", "base_rew/step"),
-        ("combined_reward_per_step", "combined_rew/step"),
-        ("combined_reward", "combined_rew"),
-        ("delivery", "delivery"),
-        ("event/pickup", "pickup"),
-        ("event/drop", "drop"),
-        ("event/pot_placement", "pot_place"),
-        ("event/pot_start_cooking", "pot_start"),
-        ("event/dish_pickup", "dish_pickup"),
-        ("event/dish_to_goal_progress", "dish_to_goal"),
-        ("event/pot_burn", "pot_burn"),
-        ("event/order_expired", "order_expired"),
-        ("event/order_added", "order_added"),
-        ("order/front_type", "order_front"),
-        ("order/active_count", "orders_active"),
-        ("loss/total", "loss"),
-        ("loss/value", "value_loss"),
-        ("loss/entropy", "entropy"),
-        ("anneal_factor", "anneal"),
-    )
-    return {label: payload[key] for key, label in keys if key in payload}
-
-
 def _log_training_metrics(metric: Dict[str, Any]) -> None:
-    payload = _flatten_metric_dict(metric)
-    env_step = _first_scalar(payload.get("env_step", payload.get("update_step", 0)))
-    update_step = _first_scalar(payload.get("update_step", 0))
-    payload["env_step"] = env_step
-    payload["update_step"] = update_step
+    wandb_logs.log_training_metrics(metric)
 
-    if wandb.run is not None:
-        wandb.log(payload, step=env_step)
 
-    if _ACTIVE_MONITOR is not None:
-        _ACTIVE_MONITOR.update(update_step, _monitor_payload(payload))
+def _log_history_table_to_wandb() -> None:
+    wandb_logs.log_history_table_to_wandb()
 
 
 # ── Network Architecture ───────────────────────────────────────────────
@@ -356,6 +295,16 @@ def make_train(config):
         init_hstate = jnp.zeros((config["NUM_ENVS"], hidden_dim))
         network_params = network.init(_rng, init_hstate, init_x)
 
+        # Optional warm-start: initialize from a previously trained checkpoint.
+        load_path = config.get("LOAD_PATH")
+        if load_path:
+            model_file = os.path.join(load_path, "model.msgpack")
+            with open(model_file, "rb") as f:
+                restored = serialization.msgpack_restore(f.read())
+            loaded = restored.get("params", restored) if isinstance(restored, dict) else restored
+            network_params = jax.tree_util.tree_map(jnp.asarray, loaded)
+            print(f"[warm-start] IPPO initialized from {model_file}", flush=True)
+
         if config.get("ANNEAL_LR", True):
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
@@ -529,7 +478,7 @@ def make_train(config):
                 def _update_minbatch(train_state, batch_info):
                     init_hstate, traj_batch, advantages, targets = batch_info
 
-                    def _loss_fn(params, init_hstate, traj_batch, gae, targets):
+                    def _loss_fn(params, init_hstate, traj_batch, gae, targets, ent_coef):
                         _, pi, value = network.apply(
                             params,
                             init_hstate[0],
@@ -568,9 +517,9 @@ def make_train(config):
                         loss_actor = loss_actor.mean()
                         entropy = pi.entropy().mean()
 
-                        ent_coef = jnp.maximum(
-                            config["ENT_COEF"], config.get("ENT_COEF_MIN", 0.0)
-                        )
+                        # ent_coef is annealed by the caller (linear ENT_COEF ->
+                        # ENT_COEF_MIN over training) so the policy explores early
+                        # and sharpens late instead of staying jittery.
                         entropy_floor = config.get("ENTROPY_FLOOR", 0.0)
                         entropy_floor_coef = config.get("ENTROPY_FLOOR_COEF", 0.0)
                         entropy_deficit = jnp.maximum(0.0, entropy_floor - entropy)
@@ -583,6 +532,24 @@ def make_train(config):
                         )
                         return total_loss, (value_loss, loss_actor, entropy)
 
+                    # Linearly anneal the entropy coefficient from ENT_COEF to
+                    # ENT_COEF_MIN over the course of training (keyed to the
+                    # optimizer step), so exploration is high early and the
+                    # policy can sharpen (less jitter) as it converges.
+                    total_grad_steps = (
+                        config["NUM_UPDATES"]
+                        * config["UPDATE_EPOCHS"]
+                        * config["NUM_MINIBATCHES"]
+                    )
+                    ent_frac = jnp.clip(
+                        train_state.step.astype(jnp.float32) / total_grad_steps,
+                        0.0,
+                        1.0,
+                    )
+                    ent_coef = config["ENT_COEF"] + ent_frac * (
+                        config.get("ENT_COEF_MIN", 0.0) - config["ENT_COEF"]
+                    )
+
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
                         train_state.params,
@@ -590,6 +557,7 @@ def make_train(config):
                         traj_batch,
                         advantages,
                         targets,
+                        ent_coef,
                     )
                     train_state = train_state.apply_gradients(grads=grads)
                     return train_state, total_loss
@@ -755,6 +723,8 @@ def run_wandb_sweep(base_config):
 
     def _objective():
         with wandb.init(project=project, config=base_config, mode="online") as run:
+            wandb_logs.reset_wandb_logging(False)
+            wandb_logs.define_wandb_metrics()
             run_config = dict(run.config)
             train_config = dict(base_config)
             train_config.update(run_config)
@@ -771,7 +741,7 @@ def run_wandb_sweep(base_config):
             base_save_path = train_config.get("SAVE_PATH", "checkpoints/ippo_overcooked_v3")
             run_save_path = os.path.join(base_save_path, f"sweep_{run.id}")
             model_path = _save_model_params(params, run_save_path)
-            wandb.log({"saved_model_path": model_path})
+            wandb.run.summary["saved_model_path"] = model_path
 
     sweep_id = wandb.sweep(sweep=sweep_configuration, project=project)
     wandb.agent(sweep_id, function=_objective, count=sweep_count)
@@ -782,9 +752,9 @@ def run_wandb_sweep(base_config):
 )
 def main(config):
     """Main training entry point."""
-    global _ACTIVE_MONITOR
-
     config = OmegaConf.to_container(config, resolve=True)
+    capture_wandb_history_table = bool(config.get("WANDB_LOG_HISTORY_TABLE", False))
+    wandb_logs.reset_wandb_logging(capture_wandb_history_table)
 
     if config.get("WANDB_SWEEP", False):
         run_wandb_sweep(config)
@@ -801,8 +771,7 @@ def main(config):
         name=config.get("WANDB_NAME") or f"ippo_rnn_overcooked_v3_{layout_name}",
     )
     if wandb.run is not None:
-        wandb.define_metric("env_step")
-        wandb.define_metric("*", step_metric="env_step")
+        wandb_logs.define_wandb_metrics()
 
     rng = jax.random.PRNGKey(config.get("SEED", 42))
     train_fn = make_train(config)
@@ -829,7 +798,7 @@ def main(config):
 
     try:
         with TrainingMonitorInterface(config["NUM_UPDATES"], monitor_config) as monitor:
-            _ACTIVE_MONITOR = monitor
+            wandb_logs.set_active_monitor(monitor)
             monitor.log(
                 "Compiling + training IPPO RNN v3 on "
                 f"{layout_name} for {config['TOTAL_TIMESTEPS']:,} env steps "
@@ -846,9 +815,8 @@ def main(config):
             model_path = _save_model_params(params, save_path)
             print(f"Saved model checkpoint to: {model_path}", flush=True)
 
-            completed_env_steps = config["NUM_UPDATES"] * config["NUM_STEPS"] * config["NUM_ENVS"]
             if wandb.run is not None:
-                wandb.log({"saved_model_path": model_path}, step=int(completed_env_steps))
+                wandb.run.summary["saved_model_path"] = model_path
 
             gif_path = config.get("SAVE_GIF_PATH")
             if gif_path:
@@ -858,8 +826,10 @@ def main(config):
                 viz = OvercookedV3Visualizer(env_viz)
                 viz.animate(state_seq, filename=gif_path)
                 print(f"Saved GIF to: {gif_path}", flush=True)
+
+            _log_history_table_to_wandb()
     finally:
-        _ACTIVE_MONITOR = None
+        wandb_logs.set_active_monitor(None)
         wandb.finish()
 
 

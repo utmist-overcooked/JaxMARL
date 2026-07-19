@@ -5,9 +5,12 @@ ENV_KWARGS:
   max_steps: 400
   pot_cook_time: 20
   pot_burn_time: 40
-  enable_order_queue: false
-  order_generation_rate: 0.0
-  order_expiration_time: 0
+  enable_order_queue: true
+  max_orders: 5
+  order_generation_rate: 0.1
+  order_expiration_time: 200
+  order_queue_mode: "random"
+  plate_pickup_guard: 1
 
 # Network
 # Match the current RNN width defaults so CNN-vs-RNN comparisons are less
@@ -26,7 +29,7 @@ NUM_MINIBATCHES: 16
 GAMMA: 0.99
 GAE_LAMBDA: 0.95
 CLIP_EPS: 0.2
-ENT_COEF: 0.01
+ENT_COEF: 0.1
 VF_COEF: 0.5
 MAX_GRAD_NORM: 0.5
 ANNEAL_LR: true
@@ -44,6 +47,7 @@ ENTITY: ""
 PROJECT: "ippo_v3_cnn"
 WANDB_NAME: ~
 WANDB_MODE: "disabled"
+WANDB_LOG_HISTORY_TABLE: false
 
 # Set to an absolute path to control where the gif is saved
 SAVE_GIF_PATH: ~

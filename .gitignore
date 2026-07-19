@@ -28,3 +28,9 @@ venv/
 /outputs/*/*
 build/
 *.csv
+
+# Local docs, scripts, and results — keep new working files out of git
+# (already-tracked files under these dirs stay tracked)
+/docs/
+/scripts/
+/results/

@@ -11,13 +11,21 @@ from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 import jaxmarl
 from jaxmarl.wrappers.baselines import LogWrapper, OvercookedV2LogWrapper
 from jaxmarl.environments import overcooked_v2_layouts
-from jaxmarl.viz.overcooked_v2_visualizer import OvercookedV2Visualizer
+# from jaxmarl.viz.overcooked_v2_visualizer import OvercookedV2Visualizer
 import hydra
 from omegaconf import OmegaConf
 from datetime import datetime
 import os
+import sys
 import wandb
 import functools
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+try:
+    from utils.monitor import TrainingMonitor
+    _MONITOR_AVAILABLE = True
+except ImportError:
+    _MONITOR_AVAILABLE = False
 
 
 class ScannedRNN(nn.Module):
@@ -218,7 +226,7 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
-def make_train(config):
+def make_train(config, monitor=None):
     env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
 
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
@@ -267,6 +275,8 @@ def make_train(config):
     )
 
     def train(rng):
+
+        original_seed = rng[0]
 
         # INIT NETWORK
         network = ActorCriticRNN(env.action_space(env.agents[0]).n, config=config)
@@ -550,14 +560,34 @@ def make_train(config):
             metric = traj_batch.info
             rng = update_state[-1]
 
-            def callback(metric):
-                wandb.log(metric)
+            def callback(metric, original_seed):
+                step = int(metric["env_step"])
+                updates = int(metric["update_step"])
+                num_updates = int(config["NUM_UPDATES"])
+                ret = float(metric.get("returned_episode_returns", 0.0))
+
+                if monitor is not None:
+                    monitor.update(
+                        step=updates,
+                        metrics={
+                            "env_step": step,
+                            "update": f"{updates}/{num_updates}",
+                            "train_return": ret,
+                            "shaped_reward": float(metric.get("shaped_reward", 0.0)),
+                            "original_reward": float(metric.get("original_reward", 0.0)),
+                            "anneal_factor": float(metric.get("anneal_factor", 0.0)),
+                        },
+                        seed=int(original_seed),
+                    )
+
+                if config["WANDB_MODE"] != "disabled":
+                    wandb.log(metric)
 
             update_step = update_step + 1
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
             metric["update_step"] = update_step
             metric["env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
-            jax.debug.callback(callback, metric)
+            jax.debug.callback(callback, metric, original_seed)
 
             runner_state = (
                 train_state,
@@ -606,11 +636,36 @@ def main(config):
         name=f"ippo_rnn_overcooked_v2_{layout_name}",
     )
 
+    num_updates = int(
+        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
+    )
+    use_monitor = config.get("USE_RICH_MONITOR", True) and _MONITOR_AVAILABLE
+    monitor = None
+    if use_monitor:
+        monitor = TrainingMonitor(
+            total_updates=num_updates,
+            config_dict={
+                "env": config["ENV_NAME"],
+                "layout": layout_name,
+                "total_timesteps": int(config["TOTAL_TIMESTEPS"]),
+                "num_updates": num_updates,
+                "num_envs": config["NUM_ENVS"],
+                "num_seeds": num_seeds,
+                "lr": config["LR"],
+                "gamma": config["GAMMA"],
+            },
+            title=f"IPPO-RNN - OvercookedV2 ({layout_name})",
+        )
+
     with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config["SEED"])
         rngs = jax.random.split(rng, num_seeds)
-        train_jit = jax.jit(make_train(config))
-        out = jax.vmap(train_jit)(rngs)
+        train_jit = jax.jit(make_train(config, monitor=monitor))
+        if monitor is not None:
+            with monitor:
+                out = jax.block_until_ready(jax.vmap(train_jit)(rngs))
+        else:
+            out = jax.vmap(train_jit)(rngs)
 
 
 if __name__ == "__main__":

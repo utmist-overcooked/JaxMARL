@@ -1,0 +1,733 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    python_version: 3.10.12
+    cli_version: 0.26.1
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1781053147
+    t:
+      1:
+      - 12
+      - 45
+      - 50
+      2:
+      - 12
+      - 45
+      - 50
+      3:
+      - 2
+      - 4
+      - 7
+      - 13
+      - 15
+      - 16
+      - 42
+      - 61
+      - 62
+      4: 3.10.12
+      5: 0.26.1
+      13: linux-x86_64
+    e:
+      ilyv4iya0lumoegdrotva5pgmcfar0ru:
+        os: Linux-6.8.0-124-generic-x86_64-with-glibc2.35
+        python: CPython 3.10.12
+        started_at: '2026-06-10T00:59:06.768681Z'
+        args:
+        - TOTAL_TIMESTEPS=160
+        - NUM_ENVS=8
+        - NUM_STEPS=20
+        - NUM_MINIBATCHES=4
+        - WANDB_MODE=offline
+        - WANDB_LOG_HISTORY_TABLE=true
+        - SAVE_PATH=checkpoints/smoke_ippo_v3_cpu
+        - WANDB_NAME=smoke_ippo_v3_cpu
+        program: /student/brownd58/dev/JaxMARL/baselines/IPPO/ippo_rnn_overcooked_v3.py
+        code_path: baselines/IPPO/ippo_rnn_overcooked_v3.py
+        code_path_local: baselines/IPPO/ippo_rnn_overcooked_v3.py
+        git:
+          remote_url: https://github.com/utmist-overcooked/JaxMARL.git
+          commit: f982d868b3a5fc042e1132f60931b08475d0f04a
+        root: /student/brownd58/dev/JaxMARL
+        host: dh2010pc34
+        executable: /student/brownd58/dev/JaxMARL/.venv/bin/python
+        cpu_count: 16
+        cpu_count_logical: 24
+        gpu_type: NVIDIA GeForce RTX 4080
+        gpu_count: 1
+        disk:
+          /:
+            total: '210241560576'
+            used: '93976997888'
+        memory:
+          total: '67029413888'
+        gpu_nvidia:
+        - name: NVIDIA GeForce RTX 4080
+          memory_total: '17171480576'
+          cuda_cores: 9728
+          architecture: Ada
+          uuid: GPU-5dce67eb-f701-64ac-01e6-3a7e93d9bd28
+        cuda_version: '12.2'
+        writer_id: ilyv4iya0lumoegdrotva5pgmcfar0ru
+    m:
+    - 1: env_step
+      6:
+      - 3
+    - 1: reward_structure/effective_floor/placement_in_pot
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/plate_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/plate_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/plate_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/plate_pickup_during_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/dish_to_goal_progress
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/burn_penalty
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/burn_penalty
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/burn_enabled
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/placement_in_pot
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/soup_in_dish
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/plate_pickup_during_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/order_expired_penalty
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table.artifact_path
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table.nrows
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table.log_mode
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table.size
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table._type
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table.sha256
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table._latest_artifact_path
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table.path
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/table.ncols
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/rew_shaping_horizon
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/delivery_reward
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/delivery_reward
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/soup_in_dish
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/plate_pickup_during_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/dish_to_goal_progress
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/pot_start_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/rew_shaping_min_coeff
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/ingredient_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/ingredient_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/placement_in_pot
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/plate_pickup_during_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/dish_to_goal_progress
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/pot_start_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/burn_penalty
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/shaped_reward_coeff
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/delivery_reward
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/delivery_reward
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/ingredient_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/ingredient_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/placement_in_pot
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/soup_in_dish
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/pot_start_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/pot_cook_time
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/pot_burn_time
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/plate_pickup
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/dish_to_goal_progress
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/pot_start_cooking
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/order_expired_penalty
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_start/order_expired_penalty
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/order_queue_enabled
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/active/order_expired_penalty
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/raw/soup_in_dish
+      5: 1
+      6:
+      - 1
+    - 1: reward_structure/effective_floor/burn_penalty
+      5: 1
+      6:
+      - 1
+    - 1: returned_episode_lengths
+      5: 1
+      6:
+      - 1
+    - 1: event/dish_to_goal_progress
+      5: 1
+      6:
+      - 1
+    - 1: delivery_count.agent_0
+      5: 1
+      6:
+      - 1
+    - 1: event/pot_burn
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/delivery
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/dish_to_goal_progress
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/pot_start_cooking
+      5: 1
+      6:
+      - 1
+    - 1: order/active_count
+      5: 1
+      6:
+      - 1
+    - 1: event/order_expired
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/dish_pickup
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/drop
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/order_expired
+      5: 1
+      6:
+      - 1
+    - 1: order/front_type
+      5: 1
+      6:
+      - 1
+    - 1: event/drop
+      5: 1
+      6:
+      - 1
+    - 1: base_reward_per_step
+      5: 1
+      6:
+      - 1
+    - 1: loss/total
+      5: 1
+      6:
+      - 1
+    - 1: mean_reward
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table.sha256
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table._type
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table.path
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table.ncols
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table.log_mode
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table.size
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table.artifact_path
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table._latest_artifact_path
+      5: 1
+      6:
+      - 1
+    - 1: training_history/table.nrows
+      5: 1
+      6:
+      - 1
+    - 1: combined_reward_per_step
+      5: 1
+      6:
+      - 1
+    - 1: event/pot_start_cooking
+      5: 1
+      6:
+      - 1
+    - 1: loss/value
+      5: 1
+      6:
+      - 1
+    - 1: max_reward
+      5: 1
+      6:
+      - 1
+    - 1: returned_episode_returns
+      5: 1
+      6:
+      - 1
+    - 1: saved_model_path
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/order_added
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/pickup
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/pot_placement
+      5: 1
+      6:
+      - 1
+    - 1: anneal_factor
+      5: 1
+      6:
+      - 1
+    - 1: base_reward
+      5: 1
+      6:
+      - 1
+    - 1: delivery
+      5: 1
+      6:
+      - 1
+    - 1: event/delivery
+      5: 1
+      6:
+      - 1
+    - 1: event/pickup
+      5: 1
+      6:
+      - 1
+    - 1: combined_reward
+      5: 1
+      6:
+      - 1
+    - 1: event/dish_pickup
+      5: 1
+      6:
+      - 1
+    - 1: event/pot_placement
+      5: 1
+      6:
+      - 1
+    - 1: loss/entropy
+      5: 1
+      6:
+      - 1
+    - 1: loss/policy
+      5: 1
+      6:
+      - 1
+    - 1: original_reward
+      5: 1
+      6:
+      - 1
+    - 1: returned_episode
+      5: 1
+      6:
+      - 1
+    - 1: event/order_added
+      5: 1
+      6:
+      - 1
+    - 1: delivery_count.agent_1
+      5: 1
+      6:
+      - 1
+    - 1: event_rate/pot_burn
+      5: 1
+      6:
+      - 1
+    - 1: reward_sum
+      5: 1
+      6:
+      - 1
+    - 1: shaped_reward
+      5: 1
+      6:
+      - 1
+    - 1: update_step
+      5: 1
+      6:
+      - 1
+ENV_NAME:
+  desc: null
+  value: overcooked_v3
+ENV_KWARGS:
+  desc: null
+  value:
+    layout: cramped_room
+    max_steps: 400
+    pot_cook_time: 20
+    pot_burn_time: 40
+    enable_order_queue: false
+    max_orders: 5
+    order_generation_rate: 0.0
+    order_expiration_time: 200
+    order_queue_mode: random
+    enable_item_conveyors: false
+    enable_player_conveyors: false
+GRU_HIDDEN_DIM:
+  desc: null
+  value: 128
+FC_DIM_SIZE:
+  desc: null
+  value: 128
+ACTIVATION:
+  desc: null
+  value: relu
+TOTAL_TIMESTEPS:
+  desc: null
+  value: 160
+NUM_ENVS:
+  desc: null
+  value: 8
+NUM_STEPS:
+  desc: null
+  value: 20
+UPDATE_EPOCHS:
+  desc: null
+  value: 4
+NUM_MINIBATCHES:
+  desc: null
+  value: 4
+ANNEAL_LR:
+  desc: null
+  value: true
+REW_SHAPING_HORIZON:
+  desc: null
+  value: 60000000
+REW_SHAPING_MIN_COEFF:
+  desc: null
+  value: 0.0
+SHAPED_REWARD_COEFF:
+  desc: null
+  value: 30.0
+LR:
+  desc: null
+  value: 0.0005
+GAMMA:
+  desc: null
+  value: 0.99
+GAE_LAMBDA:
+  desc: null
+  value: 0.95
+CLIP_EPS:
+  desc: null
+  value: 0.2
+ENT_COEF:
+  desc: null
+  value: 0.01
+ENT_COEF_MIN:
+  desc: null
+  value: 0.0
+ENTROPY_FLOOR:
+  desc: null
+  value: 0.0
+ENTROPY_FLOOR_COEF:
+  desc: null
+  value: 0.0
+VF_COEF:
+  desc: null
+  value: 0.5
+MAX_GRAD_NORM:
+  desc: null
+  value: 0.5
+WANDB_MODE:
+  desc: null
+  value: offline
+WANDB_LOG_HISTORY_TABLE:
+  desc: null
+  value: true
+ENTITY:
+  desc: null
+  value: zacharytang24-
+WANDB_PROJECT:
+  desc: null
+  value: jaxmarl-ippo
+WANDB_NAME:
+  desc: null
+  value: smoke_ippo_v3_cpu
+SAVE_PATH:
+  desc: null
+  value: checkpoints/smoke_ippo_v3_cpu
+SAVE_GIF_PATH:
+  desc: null
+  value: null
+LOG_EVERY:
+  desc: null
+  value: 100
+CHECKPOINT_EVERY:
+  desc: null
+  value: 5000
+SEED:
+  desc: null
+  value: 42
+NUM_UPDATES:
+  desc: null
+  value: 1
+NUM_ACTORS:
+  desc: null
+  value: 16
+MINIBATCH_SIZE:
+  desc: null
+  value: 80
+reward_structure:
+  desc: null
+  value:
+    layout: cramped_room
+    env_name: overcooked_v3
+    shaped_rewards_enabled: true
+    shaped_reward_coeff: 30.0
+    rew_shaping_horizon: 60000000
+    rew_shaping_min_coeff: 0.0
+    anneal_formula: sparse_reward + SHAPED_REWARD_COEFF * shaped_reward * (REW_SHAPING_MIN_COEFF
+      + (1 - REW_SHAPING_MIN_COEFF) * linear_decay(env_step, REW_SHAPING_HORIZON))
+    mechanics:
+      pot_cook_time: 20
+      pot_burn_time: 40
+      burn_enabled: true
+      order_queue_enabled: false
+      order_generation_rate: 0.0
+      order_expiration_time: 200
+      max_steps: 400
+    shaped_rewards:
+      INGREDIENT_PICKUP: 0.1
+      PLACEMENT_IN_POT: 0.2
+      SOUP_IN_DISH: 0.6
+      PLATE_PICKUP: 0.1
+      PLATE_PICKUP_DURING_COOKING: 0.0
+      DISH_TO_GOAL_PROGRESS: 0.0
+      POT_START_COOKING: 0.2
+    rewards:
+    - category: base
+      name: DELIVERY_REWARD
+      raw_value: 20.0
+      effective_at_anneal_1: 20.0
+      effective_at_floor: 20.0
+      active_in_learning: true
+      note: Sparse reward for a correct delivery.
+    - category: shaped
+      name: INGREDIENT_PICKUP
+      raw_value: 0.1
+      effective_at_anneal_1: 3.0
+      effective_at_floor: 0.0
+      active_in_learning: true
+      note: Added to shaped_reward before the trainer coefficient/anneal.
+    - category: shaped
+      name: PLACEMENT_IN_POT
+      raw_value: 0.2
+      effective_at_anneal_1: 6.0
+      effective_at_floor: 0.0
+      active_in_learning: true
+      note: Added to shaped_reward before the trainer coefficient/anneal.
+    - category: shaped
+      name: SOUP_IN_DISH
+      raw_value: 0.6
+      effective_at_anneal_1: 18.0
+      effective_at_floor: 0.0
+      active_in_learning: true
+      note: Added to shaped_reward before the trainer coefficient/anneal.
+    - category: shaped
+      name: PLATE_PICKUP
+      raw_value: 0.1
+      effective_at_anneal_1: 3.0
+      effective_at_floor: 0.0
+      active_in_learning: true
+      note: Added to shaped_reward before the trainer coefficient/anneal.
+    - category: shaped
+      name: PLATE_PICKUP_DURING_COOKING
+      raw_value: 0.0
+      effective_at_anneal_1: 0.0
+      effective_at_floor: 0.0
+      active_in_learning: false
+      note: Weight is zero; event may still be logged.
+    - category: shaped
+      name: DISH_TO_GOAL_PROGRESS
+      raw_value: 0.0
+      effective_at_anneal_1: 0.0
+      effective_at_floor: 0.0
+      active_in_learning: false
+      note: Weight is zero; event may still be logged.
+    - category: shaped
+      name: POT_START_COOKING
+      raw_value: 0.2
+      effective_at_anneal_1: 0.0
+      effective_at_floor: 0.0
+      active_in_learning: false
+      note: Configured but not currently added by the environment.
+    - category: penalty
+      name: BURN_PENALTY
+      raw_value: -5.0
+      effective_at_anneal_1: -5.0
+      effective_at_floor: -5.0
+      active_in_learning: true
+      note: Inactive when pot_burn_time is 0 or the penalty is 0.
+    - category: penalty
+      name: ORDER_EXPIRED_PENALTY
+      raw_value: -10.0
+      effective_at_anneal_1: 0.0
+      effective_at_floor: 0.0
+      active_in_learning: false
+      note: Inactive when enable_order_queue is false.

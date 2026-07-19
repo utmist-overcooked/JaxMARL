@@ -6,11 +6,12 @@ ENV_KWARGS:
   max_steps: 400
   pot_cook_time: 20
   pot_burn_time: 40
-  enable_order_queue: false
+  enable_order_queue: true
   max_orders: 5
-  order_generation_rate: 0.0
+  order_generation_rate: 0.1
   order_expiration_time: 200
   order_queue_mode: "random"
+  plate_pickup_guard: 1
   enable_item_conveyors: false
   enable_player_conveyors: false
 
@@ -40,16 +41,16 @@ LR: 0.0005
 GAMMA: 0.99
 GAE_LAMBDA: 0.95
 CLIP_EPS: 0.2
-ENT_COEF: 0.01
-ENT_COEF_MIN: 0.0
-ENTROPY_FLOOR: 0.0
+ENT_COEF: 0.1
+ENT_COEF_MIN: 0.1
+ENTROPY_FLOOR: 0.1
 ENTROPY_FLOOR_COEF: 0.0
 VF_COEF: 0.5
 MAX_GRAD_NORM: 0.5
 
 # Logging
-WANDB_MODE: "disabled"
-ENTITY: "dannyb3334-university-of-toronto"
+WANDB_MODE: "online"
+ENTITY: "zacharytang24-"
 WANDB_PROJECT: "jaxmarl-ippo"
 WANDB_NAME: "ippo_rnn_overcooked_v3_cramped_room"
 SAVE_PATH: "checkpoints/ippo_overcooked_v3_cramped_room"

@@ -1,5 +1,6 @@
 import os
 import copy
+import inspect
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -23,6 +24,29 @@ from jaxmarl.wrappers.baselines import (
     CTRolloutManager,
 )
 from jaxmarl.environments.overcooked import overcooked_layouts
+
+
+def _ensure_flax_scan_jax_compatibility():
+    api_util = jax.api_util
+    linear_util = jax.extend.linear_util
+
+    if not hasattr(api_util, "debug_info"):
+        def _debug_info(*args, **kwargs):
+            return None
+
+        api_util.debug_info = _debug_info
+
+    wrap_init_sig = inspect.signature(linear_util.wrap_init)
+    if "debug_info" not in wrap_init_sig.parameters:
+        original_wrap_init = linear_util.wrap_init
+
+        def _wrap_init_compat(f, params=None, debug_info=None):
+            return original_wrap_init(f, params=params)
+
+        linear_util.wrap_init = _wrap_init_compat
+
+
+_ensure_flax_scan_jax_compatibility()
 
 
 class ScannedRNN(nn.Module):
@@ -132,6 +156,12 @@ def make_train(config, env):
         config["EPS_DECAY"] * config["NUM_UPDATES"],
     )
 
+    rew_shaping_anneal = optax.linear_schedule(
+        init_value=1.0,
+        end_value=config.get("REW_SHAPING_MIN_COEFF", 0.0),
+        transition_steps=config.get("REW_SHAPING_HORIZON", config["TOTAL_TIMESTEPS"]),
+    )
+
     def get_greedy_actions(q_vals, valid_actions):
         unavail_actions = 1 - valid_actions
         q_vals = q_vals - (unavail_actions * 1e10)
@@ -170,6 +200,24 @@ def make_train(config, env):
 
     def unbatchify(x: jnp.ndarray):
         return {agent: x[i] for i, agent in enumerate(env.agents)}
+
+    def apply_reward_config(reward, info, timesteps):
+        if "shaped_reward" in info:
+            shaped_reward = info.pop("shaped_reward")
+            shaped_reward["__all__"] = batchify(shaped_reward).sum(axis=0)
+            anneal_factor = rew_shaping_anneal(timesteps)
+            reward = jax.tree.map(
+                lambda r, s: r
+                + config.get("SHAPED_REWARD_COEFF", 0.0) * s * anneal_factor,
+                reward,
+                shaped_reward,
+            )
+            info["shaped_reward"] = shaped_reward["__all__"]
+            info["anneal_factor"] = jnp.full_like(
+                shaped_reward["__all__"], anneal_factor
+            )
+        reward = jax.tree.map(lambda x: config.get("REW_SCALE", 1) * x, reward)
+        return reward, info
 
     def train(rng):
 
@@ -278,13 +326,15 @@ def make_train(config, env):
                 new_obs, new_env_state, reward, new_done, info = wrapped_env.batch_step(
                     rng_s, env_state, new_action
                 )
+                reward, info = apply_reward_config(
+                    reward, info, train_state.timesteps
+                )
 
                 transition = Transition(
                     last_hs=hs,  # (num_agents, num_envs, hidden_size)
                     obs=batchify(last_obs),  # (num_agents, num_envs, obs_shape)
                     action=batchify(new_action),  # (num_agents, num_envs,)
-                    reward=config.get("REW_SCALE", 1)
-                    * reward["__all__"][np.newaxis],  # (1, num_envs,)
+                    reward=reward["__all__"][np.newaxis],  # (1, num_envs,)
                     done=new_done["__all__"][np.newaxis],  # (1, num_envs,)
                     last_done=batchify(last_dones),  # (num_agents, num_envs,)
                     avail_actions=batchify(
@@ -653,6 +703,14 @@ def env_from_config(config):
         env_name = f"{config['ENV_NAME']}_{config['MAP_NAME']}"
         env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
         env = SMAXLogWrapper(env)
+    elif env_name.lower() == "overcooked_v3":
+        env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"
+        env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
+        env.observation_spaces = {
+            agent: env.observation_space(agent) for agent in env.agents
+        }
+        env.action_spaces = {agent: env.action_space(agent) for agent in env.agents}
+        env = LogWrapper(env)
     # overcooked needs a layout
     elif "overcooked" in env_name.lower():
         env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"
