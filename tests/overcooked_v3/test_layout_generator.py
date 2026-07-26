@@ -1,4 +1,6 @@
 import json
+import random
+from collections import deque
 
 import pytest
 
@@ -9,7 +11,11 @@ from jaxmarl.environments.overcooked_v3.layouts import (
     validate_generated_layout,
 )
 from jaxmarl.environments.overcooked_v3.overcooked import OvercookedV3
-from scripts.generate_overcooked_v3_layouts import generate_document
+from scripts.generate_overcooked_v3_layouts import (
+    generate_document,
+    generate_layout,
+    validate_config,
+)
 from scripts.play_overcooked_v3 import register_json_layouts
 
 
@@ -31,6 +37,51 @@ def _config(**overrides):
     }
     generator.update(overrides)
     return {"generator": generator, "layouts": {}}
+
+
+def _floor_components(grid):
+    rows = grid.splitlines()
+    walkable = {
+        (row, col)
+        for row, line in enumerate(rows)
+        for col, symbol in enumerate(line)
+        if symbol in {" ", "A"}
+    }
+    components = []
+    while walkable:
+        start = next(iter(walkable))
+        component = {start}
+        queue = deque([start])
+        walkable.remove(start)
+        while queue:
+            row, col = queue.popleft()
+            for adjacent in (
+                (row - 1, col),
+                (row + 1, col),
+                (row, col - 1),
+                (row, col + 1),
+            ):
+                if adjacent in walkable:
+                    walkable.remove(adjacent)
+                    component.add(adjacent)
+                    queue.append(adjacent)
+        components.append(component)
+    return rows, components
+
+
+def _accessible_symbols(rows, component):
+    symbols = set()
+    for row, col in component:
+        for station_row, station_col in (
+            (row - 1, col),
+            (row + 1, col),
+            (row, col - 1),
+            (row, col + 1),
+        ):
+            symbol = rows[station_row][station_col]
+            if symbol in set("012PBX"):
+                symbols.add(symbol)
+    return symbols
 
 
 def test_generator_is_deterministic_and_produces_valid_exact_size_layouts():
@@ -57,6 +108,123 @@ def test_generator_is_deterministic_and_produces_valid_exact_size_layouts():
         )
         assert validate_generated_layout(layout) == (True, [])
         assert entry["validation"] == {"valid": True, "errors": []}
+
+
+def test_frontier_generation_constructs_dense_connected_map_on_first_attempt():
+    config = validate_config(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            counter_density=0.4,
+        )["generator"]
+    )
+
+    grid, layout, attempts = generate_layout(
+        config,
+        random.Random(config["seed"]),
+    )
+
+    _, components = _floor_components(grid)
+    assert attempts == 1
+    assert len(components) == 1
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_complete_each_constructs_one_complete_workflow_per_agent_region():
+    config = validate_config(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            ingredient_piles=[2, 2],
+            pots=2,
+            plate_piles=2,
+            depots=2,
+            counter_density=0.4,
+            num_regions=2,
+            workflow_mode="complete_each",
+        )["generator"]
+    )
+
+    grid, layout, _ = generate_layout(
+        config,
+        random.Random(config["seed"]),
+    )
+    rows, components = _floor_components(grid)
+
+    assert len(components) == 2
+    for component in components:
+        assert sum(rows[row][col] == "A" for row, col in component) == 1
+        assert set("01PBX") <= _accessible_symbols(rows, component)
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_shared_workflow_constructs_two_regions_with_counter_handoff():
+    config = validate_config(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            counter_density=0.4,
+            num_regions=2,
+            workflow_mode="shared",
+        )["generator"]
+    )
+
+    grid, layout, _ = generate_layout(
+        config,
+        random.Random(config["seed"]),
+    )
+    rows, components = _floor_components(grid)
+    component_by_position = {
+        position: component_idx
+        for component_idx, component in enumerate(components)
+        for position in component
+    }
+
+    assert len(components) == 2
+    accessible = [_accessible_symbols(rows, component) for component in components]
+    for stations in accessible:
+        for recipe in config["possible_recipes"]:
+            required = {str(ingredient_idx) for ingredient_idx in recipe}
+            required.update({"P", "B", "X"})
+            assert not required <= stations
+
+    handoff_counters = []
+    for row in range(1, len(rows) - 1):
+        for col in range(1, len(rows[0]) - 1):
+            if rows[row][col] != "W":
+                continue
+            adjacent_components = {
+                component_by_position[position]
+                for position in (
+                    (row - 1, col),
+                    (row + 1, col),
+                    (row, col - 1),
+                    (row, col + 1),
+                )
+                if position in component_by_position
+            }
+            if adjacent_components == {0, 1}:
+                handoff_counters.append((row, col))
+
+    assert handoff_counters
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_complete_each_rejects_insufficient_workstation_copies():
+    with pytest.raises(ValueError, match="pots >= num_regions"):
+        generate_document(
+            _config(
+                num_regions=2,
+                workflow_mode="complete_each",
+                ingredient_piles=[2, 2],
+                pots=1,
+                plate_piles=2,
+                depots=2,
+            )
+        )
 
 
 def test_json_loader_reads_and_runs_generated_layout(tmp_path):

@@ -35,6 +35,8 @@ the results to the top-level `layouts` object.
     "depots": 1,
     "object_placement": "anywhere",
     "counter_density": 0.1,
+    "num_regions": 1,
+    "workflow_mode": "single_region",
     "max_attempts": 1000
   },
   "layouts": {}
@@ -56,7 +58,9 @@ the results to the top-level `layouts` object.
 | `depots` | Number of delivery zones. |
 | `object_placement` | Workstation placement mode: `boundary`, `interior`, or `anywhere`. |
 | `counter_density` | Fraction of interior tiles converted to counters, in the range `[0, 1)`. |
-| `max_attempts` | Maximum random candidates tried for each requested layout. |
+| `num_regions` | Number of disconnected walkable regions: `1` or `2`. Two regions place one agent in each. |
+| `workflow_mode` | Distribution of the cooking workflow: `single_region`, `complete_each`, or `shared`. |
+| `max_attempts` | Maximum constructive retries for recoverable frontier or placement dead ends. |
 
 `possible_recipes` may be omitted. In that case, the generator creates one
 same-ingredient recipe for every ingredient type with at least one pile.
@@ -78,6 +82,41 @@ Interior workstations occupy otherwise walkable floor positions, like internal
 counters. The capacity checks reserve room for the configured interior
 counters and both agents.
 
+### Regions and workflow modes
+
+The generator grows one connected floor frontier per region. Different
+frontiers are not allowed to merge, and every region receives an agent spawn.
+Because generated layouts contain exactly two agents, `num_regions` is limited
+to one or two.
+
+`workflow_mode` controls which region can access each workstation:
+
+- `single_region` assigns all ingredient piles, pots, plate piles, and delivery
+  zones to one randomly selected productive region. With two regions, the
+  second agent is isolated from the cooking workflow unless the layout is later
+  extended with auxiliary mechanics.
+- `complete_each` places a complete copy of every configured recipe workflow
+  in every region. Each region must be able to access the required ingredients,
+  a pot, plates, and a delivery zone without a handoff. The configured pile and
+  workstation counts must therefore be at least `num_regions`.
+- `shared` requires exactly two regions and splits the ordered
+  ingredient-to-pot-to-plate-to-delivery workflow between them. No region can
+  complete a recipe alone. At least one ordinary counter must be accessible
+  from both sides so agents can hand items across it.
+
+For example, a two-region shared workflow can place ingredients and pots in
+one region, with plates and delivery in the other:
+
+```text
+region 0: ingredient -> pot -> shared counter
+                                     |
+region 1:                    plate -> delivery
+```
+
+The accessibility validator treats floor components joined by shared counters
+as one workflow group while still requiring every floor tile to be reachable
+from an agent.
+
 ## ASCII symbols
 
 | Symbol | Tile |
@@ -96,15 +135,22 @@ Each generated layout contains exactly two `A` spawn positions.
 
 For every requested layout, the generator:
 
-1. Creates an exact `width` by `height` grid.
-2. Fills the boundary with counters and the interior with walkable floor.
-3. Randomly places ingredient piles, pots, plate piles, and depots according to
-   `object_placement`.
-4. Converts a configurable fraction of interior floor tiles into counters.
-5. Randomly places two agents on remaining floor tiles.
-6. Parses the ASCII through `Layout.from_string`.
-7. Runs structural, playability, accessibility, and recipe-solvability checks.
-8. Retries with another random candidate if validation fails.
+1. Creates an exact `width` by `height` counter-filled grid.
+2. Calculates the exact number of walkable, workstation, and counter tiles.
+3. Selects separated seeds for the requested number of regions.
+4. Uses randomized frontier growth to carve the exact number of floor tiles.
+   A new tile can join only one region, which preserves connectivity without a
+   generate-and-reject connectivity search.
+5. Allocates workstations to regions according to `workflow_mode` and places
+   each one only where its assigned region can interact with it.
+6. In `shared` mode, verifies that a counter is accessible from both regions.
+7. Places both agents on carved floor, one per region when `num_regions` is two.
+8. Parses the ASCII through `Layout.from_string` and runs the structural,
+   playability, accessibility, handoff, and recipe-solvability checks once.
+
+Constructive generation normally succeeds on the first attempt. A retry can
+still occur when a randomized frontier shape leaves too few legal workstation
+slots or cannot reach the exact requested floor count without merging regions.
 
 Generation prints the current layout number, its name, the number of attempts
 needed, and the number of maps completed. The output JSON is atomically
@@ -129,8 +175,8 @@ A generated map is accepted only when:
 - Every ingredient pile, pot, plate pile, and depot can be interacted with from
   a reachable adjacent tile.
 - Every configured recipe has its required ingredient piles.
-- Every recipe can be completed within one connected agent-accessible region
-  containing the required ingredient, a pot, plates, and a depot.
+- Every recipe can be completed within one agent-accessible region or a group
+  of regions connected through shared handoff counters.
 - The layout stays within fixed V3 capacities such as `MAX_POTS`.
 
 Walls and counters are intentionally not treated as walkable tiles.
@@ -282,7 +328,12 @@ Interactive controls:
   station counts. Boundary mode uses non-corner border slots; interior mode
   must also leave space for counters and two agent spawns.
 - **Could not generate a valid layout:** Reduce `counter_density`, increase
-  `max_attempts`, or increase the map dimensions.
+  `max_attempts`, increase the map dimensions, or reduce `num_regions`. Two
+  sizeable regions need enough counters to keep their frontiers apart.
+- **`complete_each` rejects the configuration:** Provide at least one required
+  ingredient pile, pot, plate pile, and depot per region.
+- **`shared` rejects the configuration:** Use `num_regions: 2` and a non-zero
+  counter density so the regions can have a shared handoff counter.
 - **Mixed recipe rejected:** Use recipes such as `[0, 0, 0]` and `[1, 1, 1]`.
 - **Unknown layout in the player:** Supply `--layout-json` in the same command
   that supplies `--layout`.

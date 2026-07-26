@@ -934,8 +934,7 @@ class Layout:
         Every generated-layout workstation (ingredients, pots, plates, and
         delivery zones) must be interactable from a reachable tile. Finally,
         every configured recipe must be completable inside one agent-connected
-        region, so disconnected-but-individually-accessible stations do not
-        incorrectly count as a solvable kitchen.
+        region or a group of regions joined by shared handoff counters.
         """
         errors = []
         component_by_position = {}
@@ -1016,6 +1015,45 @@ class Layout:
                     )
                 station_components.setdefault(station, set()).update(components)
 
+        # Disconnected agents can cooperate through a counter that is
+        # interactable from both regions. Collapse floor components connected
+        # by such counters into workflow groups before checking recipes.
+        component_ids = set(component_by_position.values())
+        component_parent = {component: component for component in component_ids}
+
+        def find_component(component):
+            while component_parent[component] != component:
+                component_parent[component] = component_parent[
+                    component_parent[component]
+                ]
+                component = component_parent[component]
+            return component
+
+        def union_components(first, second):
+            first_root = find_component(first)
+            second_root = find_component(second)
+            if first_root != second_root:
+                component_parent[second_root] = first_root
+
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.static_objects[y, x] != StaticObject.WALL:
+                    continue
+                adjacent_components = sorted(
+                    {
+                        component_by_position[adjacent]
+                        for adjacent in neighbours(y, x)
+                        if adjacent in component_by_position
+                    }
+                )
+                for component in adjacent_components[1:]:
+                    union_components(adjacent_components[0], component)
+
+        station_workflow_groups = {
+            station: {find_component(component) for component in components}
+            for station, components in station_components.items()
+        }
+
         required_objects = {
             ("object", int(StaticObject.POT)),
             ("object", int(StaticObject.PLATE_PILE)),
@@ -1029,7 +1067,7 @@ class Layout:
             }
             feasible_components = None
             for station in required_stations:
-                components = station_components.get(station, set())
+                components = station_workflow_groups.get(station, set())
                 feasible_components = (
                     set(components)
                     if feasible_components is None
@@ -1038,7 +1076,7 @@ class Layout:
             if not feasible_components:
                 errors.append(
                     f"Recipe {recipe} cannot be completed within one "
-                    "agent-accessible region"
+                    "agent-accessible region or counter-connected region group"
                 )
 
         return len(errors) == 0, errors

@@ -38,8 +38,17 @@ DEFAULTS = {
     "depots": 1,
     "object_placement": "boundary",
     "counter_density": 0.1,
+    "num_regions": 1,
+    "workflow_mode": "single_region",
     "max_attempts": 1000,
 }
+
+WORKFLOW_MODES = {"complete_each", "single_region", "shared"}
+NEIGHBOUR_DELTAS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+
+class CandidateGenerationError(RuntimeError):
+    """A constructive candidate could not satisfy all requested constraints."""
 
 
 def _integer(config: dict[str, Any], key: str, minimum: int) -> int:
@@ -107,8 +116,26 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     _integer(config, "pots", 1)
     _integer(config, "plate_piles", 1)
     _integer(config, "depots", 1)
+    num_regions = _integer(config, "num_regions", 1)
     _integer(config, "max_attempts", 1)
 
+    if num_regions > 2:
+        raise ValueError(
+            "generator.num_regions cannot exceed 2 because generated layouts "
+            "currently contain exactly two agents"
+        )
+    if (
+        not isinstance(config["workflow_mode"], str)
+        or config["workflow_mode"] not in WORKFLOW_MODES
+    ):
+        raise ValueError(
+            "generator.workflow_mode must be 'complete_each', "
+            "'single_region', or 'shared'"
+        )
+    if config["workflow_mode"] == "shared" and num_regions != 2:
+        raise ValueError(
+            "generator.workflow_mode 'shared' requires generator.num_regions = 2"
+        )
     if config["pots"] > MAX_POTS:
         raise ValueError(f"generator.pots cannot exceed MAX_POTS ({MAX_POTS})")
     if not isinstance(config["name_prefix"], str) or not config["name_prefix"]:
@@ -152,6 +179,39 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     counter_count = round(interior_tiles * density)
     if interior_tiles - counter_count < 2:
         raise ValueError("counter_density leaves fewer than two agent spawn tiles")
+    if num_regions == 2 and counter_count == 0:
+        raise ValueError(
+            "generator.num_regions = 2 requires at least one interior counter; "
+            "increase counter_density"
+        )
+    if config["workflow_mode"] == "shared" and counter_count == 0:
+        raise ValueError(
+            "generator.workflow_mode 'shared' requires an interior counter for "
+            "cross-region handoffs"
+        )
+
+    if config["workflow_mode"] == "complete_each":
+        required_ingredients = {
+            ingredient_idx
+            for recipe in config["possible_recipes"]
+            for ingredient_idx in recipe
+        }
+        insufficient = [
+            str(ingredient_idx)
+            for ingredient_idx in sorted(required_ingredients)
+            if ingredient_counts[ingredient_idx] < num_regions
+        ]
+        if insufficient:
+            raise ValueError(
+                "generator.workflow_mode 'complete_each' needs at least "
+                f"num_regions piles for recipe ingredient(s): {', '.join(insufficient)}"
+            )
+        for key in ("pots", "plate_piles", "depots"):
+            if config[key] < num_regions:
+                raise ValueError(
+                    "generator.workflow_mode 'complete_each' requires "
+                    f"generator.{key} >= num_regions"
+                )
 
     workstation_count = (
         sum(ingredient_counts)
@@ -192,26 +252,274 @@ def _boundary_slots(width: int, height: int) -> list[tuple[int, int]]:
     )
 
 
-def _generate_candidate(config: dict[str, Any], rng: random.Random) -> str:
-    width, height = config["width"], config["height"]
-    grid = [["W"] * width for _ in range(height)]
-    interior = [
-        (row, col)
-        for row in range(1, height - 1)
-        for col in range(1, width - 1)
+def _neighbours(
+    position: tuple[int, int],
+    positions: set[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    row, col = position
+    return [
+        (row + row_delta, col + col_delta)
+        for row_delta, col_delta in NEIGHBOUR_DELTAS
+        if (row + row_delta, col + col_delta) in positions
     ]
-    for row, col in interior:
-        grid[row][col] = " "
 
+
+def _station_symbols(config: dict[str, Any]) -> list[str]:
     stations = []
     for ingredient_idx, pile_count in enumerate(config["ingredient_piles"]):
         stations.extend([str(ingredient_idx)] * pile_count)
     stations.extend(["P"] * config["pots"])
     stations.extend(["B"] * config["plate_piles"])
     stations.extend(["X"] * config["depots"])
-    rng.shuffle(stations)
+    return stations
 
-    boundary = _boundary_slots(width, height)
+
+def _allocate_stations_to_regions(
+    config: dict[str, Any],
+    rng: random.Random,
+) -> list[list[str]]:
+    """Assign every workstation to the region that must access it."""
+    num_regions = config["num_regions"]
+    allocations = [[] for _ in range(num_regions)]
+    stations = _station_symbols(config)
+    mode = config["workflow_mode"]
+
+    if num_regions == 1 or mode == "single_region":
+        productive_region = rng.randrange(num_regions)
+        allocations[productive_region] = stations
+        return allocations
+
+    if mode == "shared":
+        # Split the ordered cooking pipeline at a random stage. Keeping every
+        # instance of one station type on the same side prevents either region
+        # from accidentally becoming independently complete.
+        first_region = rng.randrange(2)
+        second_region = 1 - first_region
+        split_after = rng.randint(1, 3)
+        stages = [
+            [
+                str(ingredient_idx)
+                for ingredient_idx, pile_count in enumerate(
+                    config["ingredient_piles"]
+                )
+                for _ in range(pile_count)
+            ],
+            ["P"] * config["pots"],
+            ["B"] * config["plate_piles"],
+            ["X"] * config["depots"],
+        ]
+        for stage_idx, stage in enumerate(stages):
+            target = first_region if stage_idx < split_after else second_region
+            allocations[target].extend(stage)
+        return allocations
+
+    # complete_each: reserve one complete workflow in every region, then
+    # distribute duplicate/unused workstations for variety.
+    remaining = stations.copy()
+    required_ingredients = sorted(
+        {
+            ingredient_idx
+            for recipe in config["possible_recipes"]
+            for ingredient_idx in recipe
+        }
+    )
+    for region in range(num_regions):
+        required_symbols = [str(idx) for idx in required_ingredients]
+        required_symbols.extend(["P", "B", "X"])
+        for symbol in required_symbols:
+            remaining.remove(symbol)
+            allocations[region].append(symbol)
+    rng.shuffle(remaining)
+    for symbol in remaining:
+        allocations[rng.randrange(num_regions)].append(symbol)
+    return allocations
+
+
+def _choose_region_seeds(
+    interior: set[tuple[int, int]],
+    num_regions: int,
+    rng: random.Random,
+) -> list[tuple[int, int]]:
+    first = rng.choice(tuple(sorted(interior)))
+    if num_regions == 1:
+        return [first]
+
+    distances = {
+        position: abs(position[0] - first[0]) + abs(position[1] - first[1])
+        for position in interior
+    }
+    max_distance = max(distances.values())
+    farthest = [
+        position
+        for position, distance in distances.items()
+        if distance == max_distance
+    ]
+    return [first, rng.choice(farthest)]
+
+
+def _grow_floor_regions(
+    interior: set[tuple[int, int]],
+    floor_count: int,
+    num_regions: int,
+    rng: random.Random,
+) -> list[set[tuple[int, int]]]:
+    """Grow exact-size, mutually disconnected floor regions from frontiers."""
+    seeds = _choose_region_seeds(interior, num_regions, rng)
+    regions = [{seed} for seed in seeds]
+    owners = {seed: region for region, seed in enumerate(seeds)}
+
+    while len(owners) < floor_count:
+        candidates: list[tuple[int, tuple[int, int]]] = []
+        region_sizes = [len(region) for region in regions]
+        smallest_size = min(region_sizes)
+
+        for region_idx, region in enumerate(regions):
+            # Prefer balanced growth when space permits, but allow a larger
+            # component to keep growing if another frontier becomes boxed in.
+            size_penalty = region_sizes[region_idx] - smallest_size
+            for position in region:
+                for adjacent in _neighbours(position, interior):
+                    if adjacent in owners:
+                        continue
+                    adjacent_owners = {
+                        owners[neighbour]
+                        for neighbour in _neighbours(adjacent, interior)
+                        if neighbour in owners
+                    }
+                    if adjacent_owners and adjacent_owners != {region_idx}:
+                        continue
+                    candidates.append((size_penalty, adjacent))
+
+        if not candidates:
+            raise CandidateGenerationError(
+                "region frontiers cannot reach the requested floor count "
+                "without merging"
+            )
+
+        minimum_penalty = min(penalty for penalty, _ in candidates)
+        preferred = [
+            position
+            for penalty, position in candidates
+            if penalty == minimum_penalty
+        ]
+        chosen = rng.choice(preferred)
+        adjacent_regions = {
+            owners[neighbour]
+            for neighbour in _neighbours(chosen, interior)
+            if neighbour in owners
+        }
+        region_idx = next(iter(adjacent_regions))
+        owners[chosen] = region_idx
+        regions[region_idx].add(chosen)
+
+    return regions
+
+
+def _adjacent_regions(
+    position: tuple[int, int],
+    regions: list[set[tuple[int, int]]],
+    all_grid_positions: set[tuple[int, int]],
+) -> set[int]:
+    return {
+        region_idx
+        for neighbour in _neighbours(position, all_grid_positions)
+        for region_idx, region in enumerate(regions)
+        if neighbour in region
+    }
+
+
+def _place_region_stations(
+    grid: list[list[str]],
+    config: dict[str, Any],
+    regions: list[set[tuple[int, int]]],
+    allocations: list[list[str]],
+    interior_station_count: int,
+    rng: random.Random,
+) -> None:
+    height, width = config["height"], config["width"]
+    interior = {
+        (row, col)
+        for row in range(1, height - 1)
+        for col in range(1, width - 1)
+    }
+    all_positions = {
+        (row, col)
+        for row in range(height)
+        for col in range(width)
+    }
+    boundary = set(_boundary_slots(width, height))
+    floor = set().union(*regions)
+    available_interior = interior - floor
+
+    candidates_by_region: list[dict[str, list[tuple[int, int]]]] = []
+    for region_idx in range(len(regions)):
+        candidates_by_region.append(
+            {
+                "boundary": [
+                    position
+                    for position in boundary
+                    if _adjacent_regions(position, regions, all_positions)
+                    == {region_idx}
+                ],
+                "interior": [
+                    position
+                    for position in available_interior
+                    if _adjacent_regions(position, regions, all_positions)
+                    == {region_idx}
+                ],
+            }
+        )
+
+    station_assignments = [
+        (region_idx, symbol)
+        for region_idx, symbols in enumerate(allocations)
+        for symbol in symbols
+    ]
+    rng.shuffle(station_assignments)
+
+    placement = config["object_placement"]
+    if placement == "boundary":
+        slot_kinds = ["boundary"] * len(station_assignments)
+    elif placement == "interior":
+        slot_kinds = ["interior"] * len(station_assignments)
+    else:
+        slot_kinds = (
+            ["interior"] * interior_station_count
+            + ["boundary"] * (len(station_assignments) - interior_station_count)
+        )
+        rng.shuffle(slot_kinds)
+
+    # Assign the more constrained region/kind combinations first.
+    planned = list(zip(station_assignments, slot_kinds))
+    planned.sort(
+        key=lambda item: len(candidates_by_region[item[0][0]][item[1]])
+    )
+    used = set()
+    for (region_idx, symbol), kind in planned:
+        choices = [
+            position
+            for position in candidates_by_region[region_idx][kind]
+            if position not in used
+        ]
+        if not choices:
+            raise CandidateGenerationError(
+                f"region {region_idx} has too few accessible {kind} "
+                "workstation slots"
+            )
+        position = rng.choice(choices)
+        used.add(position)
+        grid[position[0]][position[1]] = symbol
+
+
+def _generate_candidate(config: dict[str, Any], rng: random.Random) -> str:
+    width, height = config["width"], config["height"]
+    grid = [["W"] * width for _ in range(height)]
+    interior = {
+        (row, col)
+        for row in range(1, height - 1)
+        for col in range(1, width - 1)
+    }
+    stations = _station_symbols(config)
     counter_count = round(len(interior) * config["counter_density"])
     max_interior_workstations = len(interior) - counter_count - 2
     placement = config["object_placement"]
@@ -220,28 +528,53 @@ def _generate_candidate(config: dict[str, Any], rng: random.Random) -> str:
     elif placement == "interior":
         interior_station_count = len(stations)
     else:
-        minimum = max(0, len(stations) - len(boundary))
+        minimum = max(0, len(stations) - len(_boundary_slots(width, height)))
         maximum = min(len(stations), max_interior_workstations)
         interior_station_count = rng.randint(minimum, maximum)
 
-    station_slots = rng.sample(interior, interior_station_count)
-    station_slots.extend(
-        rng.sample(boundary, len(stations) - interior_station_count)
+    floor_count = len(interior) - counter_count - interior_station_count
+    regions = _grow_floor_regions(
+        interior,
+        floor_count,
+        config["num_regions"],
+        rng,
     )
-    rng.shuffle(station_slots)
-    for (row, col), symbol in zip(station_slots, stations):
-        grid[row][col] = symbol
+    for region in regions:
+        for row, col in region:
+            grid[row][col] = " "
 
-    available_counter_slots = [
-        (row, col) for row, col in interior if grid[row][col] == " "
-    ]
-    for row, col in rng.sample(available_counter_slots, counter_count):
-        grid[row][col] = "W"
+    allocations = _allocate_stations_to_regions(config, rng)
+    _place_region_stations(
+        grid,
+        config,
+        regions,
+        allocations,
+        interior_station_count,
+        rng,
+    )
 
-    spawn_candidates = [
-        (row, col) for row, col in interior if grid[row][col] == " "
-    ]
-    for row, col in rng.sample(spawn_candidates, 2):
+    if config["workflow_mode"] == "shared":
+        all_positions = {
+            (row, col)
+            for row in range(height)
+            for col in range(width)
+        }
+        handoff_counters = [
+            position
+            for position in interior - set().union(*regions)
+            if grid[position[0]][position[1]] == "W"
+            and _adjacent_regions(position, regions, all_positions) == {0, 1}
+        ]
+        if not handoff_counters:
+            raise CandidateGenerationError(
+                "shared workflow has no counter accessible from both regions"
+            )
+
+    if config["num_regions"] == 1:
+        spawn_positions = rng.sample(sorted(regions[0]), 2)
+    else:
+        spawn_positions = [rng.choice(sorted(region)) for region in regions]
+    for row, col in spawn_positions:
         grid[row][col] = "A"
 
     return "\n".join("".join(row) for row in grid)
@@ -251,10 +584,14 @@ def generate_layout(
     config: dict[str, Any],
     rng: random.Random,
 ) -> tuple[str, Layout, int]:
-    """Generate one layout, retrying until every validator succeeds."""
+    """Construct one layout, retrying only recoverable frontier dead ends."""
     last_errors = []
     for attempt in range(1, config["max_attempts"] + 1):
-        grid = _generate_candidate(config, rng)
+        try:
+            grid = _generate_candidate(config, rng)
+        except CandidateGenerationError as exc:
+            last_errors = [str(exc)]
+            continue
         layout = Layout.from_string(
             grid,
             possible_recipes=config["possible_recipes"],
@@ -280,11 +617,10 @@ def generate_document(document: Any) -> dict[str, Any]:
     for index in range(config["count"]):
         name = f"{config['name_prefix']}_{index:0{digits}d}"
         grid, layout, _ = generate_layout(config, rng)
-        valid, errors = validate_generated_layout(layout)
         generated[name] = {
             "ascii": grid,
             "possible_recipes": config["possible_recipes"],
-            "validation": {"valid": valid, "errors": errors},
+            "validation": {"valid": True, "errors": []},
         }
 
     result = dict(document)
@@ -353,18 +689,17 @@ def generate_to_file(
                 )
             continue
 
-        valid, errors = validate_generated_layout(layout)
         result["layouts"][name] = {
             "ascii": grid,
             "possible_recipes": config["possible_recipes"],
-            "validation": {"valid": valid, "errors": errors},
+            "validation": {"valid": True, "errors": []},
         }
         result["generation_progress"]["completed"] += 1
         _write_json_checkpoint(result, output_path)
         if emit is not None:
             emit(
                 f"[{index + 1}/{config['count']}] Saved {name} "
-                f"(valid candidate found after {attempts} attempt(s)); "
+                f"(constructed and validated after {attempts} attempt(s)); "
                 f"{result['generation_progress']['completed']} map(s) complete"
             )
 
