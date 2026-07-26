@@ -23,3 +23,5 @@ venv/
 exports/
 slurm-*.out
 slurm_logs/
+artifacts/macro_mappo_rollouts/
+artifacts/overcooked_v3_macro_cooperative_barrier_flood_fill.gif
