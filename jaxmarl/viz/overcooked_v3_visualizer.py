@@ -79,6 +79,24 @@ LINK_COLORS = jnp.array(
     ]
 )
 
+# Distinct palette used to visually pair pressure plates with their linked barriers.
+PAIR_COLORS = jnp.array(
+    [
+        jnp.array([255, 99, 71], dtype=jnp.uint8),    # tomato
+        jnp.array([30, 144, 255], dtype=jnp.uint8),   # dodger blue
+        jnp.array([50, 205, 50], dtype=jnp.uint8),    # lime green
+        jnp.array([255, 215, 0], dtype=jnp.uint8),    # gold
+        jnp.array([186, 85, 211], dtype=jnp.uint8),   # medium orchid
+        jnp.array([255, 140, 0], dtype=jnp.uint8),    # dark orange
+        jnp.array([0, 206, 209], dtype=jnp.uint8),    # dark turquoise
+        jnp.array([255, 105, 180], dtype=jnp.uint8),  # hot pink
+        jnp.array([205, 133, 63], dtype=jnp.uint8),   # peru
+        jnp.array([154, 205, 50], dtype=jnp.uint8),   # yellow green
+        jnp.array([70, 130, 180], dtype=jnp.uint8),   # steel blue
+        jnp.array([220, 20, 60], dtype=jnp.uint8),    # crimson
+    ]
+)
+
 
 class OvercookedV3Visualizer:
     """Visualizer for Overcooked V3 environment."""
@@ -145,12 +163,17 @@ class OvercookedV3Visualizer:
         agents = state.agents
         recipe = state.recipe
         pot_timers = state.pot_cooking_timer
+        pot_cook_durations = state.pot_cook_durations
         pot_positions = state.pot_positions
         pot_active_mask = state.pot_active_mask
         barrier_positions = state.barrier_positions
         barrier_active = state.barrier_active
         barrier_timer = state.barrier_timer
         barrier_active_mask = state.barrier_active_mask
+        pressure_plate_positions = state.pressure_plate_positions
+        pressure_plate_linked_barrier = state.pressure_plate_linked_barrier
+        pressure_plate_active_mask = state.pressure_plate_active_mask
+        pressure_plate_toggled = state.pressure_plate_toggled
         button_positions = state.button_positions
         button_action_type = state.button_action_type
         button_target_idxs = state.button_target_idxs
@@ -160,8 +183,6 @@ class OvercookedV3Visualizer:
         num_button_targets = button_target_mask.shape[1]
         moving_wall_positions = state.moving_wall_positions
         moving_wall_active_mask = state.moving_wall_active_mask
-        barrier_positions = state.barrier_positions
-        barrier_active_mask = state.barrier_active_mask
         num_link_colors = LINK_COLORS.shape[0]
 
         num_agents = agents.dir.shape[0]
@@ -183,9 +204,13 @@ class OvercookedV3Visualizer:
         grid, _ = jax.lax.scan(_include_agents, grid, (agents, jnp.arange(num_agents)))
 
         # Update pot timers in grid for rendering
-        def _update_pot_timer_in_grid(grid, pot_idx):
+        pot_cook_duration_grid = jnp.zeros(grid.shape[:2], dtype=jnp.int32)
+
+        def _update_pot_timer_in_grid(carry, pot_idx):
+            grid, duration_grid = carry
             pot_y, pot_x = pot_positions[pot_idx]
             timer = pot_timers[pot_idx]
+            duration = pot_cook_durations[pot_idx]
             is_active = pot_active_mask[pot_idx]
 
             new_grid = jax.lax.select(
@@ -193,11 +218,33 @@ class OvercookedV3Visualizer:
                 grid.at[pot_y, pot_x, 2].set(timer),
                 grid
             )
-            return new_grid, None
+            new_duration_grid = jax.lax.select(
+                is_active,
+                duration_grid.at[pot_y, pot_x].set(duration),
+                duration_grid,
+            )
+            return (new_grid, new_duration_grid), None
 
-        grid, _ = jax.lax.scan(
-            _update_pot_timer_in_grid, grid, jnp.arange(pot_positions.shape[0])
+        (grid, pot_cook_duration_grid), _ = jax.lax.scan(
+            _update_pot_timer_in_grid,
+            (grid, pot_cook_duration_grid),
+            jnp.arange(pot_positions.shape[0]),
         )
+
+        # Build stable pair ids from plate<->barrier links so each pair shares a color.
+        plate_pair_ids = jnp.arange(pressure_plate_positions.shape[0], dtype=jnp.int32)
+        barrier_to_plate_links = (
+            pressure_plate_linked_barrier & pressure_plate_active_mask[:, None]
+        ).T
+        barrier_has_linked_plate = jnp.any(barrier_to_plate_links, axis=1)
+        barrier_first_plate = jnp.argmax(barrier_to_plate_links, axis=1).astype(jnp.int32)
+        barrier_pair_ids = jnp.where(
+            barrier_has_linked_plate,
+            plate_pair_ids[barrier_first_plate],
+            jnp.arange(barrier_positions.shape[0], dtype=jnp.int32)
+            + pressure_plate_positions.shape[0],
+        )
+
 
         # Update barrier info in grid for rendering
         def _update_barrier_in_grid(grid, barrier_idx):
@@ -213,9 +260,15 @@ class OvercookedV3Visualizer:
                 
                 active = barrier_active[barrier_idx]
                 timer = barrier_timer[barrier_idx]
-                
-                # Encode barrier state in channel 2: [active (1 bit), timer_value (31 bits)]
-                barrier_state = jnp.where(active, 1, 0) | (timer << 1)
+                pair_id = barrier_pair_ids[barrier_idx] & 0xFF
+
+                # Encode barrier state in channel 2:
+                # bit 0 active, bits 1-12 timer, bits 13-20 pair id.
+                barrier_state = (
+                    jnp.where(active, 1, 0)
+                    | ((timer & 0xFFF) << 1)
+                    | (pair_id << 13)
+                )
                 
                 # Only update if this is actually a barrier (not an agent standing on it)
                 new_grid = jax.lax.select(
@@ -230,6 +283,36 @@ class OvercookedV3Visualizer:
 
         grid, _ = jax.lax.scan(
             _update_barrier_in_grid, grid, jnp.arange(barrier_active_mask.shape[0])
+        )
+
+        # Update pressure plate info in grid for rendering
+        def _update_pressure_plate_in_grid(grid, plate_idx):
+            is_valid = pressure_plate_active_mask[plate_idx]
+
+            def _update_plate(grid):
+                plate_y = pressure_plate_positions[plate_idx, 0]
+                plate_x = pressure_plate_positions[plate_idx, 1]
+
+                current_static = grid[plate_y, plate_x, 0]
+                is_plate = current_static == StaticObject.PRESSURE_PLATE
+
+                pair_id = plate_pair_ids[plate_idx] & 0xFF
+                plate_state = jnp.where(pressure_plate_toggled[plate_idx], 1, 0) | (
+                    pair_id << 1
+                )
+                return jax.lax.select(
+                    is_plate,
+                    grid.at[plate_y, plate_x, 2].set(plate_state),
+                    grid,
+                )
+
+            new_grid = jax.lax.select(is_valid, _update_plate(grid), grid)
+            return new_grid, None
+
+        grid, _ = jax.lax.scan(
+            _update_pressure_plate_in_grid,
+            grid,
+            jnp.arange(pressure_plate_active_mask.shape[0]),
         )
 
         def _build_link_colors(grid):
@@ -310,12 +393,8 @@ class OvercookedV3Visualizer:
                     )
                     should_paint = should_paint & target_is_active
 
-                    target_y = jax.lax.select(
-                        moving_target, moving_y, barrier_y
-                    )
-                    target_x = jax.lax.select(
-                        moving_target, moving_x, barrier_x
-                    )
+                    target_y = jax.lax.select(moving_target, moving_y, barrier_y)
+                    target_x = jax.lax.select(moving_target, moving_x, barrier_x)
 
                     link_mask = jax.lax.select(
                         should_paint,
@@ -356,7 +435,13 @@ class OvercookedV3Visualizer:
 
         highlight_mask = jnp.zeros(grid.shape[:2], dtype=bool)
 
-        img = self._render_grid(grid, link_mask, link_colors, highlight_mask)
+        img = self._render_grid(
+            grid,
+            link_mask,
+            link_colors,
+            highlight_mask,
+            pot_cook_duration_grid,
+        )
         return img
 
     @staticmethod
@@ -452,7 +537,16 @@ class OvercookedV3Visualizer:
         return img
 
     @staticmethod
-    def _render_cell(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=POT_BURN_TIME):
+    def _render_cell(
+        cell,
+        img,
+        pot_cook_time=POT_COOK_TIME,
+        pot_burn_time=POT_BURN_TIME,
+        pot_cook_duration=None,
+    ):
+        if pot_cook_duration is None:
+            pot_cook_duration = pot_cook_time
+
         static_object = cell[0]
 
         def _render_empty(cell, img):
@@ -503,7 +597,13 @@ class OvercookedV3Visualizer:
             return img
 
         def _render_pot(cell, img):
-            return OvercookedV3Visualizer._render_pot(cell, img, pot_cook_time, pot_burn_time)
+            return OvercookedV3Visualizer._render_pot(
+                cell,
+                img,
+                pot_cook_time,
+                pot_burn_time,
+                pot_cook_duration,
+            )
 
         def _render_recipe_indicator(cell, img):
             img = rendering.fill_coords(
@@ -663,7 +763,10 @@ class OvercookedV3Visualizer:
             """
             barrier_state = cell[2]  # Barrier state stored in channel 2
             is_active = barrier_state & 1
-            timer_value = barrier_state >> 1
+            timer_value = (barrier_state >> 1) & 0xFFF
+            pair_id = (barrier_state >> 13) & 0xFF
+            pair_color = PAIR_COLORS[pair_id % PAIR_COLORS.shape[0]]
+            inactive_fill = ((pair_color.astype(jnp.int32) + COLORS["light_grey"].astype(jnp.int32)) // 2).astype(jnp.uint8)
             
             # Base background
             img = rendering.fill_coords(
@@ -671,9 +774,9 @@ class OvercookedV3Visualizer:
             )
             
             # Render center based on active/inactive state
-            # Active: red with white X
+            # Active: paired color with white X
             active_center = rendering.point_in_rect(0.1, 0.9, 0.1, 0.9)
-            img_active = rendering.fill_coords(img, active_center, COLORS["red"])
+            img_active = rendering.fill_coords(img, active_center, pair_color)
             
             # Draw white lines for X (two diagonal lines)
             # Diagonal 1: top-left to bottom-right
@@ -689,31 +792,31 @@ class OvercookedV3Visualizer:
                 COLORS["white"]
             )
             
-            # Inactive: light grey with corner dots
+            # Inactive: muted paired color with corner dots
             inactive_center = rendering.point_in_rect(0.1, 0.9, 0.1, 0.9)
-            img_inactive = rendering.fill_coords(img, inactive_center, COLORS["light_grey"])
+            img_inactive = rendering.fill_coords(img, inactive_center, inactive_fill)
             
             # Draw corner indicators (small circles)
             corner_radius = 0.1
             img_c1 = rendering.fill_coords(
                 img_inactive,
                 rendering.point_in_circle(0.2, 0.2, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             img_c2 = rendering.fill_coords(
                 img_c1,
                 rendering.point_in_circle(0.8, 0.2, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             img_c3 = rendering.fill_coords(
                 img_c2,
                 rendering.point_in_circle(0.2, 0.8, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             img_c4 = rendering.fill_coords(
                 img_c3,
                 rendering.point_in_circle(0.8, 0.8, corner_radius),
-                COLORS["blue"]
+                pair_color
             )
             
             # Choose active or inactive version
@@ -749,10 +852,34 @@ class OvercookedV3Visualizer:
             
             return img
 
+        def _render_pressure_plate(cell, img):
+            """Render pressure plate as red outline on a dark tile."""
+            is_pressed = (cell[2] & 1) > 0
+            pair_id = (cell[2] >> 1) & 0xFF
+            pair_color = PAIR_COLORS[pair_id % PAIR_COLORS.shape[0]]
+
+            # Unpressed: dark tile with paired-color outline.
+            img_unpressed = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["black"]
+            )
+            img_unpressed = rendering.fill_coords(
+                img_unpressed, rendering.point_in_rect(0.14, 0.86, 0.14, 0.86), pair_color
+            )
+            img_unpressed = rendering.fill_coords(
+                img_unpressed, rendering.point_in_rect(0.24, 0.76, 0.24, 0.76), COLORS["black"]
+            )
+
+            # Pressed: add a paired-color center indicator.
+            img_pressed = rendering.fill_coords(
+                img_unpressed, rendering.point_in_circle(0.5, 0.5, 0.11), pair_color
+            )
+
+            return jax.lax.select(is_pressed, img_pressed, img_unpressed)
 
         # Build render function lookup
         # Map static object types to render functions
-        render_fns = [_render_empty] * 26  # Enough for all object types (up to 25)
+        # Keep an extra slot at the end for ingredient piles dispatch.
+        render_fns = [_render_empty] * 27  # StaticObject max is 25, slot 26 is ingredient pile
         render_fns[StaticObject.EMPTY] = _render_empty
         render_fns[StaticObject.WALL] = _render_wall
         render_fns[StaticObject.AGENT] = _render_agent
@@ -766,6 +893,7 @@ class OvercookedV3Visualizer:
         render_fns[StaticObject.MOVING_WALL] = _render_moving_wall
         render_fns[StaticObject.BUTTON] = _render_button
         render_fns[StaticObject.BARRIER] = _render_barrier
+        render_fns[StaticObject.PRESSURE_PLATE] = _render_pressure_plate
 
         # Handle ingredient piles (10-19)
         is_ingredient_pile = (static_object >= StaticObject.INGREDIENT_PILE_BASE) & \
@@ -787,7 +915,16 @@ class OvercookedV3Visualizer:
         )
 
     @staticmethod
-    def _render_pot(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=POT_BURN_TIME):
+    def _render_pot(
+        cell,
+        img,
+        pot_cook_time=POT_COOK_TIME,
+        pot_burn_time=POT_BURN_TIME,
+        pot_cook_duration=None,
+    ):
+        if pot_cook_duration is None:
+            pot_cook_duration = pot_cook_time
+
         ingredients = cell[1]
         time_left = cell[2]
 
@@ -833,7 +970,11 @@ class OvercookedV3Visualizer:
         img = jax.lax.select(pot_open, img_open, img_closed)
 
         # Render progress bar (green for cooking, orange for burning window)
-        cooking_progress = (pot_cook_time - time_left) / (pot_cook_time - pot_burn_time)
+        cook_duration = jnp.where(
+            pot_cook_duration > 0, pot_cook_duration, pot_cook_time
+        )
+        initial_timer = cook_duration + pot_burn_time
+        cooking_progress = (initial_timer - time_left) / cook_duration
         burning_progress = (pot_burn_time - time_left) / pot_burn_time
 
         progress_fn_cooking = rendering.point_in_rect(
@@ -852,7 +993,14 @@ class OvercookedV3Visualizer:
 
         return img
 
-    def _render_tile(self, obj, link_mask=False, link_color=None, highlight=False):
+    def _render_tile(
+        self,
+        obj,
+        link_mask=False,
+        link_color=None,
+        highlight=False,
+        pot_cook_duration=None,
+    ):
         """Render a single tile."""
         img = jnp.zeros(
             shape=(self.tile_size * self.subdivs, self.tile_size * self.subdivs, 3),
@@ -868,7 +1016,11 @@ class OvercookedV3Visualizer:
         )
 
         img = OvercookedV3Visualizer._render_cell(
-            obj, img, self.pot_cook_time, self.pot_burn_time
+            obj,
+            img,
+            self.pot_cook_time,
+            self.pot_burn_time,
+            pot_cook_duration,
         )
 
         img_highlight = rendering.highlight_img(img)
@@ -895,9 +1047,22 @@ class OvercookedV3Visualizer:
 
         return img
 
-    def _render_grid(self, grid, link_mask, link_colors, highlight_mask):
+    def _render_grid(
+        self,
+        grid,
+        link_mask,
+        link_colors,
+        highlight_mask,
+        pot_cook_duration_grid,
+    ):
         """Render the full grid."""
-        img_grid = jax.vmap(jax.vmap(self._render_tile))(grid, link_mask, link_colors, highlight_mask)
+        img_grid = jax.vmap(jax.vmap(self._render_tile))(
+            grid,
+            link_mask,
+            link_colors,
+            highlight_mask,
+            pot_cook_duration_grid,
+        )
 
         grid_rows, grid_cols, tile_height, tile_width, channels = img_grid.shape
 
