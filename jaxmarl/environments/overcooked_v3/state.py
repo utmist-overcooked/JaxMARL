@@ -28,6 +28,7 @@ class State:
     # pot_positions stores (y, x) for each pot, pot_active_mask indicates valid pots
     pot_positions: chex.Array  # [max_pots, 2] - (y, x) positions
     pot_cooking_timer: chex.Array  # [max_pots] - countdown to cooked (0 when idle/cooked)
+    pot_cook_durations: chex.Array  # [max_pots] - sampled steps until ready
     pot_active_mask: chex.Array  # [max_pots] - bool, which pot slots are valid
 
     # Order queue state (optional feature)

@@ -1,5 +1,7 @@
 """Agent interaction rules for Overcooked V3."""
 
+from typing import Optional
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -7,6 +9,24 @@ import jax.numpy as jnp
 from jaxmarl.environments.overcooked_v3.common import DynamicObject, StaticObject, Agent
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.settings import MAX_POTS, SHAPED_REWARDS
+
+
+def sample_pot_cook_time(
+    key: chex.PRNGKey, config: OvercookedV3Config
+) -> chex.Array:
+    """Sample an inclusive ready-time duration or return the fixed duration."""
+    if not config.pot_cook_time_range:
+        return jnp.array(config.pot_cook_time, dtype=jnp.int32)
+
+    min_cook_time, max_cook_time = config.pot_cook_time_range
+    return jax.random.randint(
+        key,
+        (),
+        min_cook_time,
+        max_cook_time + 1,
+        dtype=jnp.int32,
+    )
+
 
 def process_interact(
     grid: chex.Array,
@@ -17,8 +37,12 @@ def process_interact(
     pot_positions: chex.Array,
     pot_active_mask: chex.Array,
     config: OvercookedV3Config,
+    pot_cook_time: Optional[chex.Array] = None,
 ):
     """Process an interact action for an agent."""
+    if pot_cook_time is None:
+        pot_cook_time = jnp.array(config.pot_cook_time, dtype=jnp.int32)
+
     inventory = agent.inventory
     fwd_pos, fwd_pos_in_bounds = agent.pos.checked_move(
         agent.dir, config.width, config.height
@@ -62,15 +86,23 @@ def process_interact(
 
     merged_ingredients = interact_ingredients + inventory
 
-    # Pot state
+    # Pot timers live in State; the grid's extra channel is reserved for
+    # conveyor and moving-wall directions.
+    def _timer_for_pot(pot_idx):
+        pot_y, pot_x = pot_positions[pot_idx]
+        is_this_pot = (
+            (pot_y == fwd_pos.y)
+            & (pot_x == fwd_pos.x)
+            & pot_active_mask[pot_idx]
+        )
+        return jax.lax.select(is_this_pot, pot_timers[pot_idx], 0)
+
+    current_pot_timer = jnp.max(jax.vmap(_timer_for_pot)(jnp.arange(MAX_POTS)))
     pot_is_cooked = object_is_pot * (
         (interact_ingredients & DynamicObject.COOKED) != 0
     )
-    pot_is_cooking = object_is_pot * (interact_extra > 0) * ~pot_is_cooked
-    pot_is_burned = object_is_pot * (
-        (interact_ingredients & DynamicObject.BURNED) != 0
-    )
-    pot_is_idle = object_is_pot * ~pot_is_cooking * ~pot_is_cooked * ~pot_is_burned
+    pot_is_cooking = object_is_pot * (current_pot_timer > 0) * ~pot_is_cooked
+    pot_is_idle = object_is_pot * (current_pot_timer == 0) * ~pot_is_cooked
 
     # Check if pot is ready (in burning window)
     # In V3: dish_ready when cooking_timer is between 1 and burn_time
@@ -139,6 +171,7 @@ def process_interact(
     # Start cooking when pot becomes full
     pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
     auto_cook = pot_is_idle & pot_full_after_drop
+    initial_pot_timer = pot_cook_time + config.pot_burn_time
 
     # Update pot timer
     # Find which pot this is
@@ -148,7 +181,7 @@ def process_interact(
             (pot_y == fwd_pos.y) & (pot_x == fwd_pos.x) & pot_active_mask[pot_idx]
         )
         new_timer = jax.lax.select(
-            is_this_pot & auto_cook, config.pot_cook_time, pot_timers[pot_idx]
+            is_this_pot & auto_cook, initial_pot_timer, pot_timers[pot_idx]
         )
         # Reset timer on successful dish pickup
         new_timer = jax.lax.select(

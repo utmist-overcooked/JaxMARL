@@ -1,6 +1,6 @@
 """Functional timestep pipeline for Overcooked V3."""
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import chex
 import jax
@@ -30,12 +30,15 @@ def step_overcooked_v3(
 ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
     """Run one environment timestep as a sequence of explicit state transforms."""
     agent_actions = translate_action_dict_to_ordered_action_array(actions, config)
+    agent_key, order_key = partition_step_key(key, config)
 
     state, reward, shaped_rewards = run_agent_action_phase(
-        key, state, agent_actions, config
+        agent_key, state, agent_actions, config
     )
     state = advance_dynamic_environment_systems(state, config)
-    state, reward = advance_order_queue_and_add_queue_reward(key, state, reward, config)
+    state, reward = advance_order_queue_and_add_queue_reward(
+        order_key, state, reward, config
+    )
     state = advance_time_and_update_terminal_flag(state, config)
 
     return build_step_env_return_values(state, reward, shaped_rewards, config)
@@ -47,6 +50,17 @@ def translate_action_dict_to_ordered_action_array(
     return config.action_set.take(
         indices=jnp.array([actions[f"agent_{i}"] for i in range(config.num_agents)])
     )
+
+
+def partition_step_key(
+    key: chex.PRNGKey, config: OvercookedV3Config
+) -> Tuple[chex.PRNGKey, Optional[chex.PRNGKey]]:
+    """Isolate agent/pot randomness from order-queue randomness."""
+    if config.enable_order_queue:
+        agent_key, order_key = jax.random.split(key)
+        return agent_key, order_key
+
+    return key, None
 
 def advance_dynamic_environment_systems(
     state: State, config: OvercookedV3Config
@@ -67,15 +81,14 @@ def advance_dynamic_environment_systems(
     return update_barrier_timers(state, config)
 
 def advance_order_queue_and_add_queue_reward(
-    key: chex.PRNGKey,
+    key: Optional[chex.PRNGKey],
     state: State,
     reward: float,
     config: OvercookedV3Config,
 ) -> Tuple[State, float]:
     """Generate and expire queued orders, adding any queue reward to the step reward."""
     if config.enable_order_queue:
-        key, subkey = jax.random.split(key)
-        state, order_reward = process_order_queue(state, subkey, config)
+        state, order_reward = process_order_queue(state, key, config)
         reward = reward + order_reward
 
     return state, reward

@@ -67,6 +67,7 @@ def reset_overcooked_v3(
         grid=grid,
         pot_positions=jnp.array(config.pot_positions),
         pot_cooking_timer=jnp.zeros(MAX_POTS, dtype=jnp.int32),
+        pot_cook_durations=jnp.zeros(MAX_POTS, dtype=jnp.int32),
         pot_active_mask=jnp.array(config.pot_active_mask),
         order_types=jnp.zeros(config.max_orders, dtype=jnp.int32),
         order_expirations=jnp.zeros(config.max_orders, dtype=jnp.int32),

@@ -7,6 +7,7 @@ import numpy as np
 import os
 
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
+from jaxmarl.environments.overcooked_v3.common import DynamicObject
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer, HAS_IMAGEIO
 
 
@@ -227,6 +228,61 @@ class TestVisualizerRenderingContent:
         # Images should potentially be different (game state changed)
         # Note: They might be the same if no meaningful actions occurred
         assert img_initial.shape == img_after.shape
+
+    def test_pot_progress_uses_sampled_cook_duration(self):
+        env = OvercookedV3(
+            layout="cramped_room",
+            pot_cook_time=90,
+            pot_cook_time_range=[7, 9],
+            pot_burn_time=5,
+        )
+        viz = OvercookedV3Visualizer(env, tile_size=32)
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        pot_y, pot_x = state.pot_positions[0]
+        state = state.replace(
+            grid=state.grid.at[pot_y, pot_x, 1].set(
+                DynamicObject.ingredient(0) * 3
+            ),
+            pot_cooking_timer=state.pot_cooking_timer.at[0].set(11),
+            pot_cook_durations=state.pot_cook_durations.at[0].set(7),
+        )
+
+        img = viz.render_state(state)
+        progress_row = int(pot_y) * 32 + 27
+
+        assert jnp.array_equal(
+            img[progress_row, int(pot_x) * 32 + 4],
+            jnp.array([0, 255, 0], dtype=jnp.uint8),
+        )
+        assert not jnp.array_equal(
+            img[progress_row, int(pot_x) * 32 + 16],
+            jnp.array([0, 255, 0], dtype=jnp.uint8),
+        )
+
+    def test_zero_sampled_duration_falls_back_to_fixed_cook_time(self):
+        env = OvercookedV3(
+            layout="cramped_room",
+            pot_cook_time=7,
+            pot_burn_time=5,
+        )
+        viz = OvercookedV3Visualizer(env, tile_size=32)
+        _, state = env.reset(jax.random.PRNGKey(0))
+        pot_y, pot_x = state.pot_positions[0]
+        base_state = state.replace(
+            grid=state.grid.at[pot_y, pot_x, 1].set(
+                DynamicObject.ingredient(0) * 3
+            ),
+            pot_cooking_timer=state.pot_cooking_timer.at[0].set(11),
+        )
+        tracked_state = base_state.replace(
+            pot_cook_durations=base_state.pot_cook_durations.at[0].set(7)
+        )
+
+        assert jnp.array_equal(
+            viz.render_state(base_state),
+            viz.render_state(tracked_state),
+        )
 
 
 if __name__ == "__main__":

@@ -15,7 +15,10 @@ from jaxmarl.environments.overcooked_v3.common import (
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
-from jaxmarl.environments.overcooked_v3.interactions import process_interact
+from jaxmarl.environments.overcooked_v3.interactions import (
+    process_interact,
+    sample_pot_cook_time,
+)
 from jaxmarl.environments.overcooked_v3.settings import (
     MAX_BARRIERS,
     MAX_BUTTONS,
@@ -61,8 +64,6 @@ def run_agent_action_phase(
     config: OvercookedV3Config,
 ) -> Tuple[State, float, chex.Array]:
     """Run movement, collision handling, interactions, and button effects."""
-    del key
-
     barrier_walkable_by_pressure_plate = (
         find_barriers_opened_by_current_pressure_plate_occupants(state, config)
     )
@@ -75,7 +76,7 @@ def run_agent_action_phase(
     moved_agents = prevent_agents_from_swapping_positions(state.agents, moved_agents)
 
     state, reward, shaped_rewards = apply_agent_interact_actions(
-        state, moved_agents, actions, config
+        key, state, moved_agents, actions, config
     )
     state = apply_agent_button_interactions(state, actions, config)
 
@@ -222,6 +223,7 @@ def find_agents_that_swapped_positions(original_positions, new_positions) -> che
     return jnp.any(swap_pairs, axis=0)
 
 def apply_agent_interact_actions(
+    key: chex.PRNGKey,
     state: State,
     moved_agents: Agent,
     actions: chex.Array,
@@ -234,7 +236,17 @@ def apply_agent_interact_actions(
         is_interact = action == Actions.interact
 
         def _interact(carry, agent):
-            grid, correct_delivery, reward, pot_timers = carry
+            (
+                grid,
+                correct_delivery,
+                reward,
+                pot_timers,
+                pot_cook_durations,
+                key,
+            ) = carry
+
+            key, subkey = jax.random.split(key)
+            pot_cook_time = sample_pot_cook_time(subkey, config)
 
             (
                 new_grid,
@@ -252,6 +264,15 @@ def apply_agent_interact_actions(
                 state.pot_positions,
                 state.pot_active_mask,
                 config,
+                pot_cook_time,
+            )
+
+            pot_started = (pot_timers == 0) & (new_pot_timers > 0)
+            new_pot_cook_durations = jnp.where(
+                pot_started, pot_cook_time, pot_cook_durations
+            )
+            new_pot_cook_durations = jnp.where(
+                new_pot_timers == 0, 0, new_pot_cook_durations
             )
 
             carry = (
@@ -259,6 +280,8 @@ def apply_agent_interact_actions(
                 correct_delivery | new_correct_delivery,
                 reward + interact_reward,
                 new_pot_timers,
+                new_pot_cook_durations,
+                key,
             )
             return carry, (new_agent, shaped_reward)
 
@@ -266,15 +289,32 @@ def apply_agent_interact_actions(
             is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
         )
 
-    carry = (state.grid, False, 0.0, state.pot_cooking_timer)
+    carry = (
+        state.grid,
+        False,
+        0.0,
+        state.pot_cooking_timer,
+        state.pot_cook_durations,
+        key,
+    )
     xs = (moved_agents, actions)
     (
-        (new_grid, new_correct_delivery, reward, new_pot_timers),
+        (
+            new_grid,
+            new_correct_delivery,
+            reward,
+            new_pot_timers,
+            new_pot_cook_durations,
+            _key,
+        ),
         (new_agents, shaped_rewards),
     ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
     new_grid, new_pot_timers = update_pot_timers(
         new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask, config
+    )
+    new_pot_cook_durations = jnp.where(
+        new_pot_timers == 0, 0, new_pot_cook_durations
     )
 
     return (
@@ -282,6 +322,7 @@ def apply_agent_interact_actions(
             agents=new_agents,
             grid=new_grid,
             pot_cooking_timer=new_pot_timers,
+            pot_cook_durations=new_pot_cook_durations,
             new_correct_delivery=new_correct_delivery,
         ),
         reward,
