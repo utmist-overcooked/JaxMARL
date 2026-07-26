@@ -236,6 +236,12 @@ class TestOvercookedV3PotMechanics:
         with pytest.raises(ValueError, match="exactly"):
             OvercookedV3(pot_cook_time_range=[7])
 
+        with pytest.raises(ValueError, match="at least 1"):
+            OvercookedV3(pot_cook_time_range=[0, 1])
+
+        with pytest.raises(ValueError, match="at least 1"):
+            OvercookedV3(pot_cook_time_range=[-2, -1])
+
         with pytest.raises(ValueError, match="min must be <= max"):
             OvercookedV3(pot_cook_time_range=[9, 7])
 
@@ -297,6 +303,34 @@ class TestOvercookedV3PotMechanics:
         )
         _, _, _, _, _, second_timers = second_result
         assert int(second_timers[0]) == 16
+
+    def test_started_pot_tracks_sampled_cook_duration(self):
+        env = OvercookedV3(
+            pot_cook_time=99, pot_cook_time_range=[7, 7], pot_burn_time=5
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        pot_y, pot_x = state.pot_positions[0]
+        agents = state.agents.replace(
+            pos=state.agents.pos.replace(
+                x=state.agents.pos.x.at[0].set(pot_x),
+                y=state.agents.pos.y.at[0].set(pot_y + 1),
+            ),
+            dir=state.agents.dir.at[0].set(Direction.UP),
+            inventory=state.agents.inventory.at[0].set(
+                DynamicObject.ingredient(0)
+            ),
+        )
+        grid = state.grid.at[pot_y, pot_x, 1].set(
+            DynamicObject.ingredient(0) * 2
+        )
+        state = state.replace(agents=agents, grid=grid)
+        actions = jnp.full(env.num_agents, Actions.stay).at[0].set(Actions.interact)
+
+        new_state, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
+
+        assert int(new_state.pot_cooking_timer[0]) == 11
+        assert int(new_state.pot_cook_durations[0]) == 7
 
     def test_process_interact_defaults_to_fixed_pot_cook_time(self):
         env = OvercookedV3(
@@ -578,6 +612,39 @@ class TestOvercookedV3OrderQueue:
         key = jax.random.PRNGKey(0)
         obs, state = env.reset(key)
         assert state.order_types is not None
+
+    def test_order_queue_uses_key_independent_from_agent_and_pot_processing(self):
+        env = OvercookedV3(
+            enable_order_queue=True,
+            order_generation_rate=0.0,
+            pot_cook_time_range=[7, 9],
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        captured_keys = {}
+
+        original_step_agents = env.step_agents
+        original_process_order_queue = env._process_order_queue
+
+        def capture_agent_key(key, state, actions):
+            captured_keys["agent"] = key
+            return original_step_agents(key, state, actions)
+
+        def capture_order_key(state, key):
+            captured_keys["order"] = key
+            return original_process_order_queue(state, key)
+
+        env.step_agents = capture_agent_key
+        env._process_order_queue = capture_order_key
+
+        step_key = jax.random.PRNGKey(1)
+        expected_agent_key, expected_order_key = jax.random.split(step_key)
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+
+        env.step_env(step_key, state, actions)
+
+        assert jnp.array_equal(captured_keys["agent"], expected_agent_key)
+        assert jnp.array_equal(captured_keys["order"], expected_order_key)
+        assert not jnp.array_equal(captured_keys["agent"], captured_keys["order"])
 
 
 class TestOvercookedV3Conveyors:

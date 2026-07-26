@@ -176,6 +176,7 @@ class State:
     grid: chex.Array                 # [H, W, 3] - static, dynamic, extra channels
     pot_positions: chex.Array        # [MAX_POTS, 2] - pot (y, x) locations
     pot_cooking_timer: chex.Array    # [MAX_POTS] - cooking countdown
+    pot_cook_durations: chex.Array   # [MAX_POTS] - sampled steps until ready
     pot_active_mask: chex.Array      # [MAX_POTS] - which pots are valid
     order_types: chex.Array          # [MAX_ORDERS] - order queue
     order_expirations: chex.Array    # [MAX_ORDERS] - time until expiry

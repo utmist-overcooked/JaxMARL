@@ -78,6 +78,9 @@ class State:
     pot_cooking_timer: (
         chex.Array
     )  # [max_pots] - countdown to cooked (0 when idle/cooked)
+    pot_cook_durations: (
+        chex.Array
+    )  # [max_pots] - sampled steps until ready for the current cook
     pot_active_mask: chex.Array  # [max_pots] - bool, which pot slots are valid
 
     # Order queue state (optional feature)
@@ -303,6 +306,8 @@ class OvercookedV3(MultiAgentEnv):
             raise ValueError(
                 "pot_cook_time_range must be empty or contain exactly [min, max]"
             )
+        if len(cook_time_range) == 2 and min(cook_time_range) < 1:
+            raise ValueError("pot_cook_time_range values must be at least 1")
         if len(cook_time_range) == 2 and cook_time_range[0] > cook_time_range[1]:
             raise ValueError("pot_cook_time_range min must be <= max")
         self.pot_cook_time_range = jnp.array(cook_time_range, dtype=jnp.int32)
@@ -619,6 +624,7 @@ class OvercookedV3(MultiAgentEnv):
             grid=grid,
             pot_positions=jnp.array(self._pot_positions),
             pot_cooking_timer=jnp.zeros(MAX_POTS, dtype=jnp.int32),
+            pot_cook_durations=jnp.zeros(MAX_POTS, dtype=jnp.int32),
             pot_active_mask=jnp.array(self._pot_active_mask),
             order_types=jnp.zeros(self.max_orders, dtype=jnp.int32),
             order_expirations=jnp.zeros(self.max_orders, dtype=jnp.int32),
@@ -778,7 +784,12 @@ class OvercookedV3(MultiAgentEnv):
             indices=jnp.array([actions[f"agent_{i}"] for i in range(self.num_agents)])
         )
 
-        state, reward, shaped_rewards = self.step_agents(key, state, acts)
+        agent_key = key
+        order_key = None
+        if self.enable_order_queue:
+            agent_key, order_key = jax.random.split(key)
+
+        state, reward, shaped_rewards = self.step_agents(agent_key, state, acts)
 
         # Process moving walls (before conveyors so conveyors interact with new wall positions)
         if self.enable_moving_walls:
@@ -798,8 +809,7 @@ class OvercookedV3(MultiAgentEnv):
 
         # Process order queue
         if self.enable_order_queue:
-            key, subkey = jax.random.split(key)
-            state, order_reward = self._process_order_queue(state, subkey)
+            state, order_reward = self._process_order_queue(state, order_key)
             reward = reward + order_reward
 
         # Update time
@@ -963,7 +973,14 @@ class OvercookedV3(MultiAgentEnv):
             is_interact = action == Actions.interact
 
             def _interact(carry, agent):
-                grid, correct_delivery, reward, pot_timers, key = carry
+                (
+                    grid,
+                    correct_delivery,
+                    reward,
+                    pot_timers,
+                    pot_cook_durations,
+                    key,
+                ) = carry
 
                 key, subkey = jax.random.split(key)
                 pot_cook_time = self._sample_pot_cook_time(subkey)
@@ -986,11 +1003,20 @@ class OvercookedV3(MultiAgentEnv):
                     pot_cook_time,
                 )
 
+                pot_started = (pot_timers == 0) & (new_pot_timers > 0)
+                new_pot_cook_durations = jnp.where(
+                    pot_started, pot_cook_time, pot_cook_durations
+                )
+                new_pot_cook_durations = jnp.where(
+                    new_pot_timers == 0, 0, new_pot_cook_durations
+                )
+
                 carry = (
                     new_grid,
                     correct_delivery | new_correct_delivery,
                     reward + interact_reward,
                     new_pot_timers,
+                    new_pot_cook_durations,
                     key,
                 )
                 return carry, (new_agent, shaped_reward)
@@ -999,16 +1025,33 @@ class OvercookedV3(MultiAgentEnv):
                 is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
             )
 
-        carry = (grid, False, 0.0, state.pot_cooking_timer, key)
+        carry = (
+            grid,
+            False,
+            0.0,
+            state.pot_cooking_timer,
+            state.pot_cook_durations,
+            key,
+        )
         xs = (new_agents, actions)
         (
-            (new_grid, new_correct_delivery, reward, new_pot_timers, _key),
+            (
+                new_grid,
+                new_correct_delivery,
+                reward,
+                new_pot_timers,
+                new_pot_cook_durations,
+                _key,
+            ),
             (new_agents, shaped_rewards),
         ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
         # Update pot timers (cooking and burning)
         new_grid, new_pot_timers = self._update_pot_timers(
             new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask
+        )
+        new_pot_cook_durations = jnp.where(
+            new_pot_timers == 0, 0, new_pot_cook_durations
         )
 
         # Process button presses
@@ -1256,6 +1299,7 @@ class OvercookedV3(MultiAgentEnv):
                 agents=new_agents,
                 grid=new_grid,
                 pot_cooking_timer=new_pot_timers,
+                pot_cook_durations=new_pot_cook_durations,
                 new_correct_delivery=new_correct_delivery,
                 moving_wall_directions=new_mw_directions,
                 moving_wall_paused=new_mw_paused,
