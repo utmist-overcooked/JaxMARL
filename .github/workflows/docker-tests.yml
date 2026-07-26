@@ -17,5 +17,9 @@ jobs:
         python-version: '3.12'
     - name: Install dependencies
       run: pip install -e ".[dev,algs]"
-    - name: Run Overcooked V3 tests
-      run: pytest tests/overcooked_v3
+    - name: Run Overcooked V3 and macro tests
+      run: >-
+        pytest
+        tests/overcooked_v3
+        tests/overcooked_v3_macro
+        tests/baselines/test_mappo_macro_utils.py

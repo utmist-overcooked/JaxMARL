@@ -35,7 +35,8 @@ class Actions(IntEnum):
 
 Evidence: [`Actions`](../overcooked_v3/common.py#L210-L217).
 
-The policy selects one of thirteen macros:
+The policy selects one of seventeen actions: thirteen macros and four
+one-step primitive movement actions.
 
 ```python
 class MacroActions(IntEnum):
@@ -52,9 +53,16 @@ class MacroActions(IntEnum):
     press_nearest_button = 10
     stand_on_nearest_pressure_plate = 11
     wait_for_nearest_pot = 12
+    up = 13
+    down = 14
+    left = 15
+    right = 16
 ```
 
-Evidence: [`MacroActions`](./overcooked.py#L43-L59).
+The primitive movement actions emit the corresponding base-environment action
+for one step and then complete immediately.
+
+Evidence: [`MacroActions`](./overcooked.py#L43-L62).
 
 ## Step 1: read the policy requests
 
