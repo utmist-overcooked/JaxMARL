@@ -248,4 +248,3 @@ def move_moving_walls(state: State, config: OvercookedV3Config) -> State:
         moving_wall_directions=new_directions,
         moving_wall_paused=new_paused,
     )
-

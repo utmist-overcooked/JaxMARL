@@ -121,4 +121,3 @@ def push_players_on_player_conveyors(state: State, config: OvercookedV3Config) -
     new_agents = jax.vmap(_push_agent)(agents)
 
     return state.replace(agents=new_agents)
-

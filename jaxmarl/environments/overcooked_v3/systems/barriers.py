@@ -107,4 +107,3 @@ def update_pressure_plates(state: State, config: OvercookedV3Config) -> State:
         barrier_timer=new_barrier_timer,
         pressure_plate_toggled=pressed,
     )
-

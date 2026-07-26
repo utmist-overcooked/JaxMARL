@@ -71,4 +71,3 @@ def update_pot_timers(
     )
 
     return new_grid, new_timers
-
