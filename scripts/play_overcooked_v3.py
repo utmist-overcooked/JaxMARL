@@ -148,6 +148,7 @@ def main():
         key, sk = jax.random.split(key)
         obs, state, rewards, dones, info = env.step(sk, state, actions)
         current_pot_timers = np.array(state.pot_cooking_timer)
+        current_pot_durations = np.array(state.pot_cook_durations)
         step_count += 1
         r = float(rewards["agent_0"])
         total_reward += r
@@ -156,9 +157,7 @@ def main():
             (previous_pot_timers == 0) & (current_pot_timers > 0)
         )[0]
         for pot_idx in started_cooking:
-            sampled_ready_time = (
-                int(current_pot_timers[pot_idx]) + 1 - env.pot_burn_time
-            )
+            sampled_ready_time = int(current_pot_durations[pot_idx])
             print(
                 f"Pot {pot_idx} started cooking at step {step_count}: "
                 f"sampled time until ready = {sampled_ready_time} steps"

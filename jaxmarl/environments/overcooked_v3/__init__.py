@@ -2,4 +2,5 @@
 
 from .common import ButtonAction
 from .layouts import overcooked_v3_layouts, Layout
-from .overcooked import OvercookedV3, ObservationType
+from .overcooked import OvercookedV3
+from .state import ObservationType

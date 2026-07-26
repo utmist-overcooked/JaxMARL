@@ -28,10 +28,18 @@ Features:
 ```
 overcooked_v3/
 ├── __init__.py          # Package exports
+├── agent_step.py        # Agent movement and interaction action phase
 ├── common.py            # Core data structures and enums
-├── settings.py          # Configuration constants
+├── config.py            # Static functional-core configuration
+├── interactions.py      # Item pickup, placement, cooking, and delivery
 ├── layouts.py           # Layout definitions, parsing, and utilities
-├── overcooked.py        # Main environment implementation
+├── observations.py      # Observation construction
+├── overcooked.py        # Public environment and compatibility wrappers
+├── reset.py             # Functional reset pipeline
+├── settings.py          # Default constants and fixed array limits
+├── state.py             # Environment state dataclass
+├── step.py              # Functional timestep pipeline and PRNG partitioning
+├── systems/             # Pots, orders, conveyors, walls, and barriers
 ├── utils.py             # Helper functions
 └── README.md            # This file
 ```
@@ -148,9 +156,12 @@ overcooked_v3_layouts["my_layout"] = Layout.from_string(
 )
 ```
 
-### `overcooked.py` - Main Environment
+### `overcooked.py` - Public Environment Wrapper
 
-The `OvercookedV3` class implementing `MultiAgentEnv`:
+The `OvercookedV3` class implements `MultiAgentEnv`, validates constructor
+arguments, builds `OvercookedV3Config`, and exposes compatibility wrappers. The
+JAX-traceable implementation lives in `reset.py`, `step.py`, `agent_step.py`,
+`interactions.py`, `observations.py`, and `systems/`.
 
 **Key methods:**
 | Method | Description |
@@ -300,7 +311,7 @@ def step_fn(carry, x):
    }
    ```
 
-3. Handle in `process_interact()` in `overcooked.py`
+3. Handle in `process_interact()` in `interactions.py`
 
 4. Add rendering in `overcooked_v3_visualizer.py`
 
@@ -323,7 +334,7 @@ def step_fn(carry, x):
 
 1. Add to `Actions` enum in `common.py`
 2. Update `ACTION_TO_DIRECTION` if it's a movement
-3. Handle in `step_agents()` in `overcooked.py`
+3. Handle in the agent action phase in `agent_step.py`
 4. Update action space size if needed
 
 ## Testing

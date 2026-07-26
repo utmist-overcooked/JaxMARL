@@ -260,6 +260,30 @@ class TestVisualizerRenderingContent:
             jnp.array([0, 255, 0], dtype=jnp.uint8),
         )
 
+    def test_zero_sampled_duration_falls_back_to_fixed_cook_time(self):
+        env = OvercookedV3(
+            layout="cramped_room",
+            pot_cook_time=7,
+            pot_burn_time=5,
+        )
+        viz = OvercookedV3Visualizer(env, tile_size=32)
+        _, state = env.reset(jax.random.PRNGKey(0))
+        pot_y, pot_x = state.pot_positions[0]
+        base_state = state.replace(
+            grid=state.grid.at[pot_y, pot_x, 1].set(
+                DynamicObject.ingredient(0) * 3
+            ),
+            pot_cooking_timer=state.pot_cooking_timer.at[0].set(11),
+        )
+        tracked_state = base_state.replace(
+            pot_cook_durations=base_state.pot_cook_durations.at[0].set(7)
+        )
+
+        assert jnp.array_equal(
+            viz.render_state(base_state),
+            viz.render_state(tracked_state),
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

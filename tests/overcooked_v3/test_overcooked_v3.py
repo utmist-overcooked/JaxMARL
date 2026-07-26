@@ -19,6 +19,7 @@ from jaxmarl.environments.overcooked_v3.layouts import (
     moving_wall_demo,
     moving_wall_bounce_demo,
 )
+from jaxmarl.environments.overcooked_v3.step import partition_step_key
 from jaxmarl.environments.multi_agent_env import MultiAgentEnv
 
 
@@ -209,6 +210,7 @@ class TestOvercookedV3PotMechanics:
 
         # All pot timers should be 0
         assert jnp.all(state.pot_cooking_timer == 0)
+        assert jnp.all(state.pot_cook_durations == 0)
 
     def test_pot_cook_time_samples_from_inclusive_range(self):
         env = OvercookedV3(pot_cook_time=99, pot_cook_time_range=[7, 9])
@@ -480,6 +482,67 @@ class TestOvercookedV3PotMechanics:
         pot_ingredients = new_state.grid[pot_y, pot_x, 1]
         assert pot_ingredients == 0
 
+    def test_pot_cook_duration_clears_when_pot_burns(self):
+        env = OvercookedV3(pot_cook_time=10, pot_burn_time=5)
+        _, state = env.reset(jax.random.PRNGKey(0))
+        durations = state.pot_cook_durations.at[0].set(10)
+        state = self._setup_full_pot(env, state, timer_value=1).replace(
+            pot_cook_durations=durations
+        )
+
+        new_state, _ = self._step_noop(env, state, jax.random.PRNGKey(1))
+
+        assert int(new_state.pot_cooking_timer[0]) == 0
+        assert int(new_state.pot_cook_durations[0]) == 0
+
+    def test_ranged_pot_becomes_ready_and_burns_at_configured_thresholds(self):
+        env = OvercookedV3(
+            pot_cook_time=99,
+            pot_cook_time_range=[4, 4],
+            pot_burn_time=3,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        pot_y, pot_x = state.pot_positions[0]
+        state = state.replace(
+            agents=state.agents.replace(
+                pos=state.agents.pos.replace(
+                    x=state.agents.pos.x.at[0].set(pot_x),
+                    y=state.agents.pos.y.at[0].set(pot_y + 1),
+                ),
+                dir=state.agents.dir.at[0].set(Direction.UP),
+                inventory=state.agents.inventory.at[0].set(
+                    DynamicObject.ingredient(0)
+                ),
+            ),
+            grid=state.grid.at[pot_y, pot_x, 1].set(
+                DynamicObject.ingredient(0) * 2
+            ),
+        )
+        actions = jnp.full(env.num_agents, Actions.stay).at[0].set(Actions.interact)
+
+        state, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
+        assert int(state.pot_cooking_timer[0]) == 6
+        assert int(state.pot_cook_durations[0]) == 4
+
+        for expected_timer in [5, 4]:
+            state, _ = self._step_noop(env, state, jax.random.PRNGKey(expected_timer))
+            assert int(state.pot_cooking_timer[0]) == expected_timer
+            assert (state.grid[pot_y, pot_x, 1] & DynamicObject.COOKED) == 0
+
+        state, _ = self._step_noop(env, state, jax.random.PRNGKey(3))
+        assert int(state.pot_cooking_timer[0]) == env.pot_burn_time
+        assert (state.grid[pot_y, pot_x, 1] & DynamicObject.COOKED) != 0
+
+        for expected_timer in [2, 1]:
+            state, _ = self._step_noop(env, state, jax.random.PRNGKey(expected_timer))
+            assert int(state.pot_cooking_timer[0]) == expected_timer
+            assert int(state.pot_cook_durations[0]) == 4
+
+        state, _ = self._step_noop(env, state, jax.random.PRNGKey(0))
+        assert int(state.pot_cooking_timer[0]) == 0
+        assert int(state.pot_cook_durations[0]) == 0
+        assert int(state.grid[pot_y, pot_x, 1]) == 0
+
     def test_pot_full_cooking_cycle(self):
         """Test complete cycle: full pot -> cooking -> cooked -> burn window -> burned."""
         from jaxmarl.environments.overcooked_v3.common import DynamicObject
@@ -619,32 +682,22 @@ class TestOvercookedV3OrderQueue:
             order_generation_rate=0.0,
             pot_cook_time_range=[7, 9],
         )
-        _, state = env.reset(jax.random.PRNGKey(0))
-        captured_keys = {}
-
-        original_step_agents = env.step_agents
-        original_process_order_queue = env._process_order_queue
-
-        def capture_agent_key(key, state, actions):
-            captured_keys["agent"] = key
-            return original_step_agents(key, state, actions)
-
-        def capture_order_key(state, key):
-            captured_keys["order"] = key
-            return original_process_order_queue(state, key)
-
-        env.step_agents = capture_agent_key
-        env._process_order_queue = capture_order_key
-
         step_key = jax.random.PRNGKey(1)
         expected_agent_key, expected_order_key = jax.random.split(step_key)
-        actions = {agent: int(Actions.stay) for agent in env.agents}
+        agent_key, order_key = partition_step_key(step_key, env.config)
 
-        env.step_env(step_key, state, actions)
+        assert jnp.array_equal(agent_key, expected_agent_key)
+        assert jnp.array_equal(order_key, expected_order_key)
+        assert not jnp.array_equal(agent_key, order_key)
 
-        assert jnp.array_equal(captured_keys["agent"], expected_agent_key)
-        assert jnp.array_equal(captured_keys["order"], expected_order_key)
-        assert not jnp.array_equal(captured_keys["agent"], captured_keys["order"])
+    def test_disabled_order_queue_preserves_original_agent_key(self):
+        env = OvercookedV3(enable_order_queue=False, pot_cook_time_range=[7, 9])
+        step_key = jax.random.PRNGKey(1)
+
+        agent_key, order_key = partition_step_key(step_key, env.config)
+
+        assert jnp.array_equal(agent_key, step_key)
+        assert order_key is None
 
 
 class TestOvercookedV3Conveyors:
