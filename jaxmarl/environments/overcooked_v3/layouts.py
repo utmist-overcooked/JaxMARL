@@ -1468,9 +1468,9 @@ def load_layouts_from_json(
 ) -> dict[str, Layout]:
     """Load named Overcooked V3 layouts from a single JSON file.
 
-    Each value in the top-level ``layouts`` object must contain ``ascii`` and
-    ``possible_recipes`` fields. This is the format written by
-    ``scripts/generate_overcooked_v3_layouts.py``.
+    Each value in the top-level ``layouts`` object must contain an ``ascii``
+    string (or the legacy ``grid`` key) and a ``possible_recipes`` field. This
+    is the format written by ``scripts/generate_overcooked_v3_layouts.py``.
     """
     json_path = Path(path)
     with json_path.open("r", encoding="utf-8") as file:
@@ -1492,7 +1492,9 @@ def load_layouts_from_json(
         grid = entry.get("ascii", entry.get("grid"))
         possible_recipes = entry.get("possible_recipes")
         if not isinstance(grid, str):
-            raise ValueError(f"Layout {name!r} must contain an 'ascii' string")
+            raise ValueError(
+                f"Layout {name!r} must contain an 'ascii' or 'grid' string"
+            )
         if possible_recipes is None and "R" not in grid:
             raise ValueError(
                 f"Layout {name!r} must contain 'possible_recipes' when it has "

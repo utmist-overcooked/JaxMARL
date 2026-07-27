@@ -64,13 +64,16 @@ the results to the top-level `layouts` object.
 
 `possible_recipes` may be omitted. In that case, the generator creates one
 same-ingredient recipe for every ingredient type with at least one pile.
+When more than one recipe is possible, the generator places an accessible
+`R` recipe indicator so observations expose the recipe selected for the
+current episode.
 
 Overcooked V3 currently supports at most three ingredient types and
 same-ingredient soups. Mixed recipes such as `[0, 0, 1]` are rejected by the
 generator because the current pot logic cannot complete them.
 
-`object_placement` controls all ingredient piles, pots, plate piles, and
-delivery depots:
+`object_placement` controls all ingredient piles, pots, plate piles, delivery
+depots, and any required recipe indicator:
 
 - `boundary` preserves the original behavior and uses only non-corner border
   cells.

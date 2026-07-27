@@ -15,7 +15,7 @@
     "depots": 2,
     "object_placement": "anywhere",
     "counter_density": 0.6,
-    "num_regions": 4,
+    "num_regions": 2,
     "workflow_mode": "complete_each",
     "max_attempts": 100000
   },

@@ -1,6 +1,7 @@
 import json
 import random
 from collections import deque
+from pathlib import Path
 
 import pytest
 
@@ -101,6 +102,7 @@ def test_generator_is_deterministic_and_produces_valid_exact_size_layouts():
         assert grid.count("P") == 1
         assert grid.count("B") == 1
         assert grid.count("X") == 1
+        assert grid.count("R") == 1
 
         layout = Layout.from_string(
             grid,
@@ -108,6 +110,25 @@ def test_generator_is_deterministic_and_produces_valid_exact_size_layouts():
         )
         assert validate_generated_layout(layout) == (True, [])
         assert entry["validation"] == {"valid": True, "errors": []}
+
+
+def test_shipped_example_is_supported_and_generates_a_layout():
+    example_path = (
+        Path(__file__).parents[2]
+        / "scripts"
+        / "overcooked_v3_layouts.example.json"
+    )
+    document = json.loads(example_path.read_text(encoding="utf-8"))
+    config = validate_config(document["generator"])
+
+    grid, layout, _ = generate_layout(
+        config,
+        random.Random(config["seed"]),
+    )
+
+    assert config["num_regions"] == 2
+    assert grid.count("A") == 2
+    assert validate_generated_layout(layout) == (True, [])
 
 
 def test_frontier_generation_constructs_dense_connected_map_on_first_attempt():
@@ -184,6 +205,7 @@ def test_shared_workflow_constructs_two_regions_with_counter_handoff():
     }
 
     assert len(components) == 2
+    assert grid.count("R") == 1
     accessible = [_accessible_symbols(rows, component) for component in components]
     for stations in accessible:
         for recipe in config["possible_recipes"]:
@@ -242,6 +264,37 @@ def test_json_loader_reads_and_runs_generated_layout(tmp_path):
     assert OvercookedV3(layout=layout).layout is layout
 
 
+def test_json_loader_accepts_legacy_grid_key(tmp_path):
+    document = generate_document(_config(count=1))
+    entry = document["layouts"]["test_kitchen_0"]
+    entry["grid"] = entry.pop("ascii")
+    path = tmp_path / "legacy-layouts.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = load_layouts_from_json(path)
+
+    assert loaded["test_kitchen_0"].width == 8
+
+
+def test_json_loader_error_mentions_both_supported_grid_keys(tmp_path):
+    document = {
+        "layouts": {
+            "bad": {
+                "grid": ["not", "a", "string"],
+                "possible_recipes": [[0, 0, 0]],
+            }
+        }
+    }
+    path = tmp_path / "bad-grid.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="must contain an 'ascii' or 'grid' string",
+    ):
+        load_layouts_from_json(path)
+
+
 def test_accessibility_rejects_disconnected_floor_and_workstations():
     grid = "\n".join(
         [
@@ -286,6 +339,18 @@ def test_generator_rejects_mixed_recipes():
         )
 
 
+def test_generator_omits_recipe_indicator_for_one_fixed_recipe():
+    document = generate_document(
+        _config(
+            count=1,
+            ingredient_piles=[1],
+            possible_recipes=[[0, 0, 0]],
+        )
+    )
+
+    assert "R" not in document["layouts"]["test_kitchen_0"]["ascii"]
+
+
 def test_generator_can_place_all_workstations_in_the_interior():
     document = generate_document(
         _config(
@@ -296,7 +361,7 @@ def test_generator_can_place_all_workstations_in_the_interior():
     )
     grid = document["layouts"]["test_kitchen_0"]["ascii"]
     rows = grid.splitlines()
-    workstation_symbols = set("012PBX")
+    workstation_symbols = set("012PBXR")
     workstation_positions = [
         (row, col)
         for row, line in enumerate(rows)
@@ -333,7 +398,7 @@ def test_anywhere_mode_generates_valid_interior_and_boundary_workstations():
         rows = entry["ascii"].splitlines()
         for row, line in enumerate(rows):
             for col, symbol in enumerate(line):
-                if symbol not in set("012PBX"):
+                if symbol not in set("012PBXR"):
                     continue
                 if row in {0, len(rows) - 1} or col in {0, len(line) - 1}:
                     saw_boundary = True

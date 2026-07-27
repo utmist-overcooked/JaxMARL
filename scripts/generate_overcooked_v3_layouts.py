@@ -218,6 +218,7 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
         + config["pots"]
         + config["plate_piles"]
         + config["depots"]
+        + (len(config["possible_recipes"]) > 1)
     )
     boundary_slots = 2 * (width - 2) + 2 * (height - 2)
     max_interior_workstations = interior_tiles - counter_count - 2
@@ -271,6 +272,8 @@ def _station_symbols(config: dict[str, Any]) -> list[str]:
     stations.extend(["P"] * config["pots"])
     stations.extend(["B"] * config["plate_piles"])
     stations.extend(["X"] * config["depots"])
+    if len(config["possible_recipes"]) > 1:
+        stations.append("R")
     return stations
 
 
@@ -311,6 +314,8 @@ def _allocate_stations_to_regions(
         for stage_idx, stage in enumerate(stages):
             target = first_region if stage_idx < split_after else second_region
             allocations[target].extend(stage)
+        if len(config["possible_recipes"]) > 1:
+            allocations[rng.randrange(num_regions)].append("R")
         return allocations
 
     # complete_each: reserve one complete workflow in every region, then
