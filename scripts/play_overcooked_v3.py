@@ -43,6 +43,7 @@ AGENT0_KEYS = {pygame.K_w: 3, pygame.K_s: 1, pygame.K_a: 2, pygame.K_d: 0, pygam
 AGENT1_KEYS = {pygame.K_UP: 3, pygame.K_DOWN: 1, pygame.K_LEFT: 2, pygame.K_RIGHT: 0, pygame.K_RETURN: 5}
 
 TILE = 48
+POT_COOK_TIME_RANGE = [15, 25]
 
 
 def build(layout_name):
@@ -51,6 +52,7 @@ def build(layout_name):
         "overcooked_v3",
         layout=layout_name,
         pot_cook_time=20,
+        pot_cook_time_range=POT_COOK_TIME_RANGE,
         pot_burn_time=10,
         # None => auto-enable from the layout (walls/buttons/plates).
         enable_moving_walls=None,
@@ -124,6 +126,11 @@ def main():
     print("  Agent 0 (Blue):  WASD move, SPACE interact")
     print("  Agent 1 (Green): Arrows move, ENTER interact")
     print("  N/P = next/prev layout   R = reset   Q/ESC = quit")
+    print(
+        "  Pot timing: time until ready=random inclusive range "
+        f"{POT_COOK_TIME_RANGE}; burn window=10 steps"
+    )
+    print("  A pot-start line prints when a full pot begins cooking.")
     print("=" * 56)
 
     pygame.init()
@@ -179,11 +186,25 @@ def main():
         if "agent_1" in env.agents:
             actions["agent_1"] = a1
 
+        previous_pot_timers = np.array(state.pot_cooking_timer)
         key, sk = jax.random.split(key)
         obs, state, rewards, dones, info = env.step(sk, state, actions)
+        current_pot_timers = np.array(state.pot_cooking_timer)
+        current_pot_durations = np.array(state.pot_cook_durations)
         step_count += 1
         r = float(rewards["agent_0"])
         total_reward += r
+
+        started_cooking = np.where(
+            (previous_pot_timers == 0) & (current_pot_timers > 0)
+        )[0]
+        for pot_idx in started_cooking:
+            sampled_ready_time = int(current_pot_durations[pot_idx])
+            print(
+                f"Pot {pot_idx} started cooking at step {step_count}: "
+                f"sampled time until ready = {sampled_ready_time} steps"
+            )
+
         if r > 0:
             print(f"DELIVERY! +{r:.0f} (total {total_reward:.0f})")
 

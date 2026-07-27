@@ -28,10 +28,18 @@ Features:
 ```
 overcooked_v3/
 ├── __init__.py          # Package exports
+├── agent_step.py        # Agent movement and interaction action phase
 ├── common.py            # Core data structures and enums
-├── settings.py          # Configuration constants
+├── config.py            # Static functional-core configuration
+├── interactions.py      # Item pickup, placement, cooking, and delivery
 ├── layouts.py           # Layout definitions, parsing, and utilities
-├── overcooked.py        # Main environment implementation
+├── observations.py      # Observation construction
+├── overcooked.py        # Public environment and compatibility wrappers
+├── reset.py             # Functional reset pipeline
+├── settings.py          # Default constants and fixed array limits
+├── state.py             # Environment state dataclass
+├── step.py              # Functional timestep pipeline and PRNG partitioning
+├── systems/             # Pots, orders, conveyors, walls, and barriers
 ├── utils.py             # Helper functions
 └── README.md            # This file
 ```
@@ -62,7 +70,8 @@ All tunable parameters with defaults:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `POT_COOK_TIME` | 90 | Steps to cook a full pot |
+| `POT_COOK_TIME` | 90 | Steps until a full pot becomes cooked/ready |
+| `POT_COOK_TIME_RANGE` | `()` | Optional inclusive `[min, max]` range for random ready times |
 | `POT_BURN_TIME` | 60 | Steps in burning window before contents destroyed |
 | `DELIVERY_REWARD` | 20.0 | Reward for correct soup delivery |
 | `BURN_PENALTY` | -5.0 | Penalty when pot burns |
@@ -72,6 +81,36 @@ All tunable parameters with defaults:
 | `MAX_PLAYER_CONVEYORS` | 8 | Maximum player conveyor cells |
 
 **Important:** `MAX_*` constants define fixed array sizes for JIT compatibility. Increase these if you need more objects.
+
+#### Variable Pot Cook Times
+
+`pot_cook_time_range` is an optional `OvercookedV3` constructor argument. When set to `[65, 90]`, each cook event samples the time until the soup becomes cooked/ready uniformly from every integer in that inclusive range: `65, 66, 67, ..., 90`.
+
+Omit `pot_cook_time_range` or pass `[]` to keep the fixed `pot_cook_time` behavior.
+
+`pot_burn_time` is separate: after the soup becomes ready, it remains in the burn window for `pot_burn_time` steps before burning. Internally, the pot timer starts at `sampled_cook_time + pot_burn_time`, becomes ready when the timer reaches `pot_burn_time`, and burns when the timer reaches `0`.
+
+Direct Python:
+```python
+env = make(
+    "overcooked_v3",
+    layout="cramped_room",
+    pot_cook_time_range=[65, 90],
+)
+```
+
+YAML configs that pass `ENV_KWARGS` into `jaxmarl.make(...)` can specify the same constructor argument:
+```yaml
+"ENV_NAME": "overcooked_v3"
+"ENV_KWARGS":
+  "layout": "cramped_room"
+  "pot_cook_time_range": [65, 90]
+```
+
+`settings.py` provides the default only when `pot_cook_time_range` is not passed:
+```python
+POT_COOK_TIME_RANGE = ()
+```
 
 ### `layouts.py` - Layout Definitions
 
@@ -117,9 +156,12 @@ overcooked_v3_layouts["my_layout"] = Layout.from_string(
 )
 ```
 
-### `overcooked.py` - Main Environment
+### `overcooked.py` - Public Environment Wrapper
 
-The `OvercookedV3` class implementing `MultiAgentEnv`:
+The `OvercookedV3` class implements `MultiAgentEnv`, validates constructor
+arguments, builds `OvercookedV3Config`, and exposes compatibility wrappers. The
+JAX-traceable implementation lives in `reset.py`, `step.py`, `agent_step.py`,
+`interactions.py`, `observations.py`, and `systems/`.
 
 **Key methods:**
 | Method | Description |
@@ -127,7 +169,7 @@ The `OvercookedV3` class implementing `MultiAgentEnv`:
 | `reset(key) -> Tuple[Dict[str, Array], State]` | Reset the environment and return initial observations and state |
 | `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, orders, and check termination |
 | `step_agents(key, state, actions) -> Tuple[State, float, Array]` | Process agent movement (with collision resolution) and interact actions |
-| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
+| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask, pot_cook_time=None) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
 | `is_terminal(state) -> bool` | Check whether the episode is done (max steps reached) |
 | `get_obs(state) -> Dict[str, Array]` | Get observations for all agents, dispatching by per-agent observation type |
 | `get_obs_for_type(state, obs_type) -> Dict[str, Array]` | Get observations for a specific observation type (default or featurized) |
@@ -145,6 +187,7 @@ class State:
     grid: chex.Array                 # [H, W, 3] - static, dynamic, extra channels
     pot_positions: chex.Array        # [MAX_POTS, 2] - pot (y, x) locations
     pot_cooking_timer: chex.Array    # [MAX_POTS] - cooking countdown
+    pot_cook_durations: chex.Array   # [MAX_POTS] - sampled steps until ready
     pot_active_mask: chex.Array      # [MAX_POTS] - which pots are valid
     order_types: chex.Array          # [MAX_ORDERS] - order queue
     order_expirations: chex.Array    # [MAX_ORDERS] - time until expiry
@@ -268,7 +311,7 @@ def step_fn(carry, x):
    }
    ```
 
-3. Handle in `process_interact()` in `overcooked.py`
+3. Handle in `process_interact()` in `interactions.py`
 
 4. Add rendering in `overcooked_v3_visualizer.py`
 
@@ -291,7 +334,7 @@ def step_fn(carry, x):
 
 1. Add to `Actions` enum in `common.py`
 2. Update `ACTION_TO_DIRECTION` if it's a movement
-3. Handle in `step_agents()` in `overcooked.py`
+3. Handle in the agent action phase in `agent_step.py`
 4. Update action space size if needed
 
 ## Testing
@@ -322,6 +365,8 @@ env = OvercookedV3(
     layout="cramped_room",
     max_steps=400,
     pot_cook_time=90,
+    # Optional ready-time range. Omit or pass [] to keep fixed pot_cook_time behavior.
+    pot_cook_time_range=[65, 90],
     pot_burn_time=60,
     enable_order_queue=False,
     shaped_rewards=True,

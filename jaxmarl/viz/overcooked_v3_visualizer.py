@@ -163,6 +163,7 @@ class OvercookedV3Visualizer:
         agents = state.agents
         recipe = state.recipe
         pot_timers = state.pot_cooking_timer
+        pot_cook_durations = state.pot_cook_durations
         pot_positions = state.pot_positions
         pot_active_mask = state.pot_active_mask
         barrier_positions = state.barrier_positions
@@ -203,9 +204,13 @@ class OvercookedV3Visualizer:
         grid, _ = jax.lax.scan(_include_agents, grid, (agents, jnp.arange(num_agents)))
 
         # Update pot timers in grid for rendering
-        def _update_pot_timer_in_grid(grid, pot_idx):
+        pot_cook_duration_grid = jnp.zeros(grid.shape[:2], dtype=jnp.int32)
+
+        def _update_pot_timer_in_grid(carry, pot_idx):
+            grid, duration_grid = carry
             pot_y, pot_x = pot_positions[pot_idx]
             timer = pot_timers[pot_idx]
+            duration = pot_cook_durations[pot_idx]
             is_active = pot_active_mask[pot_idx]
 
             new_grid = jax.lax.select(
@@ -213,10 +218,17 @@ class OvercookedV3Visualizer:
                 grid.at[pot_y, pot_x, 2].set(timer),
                 grid
             )
-            return new_grid, None
+            new_duration_grid = jax.lax.select(
+                is_active,
+                duration_grid.at[pot_y, pot_x].set(duration),
+                duration_grid,
+            )
+            return (new_grid, new_duration_grid), None
 
-        grid, _ = jax.lax.scan(
-            _update_pot_timer_in_grid, grid, jnp.arange(pot_positions.shape[0])
+        (grid, pot_cook_duration_grid), _ = jax.lax.scan(
+            _update_pot_timer_in_grid,
+            (grid, pot_cook_duration_grid),
+            jnp.arange(pot_positions.shape[0]),
         )
 
         # Build stable pair ids from plate<->barrier links so each pair shares a color.
@@ -423,7 +435,13 @@ class OvercookedV3Visualizer:
 
         highlight_mask = jnp.zeros(grid.shape[:2], dtype=bool)
 
-        img = self._render_grid(grid, link_mask, link_colors, highlight_mask)
+        img = self._render_grid(
+            grid,
+            link_mask,
+            link_colors,
+            highlight_mask,
+            pot_cook_duration_grid,
+        )
         return img
 
     @staticmethod
@@ -519,7 +537,16 @@ class OvercookedV3Visualizer:
         return img
 
     @staticmethod
-    def _render_cell(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=POT_BURN_TIME):
+    def _render_cell(
+        cell,
+        img,
+        pot_cook_time=POT_COOK_TIME,
+        pot_burn_time=POT_BURN_TIME,
+        pot_cook_duration=None,
+    ):
+        if pot_cook_duration is None:
+            pot_cook_duration = pot_cook_time
+
         static_object = cell[0]
 
         def _render_empty(cell, img):
@@ -570,7 +597,13 @@ class OvercookedV3Visualizer:
             return img
 
         def _render_pot(cell, img):
-            return OvercookedV3Visualizer._render_pot(cell, img, pot_cook_time, pot_burn_time)
+            return OvercookedV3Visualizer._render_pot(
+                cell,
+                img,
+                pot_cook_time,
+                pot_burn_time,
+                pot_cook_duration,
+            )
 
         def _render_recipe_indicator(cell, img):
             img = rendering.fill_coords(
@@ -882,7 +915,16 @@ class OvercookedV3Visualizer:
         )
 
     @staticmethod
-    def _render_pot(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=POT_BURN_TIME):
+    def _render_pot(
+        cell,
+        img,
+        pot_cook_time=POT_COOK_TIME,
+        pot_burn_time=POT_BURN_TIME,
+        pot_cook_duration=None,
+    ):
+        if pot_cook_duration is None:
+            pot_cook_duration = pot_cook_time
+
         ingredients = cell[1]
         time_left = cell[2]
 
@@ -928,7 +970,11 @@ class OvercookedV3Visualizer:
         img = jax.lax.select(pot_open, img_open, img_closed)
 
         # Render progress bar (green for cooking, orange for burning window)
-        cooking_progress = (pot_cook_time - time_left) / (pot_cook_time - pot_burn_time)
+        cook_duration = jnp.where(
+            pot_cook_duration > 0, pot_cook_duration, pot_cook_time
+        )
+        initial_timer = cook_duration + pot_burn_time
+        cooking_progress = (initial_timer - time_left) / cook_duration
         burning_progress = (pot_burn_time - time_left) / pot_burn_time
 
         progress_fn_cooking = rendering.point_in_rect(
@@ -947,7 +993,14 @@ class OvercookedV3Visualizer:
 
         return img
 
-    def _render_tile(self, obj, link_mask=False, link_color=None, highlight=False):
+    def _render_tile(
+        self,
+        obj,
+        link_mask=False,
+        link_color=None,
+        highlight=False,
+        pot_cook_duration=None,
+    ):
         """Render a single tile."""
         img = jnp.zeros(
             shape=(self.tile_size * self.subdivs, self.tile_size * self.subdivs, 3),
@@ -963,7 +1016,11 @@ class OvercookedV3Visualizer:
         )
 
         img = OvercookedV3Visualizer._render_cell(
-            obj, img, self.pot_cook_time, self.pot_burn_time
+            obj,
+            img,
+            self.pot_cook_time,
+            self.pot_burn_time,
+            pot_cook_duration,
         )
 
         img_highlight = rendering.highlight_img(img)
@@ -990,9 +1047,22 @@ class OvercookedV3Visualizer:
 
         return img
 
-    def _render_grid(self, grid, link_mask, link_colors, highlight_mask):
+    def _render_grid(
+        self,
+        grid,
+        link_mask,
+        link_colors,
+        highlight_mask,
+        pot_cook_duration_grid,
+    ):
         """Render the full grid."""
-        img_grid = jax.vmap(jax.vmap(self._render_tile))(grid, link_mask, link_colors, highlight_mask)
+        img_grid = jax.vmap(jax.vmap(self._render_tile))(
+            grid,
+            link_mask,
+            link_colors,
+            highlight_mask,
+            pot_cook_duration_grid,
+        )
 
         grid_rows, grid_cols, tile_height, tile_width, channels = img_grid.shape
 
