@@ -1,6 +1,6 @@
 """Public Overcooked V3 environment wrapper."""
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import warnings
 
 import chex
@@ -27,7 +27,10 @@ from jaxmarl.environments.overcooked_v3.initialization import (
     randomize_state,
     sample_recipe,
 )
-from jaxmarl.environments.overcooked_v3.interactions import process_interact
+from jaxmarl.environments.overcooked_v3.interactions import (
+    process_interact,
+    sample_pot_cook_time,
+)
 from jaxmarl.environments.overcooked_v3.layouts import Layout, overcooked_v3_layouts
 from jaxmarl.environments.overcooked_v3.observations import (
     calculate_observation_shape,
@@ -52,6 +55,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_PRESSURE_PLATES,
     POT_BURN_TIME,
     POT_COOK_TIME,
+    POT_COOK_TIME_RANGE,
 )
 from jaxmarl.environments.overcooked_v3.state import ObservationType, State
 from jaxmarl.environments.overcooked_v3.step import is_terminal, step_overcooked_v3
@@ -81,6 +85,7 @@ class OvercookedV3(MultiAgentEnv):
         agent_view_size: Optional[int] = None,
         # Pot settings
         pot_cook_time: int = POT_COOK_TIME,
+        pot_cook_time_range: Optional[Sequence[int]] = None,
         pot_burn_time: int = POT_BURN_TIME,
         # Order queue settings
         enable_order_queue: bool = False,
@@ -110,7 +115,9 @@ class OvercookedV3(MultiAgentEnv):
             max_steps: Maximum steps per episode
             observation_type: Type of observation (default or featurized)
             agent_view_size: Partial observability window size (None for full)
-            pot_cook_time: Steps to cook a full pot (default 90)
+            pot_cook_time: Steps until a full pot becomes ready (default 90)
+            pot_cook_time_range: Optional inclusive [min, max] ready-time range.
+                Omit or pass an empty sequence to use pot_cook_time.
             pot_burn_time: Steps in burning window before pot burns (default 60)
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
@@ -171,6 +178,20 @@ class OvercookedV3(MultiAgentEnv):
 
         # Pot settings
         self.pot_cook_time = pot_cook_time
+        cook_time_range = (
+            POT_COOK_TIME_RANGE
+            if pot_cook_time_range is None
+            else tuple(pot_cook_time_range)
+        )
+        if len(cook_time_range) not in (0, 2):
+            raise ValueError(
+                "pot_cook_time_range must be empty or contain exactly [min, max]"
+            )
+        if len(cook_time_range) == 2 and min(cook_time_range) < 1:
+            raise ValueError("pot_cook_time_range values must be at least 1")
+        if len(cook_time_range) == 2 and cook_time_range[0] > cook_time_range[1]:
+            raise ValueError("pot_cook_time_range min must be <= max")
+        self.pot_cook_time_range = jnp.array(cook_time_range, dtype=jnp.int32)
         self.pot_burn_time = pot_burn_time
 
         # Order queue settings
@@ -416,6 +437,9 @@ class OvercookedV3(MultiAgentEnv):
             obs_shape=self.obs_shape,
             max_steps=self.max_steps,
             pot_cook_time=self.pot_cook_time,
+            pot_cook_time_range=tuple(
+                int(value) for value in self.pot_cook_time_range
+            ),
             pot_burn_time=self.pot_burn_time,
             enable_order_queue=self.enable_order_queue,
             max_orders=self.max_orders,
@@ -494,6 +518,7 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
+        pot_cook_time: Optional[chex.Array] = None,
     ):
         """Compatibility wrapper for functional interact processing."""
         return process_interact(
@@ -505,6 +530,7 @@ class OvercookedV3(MultiAgentEnv):
             pot_positions,
             pot_active_mask,
             self.config,
+            pot_cook_time,
         )
 
     def _get_obs_shape(self) -> Tuple[int, ...]:
@@ -520,6 +546,10 @@ class OvercookedV3(MultiAgentEnv):
     def _sample_recipe(self, key: chex.PRNGKey) -> int:
         """Compatibility wrapper for functional recipe sampling."""
         return sample_recipe(key, self.config)
+
+    def _sample_pot_cook_time(self, key: chex.PRNGKey) -> chex.Array:
+        """Sample one ready-time duration from the configured inclusive range."""
+        return sample_pot_cook_time(key, self.config)
 
     def _randomize_agent_positions(self, state: State, key: chex.PRNGKey) -> State:
         """Compatibility wrapper for functional agent position randomization."""

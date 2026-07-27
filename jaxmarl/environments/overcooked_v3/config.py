@@ -18,6 +18,7 @@ class OvercookedV3Config:
     obs_shape: Union[Tuple[int, ...], List[Tuple[int, ...]]]
     max_steps: int
     pot_cook_time: int
+    pot_cook_time_range: Tuple[int, ...]
     pot_burn_time: int
     enable_order_queue: bool
     max_orders: int
