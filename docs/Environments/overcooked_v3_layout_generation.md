@@ -36,6 +36,7 @@ the results to the top-level `layouts` object.
     "object_placement": "anywhere",
     "counter_density": 0.1,
     "num_regions": 1,
+    "num_shared_tiles": null,
     "workflow_mode": "single_region",
     "max_attempts": 1000
   },
@@ -59,6 +60,7 @@ the results to the top-level `layouts` object.
 | `object_placement` | Workstation placement mode: `boundary`, `interior`, or `anywhere`. |
 | `counter_density` | Fraction of interior tiles converted to counters, in the range `[0, 1)`. |
 | `num_regions` | Number of disconnected walkable regions: `1` or `2`. Two regions place one agent in each. |
+| `num_shared_tiles` | Exact number of ordinary counters accessible from both regions, or `null` to leave the count unconstrained. Requires two regions. |
 | `workflow_mode` | Distribution of the cooking workflow: `single_region`, `complete_each`, or `shared`. |
 | `max_attempts` | Maximum constructive retries for recoverable frontier or placement dead ends. |
 
@@ -91,6 +93,14 @@ The generator grows one connected floor frontier per region. Different
 frontiers are not allowed to merge, and every region receives an agent spawn.
 Because generated layouts contain exactly two agents, `num_regions` is limited
 to one or two.
+
+For two-region layouts, `num_shared_tiles` can constrain the exact number of
+handoff counters between the regions. A tile counts as shared when it is an
+ordinary `W` counter with an orthogonally adjacent floor tile in each region.
+For example, set `"num_shared_tiles": 3` to require exactly three such
+counters. The default, `null`, preserves unconstrained generation. The
+`shared` workflow mode still requires at least one shared tile, so it cannot be
+combined with a value of `0`.
 
 `workflow_mode` controls which region can access each workstation:
 
@@ -146,7 +156,9 @@ For every requested layout, the generator:
    generate-and-reject connectivity search.
 5. Allocates workstations to regions according to `workflow_mode` and places
    each one only where its assigned region can interact with it.
-6. In `shared` mode, verifies that a counter is accessible from both regions.
+6. For two regions, checks the requested exact shared-tile count; in `shared`
+   mode, also verifies that at least one counter is accessible from both
+   regions.
 7. Places both agents on carved floor, one per region when `num_regions` is two.
 8. Parses the ASCII through `Layout.from_string` and runs the structural,
    playability, accessibility, handoff, and recipe-solvability checks once.
@@ -337,6 +349,9 @@ Interactive controls:
   ingredient pile, pot, plate pile, and depot per region.
 - **`shared` rejects the configuration:** Use `num_regions: 2` and a non-zero
   counter density so the regions can have a shared handoff counter.
+- **The requested shared-tile count cannot be generated:** Increase
+  `max_attempts`, adjust `counter_density` or the map dimensions, or choose a
+  less restrictive `num_shared_tiles` value.
 - **Mixed recipe rejected:** Use recipes such as `[0, 0, 0]` and `[1, 1, 1]`.
 - **Unknown layout in the player:** Supply `--layout-json` in the same command
   that supplies `--layout`.
