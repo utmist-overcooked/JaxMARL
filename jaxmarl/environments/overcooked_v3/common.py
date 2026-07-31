@@ -8,6 +8,23 @@ from jax.typing import ArrayLike
 
 MAX_INGREDIENTS = 3
 
+# Maximum distinct ingredient *types* encodable in the dynamic channel.
+# Each type uses 2 bits starting at bit 2, so types 0..7 occupy bits 2-17.
+MAX_INGREDIENT_TYPES = 8
+
+# Multi-stage preparation chains. Raw ingredients 2, 3 and 4 must be processed
+# at their prep station before they match any recipe; the processed result is
+# encoded as a separate ingredient type at index raw + PREP_PROCESSED_OFFSET:
+#   2 lettuce -> cutting board -> 5 chopped lettuce
+#   3 meat    -> grill         -> 6 grilled meat
+#   4 carrot  -> blender       -> 7 carrot puree
+PREP_RAW_START = 2
+NUM_PREP_CHAINS = 3
+PREP_PROCESSED_OFFSET = NUM_PREP_CHAINS
+# Shifting an ingredient encoding left by this many bits converts a raw prep
+# ingredient into its processed counterpart (3 index steps of 2 bits each).
+PREP_PROCESSED_SHIFT = 2 * PREP_PROCESSED_OFFSET
+
 
 class StaticObject(IntEnum):
     """Static objects on the grid (channel 0)."""
@@ -35,9 +52,22 @@ class StaticObject(IntEnum):
     BARRIER = 24
     PRESSURE_PLATE = 25
 
+    # Prep stations for multi-stage ingredient preparation
+    CUTTING_BOARD = 26  # chop by repeated interacts
+    GRILL = 27          # cooks automatically, can burn
+    BLENDER = 28        # manual start, timed, never burns
+
     @staticmethod
     def is_ingredient_pile(obj):
         return (obj >= StaticObject.INGREDIENT_PILE_BASE) & (obj < StaticObject.ITEM_CONVEYOR)
+
+    @staticmethod
+    def is_prep_station(obj):
+        return (
+            (obj == StaticObject.CUTTING_BOARD)
+            | (obj == StaticObject.GRILL)
+            | (obj == StaticObject.BLENDER)
+        )
 
     @staticmethod
     def get_ingredient(obj):
@@ -47,6 +77,14 @@ class StaticObject(IntEnum):
     @staticmethod
     def ingredient_pile(idx):
         return StaticObject.INGREDIENT_PILE_BASE + idx
+
+
+# Which prep station processes each raw prep ingredient index.
+PREP_STATION_FOR_RAW = {
+    2: StaticObject.CUTTING_BOARD,
+    3: StaticObject.GRILL,
+    4: StaticObject.BLENDER,
+}
 
 
 class ButtonAction(IntEnum):
@@ -67,12 +105,16 @@ class DynamicObject(IntEnum):
     PLATE = 1 << 0        # bit 0: plate
     COOKED = 1 << 1       # bit 1: cooked flag
 
-    # Every ingredient has two bits (count 0-3)
+    # Every ingredient has two bits (count 0-3). Ingredient types 0..7 occupy
+    # bits 2-17 (see MAX_INGREDIENT_TYPES).
     BASE_INGREDIENT = 1 << 2
 
-    # Burning flags (bits 6-7)
-    BURNING = 1 << 6      # Pot is in burning window
-    BURNED = 1 << 7       # Pot has burned (contents destroyed)
+    # Burning flags, above the ingredient bits
+    BURNING = 1 << 18     # Pot is in burning window
+    BURNED = 1 << 19      # Pot has burned (contents destroyed)
+
+    # Mask selecting all ingredient count bits (bits 2..17)
+    INGREDIENT_BITS_MASK = ((1 << (2 * MAX_INGREDIENT_TYPES)) - 1) << 2
 
     @staticmethod
     def ingredient(idx):
@@ -82,12 +124,14 @@ class DynamicObject(IntEnum):
     @staticmethod
     def is_ingredient(obj):
         """Check if object contains only ingredients (no plate)."""
-        return ((obj >> 2) != 0) & ((obj & DynamicObject.PLATE) == 0)
+        return ((obj & DynamicObject.INGREDIENT_BITS_MASK) != 0) & (
+            (obj & DynamicObject.PLATE) == 0
+        )
 
     @staticmethod
     def ingredient_count(obj):
         """Count total number of ingredients in the object."""
-        initial_val = (obj >> 2, jnp.array(0))
+        initial_val = ((obj & DynamicObject.INGREDIENT_BITS_MASK) >> 2, jnp.array(0))
 
         def _count_ingredients(x):
             obj, count = x
@@ -110,7 +154,7 @@ class DynamicObject(IntEnum):
             obj, _, res = val
             return (obj > 0) & (res == -1)
 
-        initial_val = (obj >> 2, 0, -1)
+        initial_val = ((obj & DynamicObject.INGREDIENT_BITS_MASK) >> 2, 0, -1)
         val = jax.lax.while_loop(_cond_fun, _body_fun, initial_val)
         return val[-1]
 

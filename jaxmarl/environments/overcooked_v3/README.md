@@ -100,7 +100,36 @@ Player conveyors (push agents):
 [  - Push agents left
 {  - Push agents up
 }  - Push agents down
+
+Prep stations (multi-stage preparation):
+C  - Cutting board
+G  - Grill
+M  - Blender (mixer)
 ```
+
+**Prep chains:** raw ingredients 2-4 never match a recipe directly; they must
+be processed at their station first. The processed result is a separate
+ingredient type (`raw index + 3`) that recipes reference:
+
+| Raw | Station | Mechanic | Processed |
+|-----|---------|----------|-----------|
+| 2 lettuce | `C` cutting board | place, then interact `chop_stages` (3) times empty-handed | 5 chopped lettuce |
+| 3 meat | `G` grill | place; cooks by itself in `grill_cook_time` steps, **burns** `grill_burn_time` steps later (-5 penalty) | 6 grilled meat |
+| 4 carrot | `M` blender | place, interact once to start, ready after `blend_time` steps, never burns | 7 carrot puree |
+
+Each station holds a single unit and only accepts its own raw ingredient.
+Empty-handed interact picks the processed result back up (the grill also
+returns raw items retrieved early). A recipe such as `[[5, 5, 5]]` then means
+"soup of three chopped lettuce": prep 3 units, pot them, plate, deliver.
+See the `cutting_board_room`, `grill_room`, `blender_room` and `prep_kitchen`
+layouts, plus the `*_handoff` variants (`cutting_board_handoff`,
+`grill_handoff`, `blender_handoff`, `prep_kitchen_handoff`) where a counter
+wall fully separates the prep side from the cook side so processed
+ingredients must be handed over the middle counter (renders in
+`docs/imgs/overcooked_v3_prep_layouts/`). Layouts without any station keep
+the exact observation schema they
+had before prep stations existed; layouts with stations add 3 static layers
+plus a prep progress/timer layer.
 
 **Adding a new layout:**
 ```python

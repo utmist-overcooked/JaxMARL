@@ -23,12 +23,19 @@ from jaxmarl.environments.overcooked_v3.common import (
     ButtonAction,
     Position,
     Agent,
+    PREP_RAW_START,
+    NUM_PREP_CHAINS,
+    PREP_PROCESSED_SHIFT,
 )
 from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts, Layout
 from jaxmarl.environments.overcooked_v3.settings import (
     DELIVERY_REWARD,
     POT_COOK_TIME,
     POT_BURN_TIME,
+    CHOP_STAGES,
+    GRILL_COOK_TIME,
+    GRILL_BURN_TIME,
+    BLEND_TIME,
     BURN_PENALTY,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
@@ -195,6 +202,10 @@ class OvercookedV3(MultiAgentEnv):
         "dish_to_goal_progress",
         "delivery",
         "pot_burn",
+        "prep_placement",
+        "prep_action",
+        "prep_pickup",
+        "prep_burn",
     )
     # -------------------------------------------------------------------------
     # Construction and Layout Preprocessing
@@ -211,6 +222,11 @@ class OvercookedV3(MultiAgentEnv):
         # Pot settings
         pot_cook_time: int = POT_COOK_TIME,
         pot_burn_time: int = POT_BURN_TIME,
+        # Prep station settings
+        chop_stages: int = CHOP_STAGES,
+        grill_cook_time: int = GRILL_COOK_TIME,
+        grill_burn_time: int = GRILL_BURN_TIME,
+        blend_time: int = BLEND_TIME,
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
@@ -242,6 +258,11 @@ class OvercookedV3(MultiAgentEnv):
             agent_view_size: Partial observability window size (None for full)
             pot_cook_time: Steps before a full pot becomes cooked (default 20)
             pot_burn_time: Steps cooked soup remains ready before burning
+            chop_stages: Interacts needed on a cutting board to finish chopping
+            grill_cook_time: Steps for a raw item on the grill to finish
+            grill_burn_time: Steps a grilled item stays ready before burning
+                (0 disables burning)
+            blend_time: Steps a started blender needs to finish
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
@@ -303,6 +324,24 @@ class OvercookedV3(MultiAgentEnv):
         # Pot settings
         self.pot_cook_time = pot_cook_time
         self.pot_burn_time = pot_burn_time
+
+        # Prep station settings. Layouts without stations keep the exact
+        # observation schema and step graph they had before prep stations
+        # existed (see has_prep_stations gating below).
+        self.chop_stages = chop_stages
+        self.grill_cook_time = grill_cook_time
+        self.grill_burn_time = grill_burn_time
+        self.blend_time = blend_time
+        self.has_prep_stations = bool(
+            np.isin(
+                layout.static_objects,
+                [
+                    StaticObject.CUTTING_BOARD,
+                    StaticObject.GRILL,
+                    StaticObject.BLENDER,
+                ],
+            ).any()
+        )
 
         # Order queue settings
         self.enable_order_queue = enable_order_queue
@@ -565,7 +604,11 @@ class OvercookedV3(MultiAgentEnv):
                 # - recipe_layers: 2 + num_ing
                 # - extra_layers: 1 (pot timer)
                 # Total: 30 + 5 * num_ingredients
+                # Layouts with prep stations add 3 static layers (cutting
+                # board, grill, blender) and 1 extra layer (prep progress).
                 num_layers = 30 + 5 * num_ingredients
+                if self.has_prep_stations:
+                    num_layers += 4
                 return (view_height, view_width, num_layers)
             elif obs_type == ObservationType.FEATURIZED:
                 # Simplified feature vector
@@ -1140,6 +1183,19 @@ class OvercookedV3(MultiAgentEnv):
             :, self.EVENT_NAMES.index("pot_burn")
         ].set(burn_events)
 
+        # Advance prep station timers (grill cooking/burning, blender mixing)
+        if self.has_prep_stations:
+            new_grid, prep_burn_count = self._update_prep_stations(new_grid)
+            reward = reward + prep_burn_count * BURN_PENALTY
+            prep_burn_events = (
+                jnp.zeros((self.num_agents,), dtype=jnp.float32)
+                .at[0]
+                .set(prep_burn_count)
+            )
+            event_metrics = event_metrics.at[
+                :, self.EVENT_NAMES.index("prep_burn")
+            ].set(prep_burn_events)
+
         # Process button presses
         new_mw_directions = state.moving_wall_directions
         new_mw_paused = state.moving_wall_paused
@@ -1530,6 +1586,130 @@ class OvercookedV3(MultiAgentEnv):
         )
         successful_drop = successful_counter_drop | successful_pot_placement
 
+        # Prep stations: cutting board (repeated interacts), grill (auto-cook
+        # timer), blender (manual start + timer). Each station only accepts a
+        # single unit of its matching raw ingredient; the processed result is
+        # a separate ingredient type (raw idx + offset).
+        successful_prep_placement = jnp.array(False)
+        successful_prep_pickup = jnp.array(False)
+        prep_action = jnp.array(False)
+        chop_completes = jnp.array(False)
+        successful_chop = jnp.array(False)
+        successful_blend_start = jnp.array(False)
+        object_is_grill = jnp.array(False)
+        station_processed = jnp.array(0)
+        if self.has_prep_stations:
+            object_is_cutting_board = fwd_pos_in_bounds & (
+                interact_item == StaticObject.CUTTING_BOARD
+            )
+            object_is_grill = fwd_pos_in_bounds & (
+                interact_item == StaticObject.GRILL
+            )
+            object_is_blender = fwd_pos_in_bounds & (
+                interact_item == StaticObject.BLENDER
+            )
+            object_is_prep_station = (
+                object_is_cutting_board | object_is_grill | object_is_blender
+            )
+
+            # Raw/processed encodings for the station being faced
+            station_raw = (
+                object_is_cutting_board * DynamicObject.ingredient(PREP_RAW_START)
+                + object_is_grill * DynamicObject.ingredient(PREP_RAW_START + 1)
+                + object_is_blender * DynamicObject.ingredient(PREP_RAW_START + 2)
+            )
+            station_processed = station_raw << PREP_PROCESSED_SHIFT
+
+            station_is_empty = interact_ingredients == 0
+            station_has_raw = object_is_prep_station & ~station_is_empty & (
+                interact_ingredients == station_raw
+            )
+            station_has_processed = object_is_prep_station & ~station_is_empty & (
+                interact_ingredients == station_processed
+            )
+
+            successful_prep_placement = (
+                object_is_prep_station & station_is_empty & (inventory == station_raw)
+            )
+
+            # Cutting board: each empty-handed interact advances chopping
+            successful_chop = (
+                object_is_cutting_board & station_has_raw & inventory_is_empty
+            )
+            chop_completes = successful_chop & (
+                interact_extra + 1 >= self.chop_stages
+            )
+
+            # Blender: empty-handed interact starts the (idle) blender
+            successful_blend_start = (
+                object_is_blender
+                & station_has_raw
+                & inventory_is_empty
+                & (interact_extra == 0)
+            )
+
+            # Pickup: the grill returns whatever is on it (raw if retrieved
+            # early); board/blender only release the processed result since an
+            # empty-handed interact on raw contents chops/starts instead.
+            successful_prep_pickup = inventory_is_empty & (
+                (object_is_grill & ~station_is_empty)
+                | (
+                    (object_is_cutting_board | object_is_blender)
+                    & station_has_processed
+                )
+            )
+
+            successful_pickup = successful_pickup + successful_prep_pickup
+            successful_drop = successful_drop | successful_prep_placement
+            prep_action = successful_chop | successful_blend_start
+
+            # Shaped rewards, gated on the recipe actually needing this chain
+            # and on how many units (raw on stations + processed anywhere) are
+            # already in play, so cycles of place/retrieve can't be farmed.
+            processed_selector = station_processed | (station_processed << 1)
+            recipe_needs_processed = (recipe & processed_selector) != 0
+            safe_processed = jnp.maximum(station_processed, 1)
+            station_type_val = (
+                object_is_cutting_board * StaticObject.CUTTING_BOARD
+                + object_is_grill * StaticObject.GRILL
+                + object_is_blender * StaticObject.BLENDER
+            )
+            raw_on_stations = jnp.sum(
+                (grid[:, :, 0] == station_type_val)
+                & (grid[:, :, 1] == station_raw)
+                & object_is_prep_station
+            )
+            processed_in_grid = jnp.sum(
+                (grid[:, :, 1] & processed_selector) // safe_processed
+            )
+            processed_in_inventories = jnp.sum(
+                (all_inventories & processed_selector) // safe_processed
+            )
+            prep_units_in_play = (
+                raw_on_stations + processed_in_grid + processed_in_inventories
+            )
+            processed_needed = (recipe & processed_selector) // safe_processed
+            if self.shaped_rewards_enabled:
+                shaped_reward += (
+                    successful_prep_placement
+                    * recipe_needs_processed
+                    * (prep_units_in_play < processed_needed)
+                    * SHAPED_REWARDS["PREP_PLACEMENT"]
+                )
+                shaped_reward += (
+                    prep_action
+                    * recipe_needs_processed
+                    * (prep_units_in_play <= processed_needed)
+                    * SHAPED_REWARDS["PREP_ACTION"]
+                )
+                shaped_reward += (
+                    successful_prep_pickup
+                    * station_has_processed
+                    * recipe_needs_processed
+                    * (prep_units_in_play <= processed_needed)
+                    * SHAPED_REWARDS["PREP_PICKUP"]
+                )
+
         # Delivery
         successful_delivery = object_is_goal * inventory_is_dish
         no_effect = ~successful_pickup * ~successful_drop * ~successful_delivery
@@ -1558,6 +1738,30 @@ class OvercookedV3(MultiAgentEnv):
         is_ingredient_pickup_useful = (
             ingredients_in_grid + ingredients_in_inventories
         ) < ingredients_needed
+        if self.has_prep_stations:
+            # Raw prep ingredients never appear in recipes directly - demand
+            # comes from their processed form. Count both forms as supply.
+            pile_idx = DynamicObject.get_ingredient_type(pile_ingredient)
+            is_prep_raw_pile = (pile_idx >= PREP_RAW_START) & (
+                pile_idx < PREP_RAW_START + NUM_PREP_CHAINS
+            )
+            processed_pile = pile_ingredient << PREP_PROCESSED_SHIFT
+            processed_pile_selector = processed_pile | (processed_pile << 1)
+            safe_processed_pile = jnp.maximum(processed_pile, 1)
+            processed_supply = jnp.sum(
+                (grid[:, :, 1] & processed_pile_selector) // safe_processed_pile
+            ) + jnp.sum(
+                (all_inventories & processed_pile_selector) // safe_processed_pile
+            )
+            chain_needed = (recipe & processed_pile_selector) // safe_processed_pile
+            chain_supply = (
+                ingredients_in_grid + ingredients_in_inventories + processed_supply
+            )
+            is_ingredient_pickup_useful = jnp.where(
+                is_prep_raw_pile,
+                chain_supply < chain_needed,
+                is_ingredient_pickup_useful,
+            )
         if self.shaped_rewards_enabled:
             shaped_reward += (
                 successful_ingredient_pickup
@@ -1568,6 +1772,11 @@ class OvercookedV3(MultiAgentEnv):
         new_ingredients = (
             successful_drop * merged_ingredients + no_effect * interact_ingredients
         )
+        if self.has_prep_stations:
+            # Final chop converts the raw item into its processed form
+            new_ingredients = jnp.where(
+                chop_completes, station_processed, new_ingredients
+            )
 
         # Start cooking only when the final ingredient is placed.
         pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
@@ -1594,6 +1803,22 @@ class OvercookedV3(MultiAgentEnv):
         new_pot_timers = jax.vmap(_update_pot_timer)(jnp.arange(MAX_POTS))
 
         new_extra = interact_extra  # Keep conveyor directions etc
+        if self.has_prep_stations:
+            # The extra channel doubles as chop progress / grill timer /
+            # blender timer on prep station tiles.
+            grill_total_time = self.grill_cook_time + self.grill_burn_time
+            new_extra = jnp.where(
+                successful_prep_placement,
+                jnp.where(object_is_grill, grill_total_time, 0),
+                new_extra,
+            )
+            new_extra = jnp.where(
+                successful_chop,
+                jnp.where(chop_completes, 0, interact_extra + 1),
+                new_extra,
+            )
+            new_extra = jnp.where(successful_blend_start, self.blend_time, new_extra)
+            new_extra = jnp.where(successful_prep_pickup, 0, new_extra)
 
         new_cell = jnp.array([interact_item, new_ingredients, new_extra])
         new_grid = grid.at[fwd_pos.y, fwd_pos.x].set(new_cell)
@@ -1660,6 +1885,10 @@ class OvercookedV3(MultiAgentEnv):
                 0.0,  # Filled in after movement with progress toward delivery.
                 correct_delivery,
                 0.0,  # Filled in after pot timers update if a pot burns.
+                successful_prep_placement,
+                prep_action,
+                successful_prep_pickup,
+                0.0,  # Filled in after prep timers update if a grill burns.
             ),
             dtype=jnp.float32,
         )
@@ -1762,6 +1991,62 @@ class OvercookedV3(MultiAgentEnv):
         )
 
         return new_grid, new_timers, burn_count
+
+    def _update_prep_stations(
+        self, grid: chex.Array
+    ) -> Tuple[chex.Array, chex.Array]:
+        """Advance grill and blender timers stored in the grid's extra channel.
+
+        Grill semantics mirror the pot: placement sets the timer to
+        grill_cook_time + grill_burn_time, the item is done once the timer
+        reaches grill_burn_time, and it burns (contents destroyed) when the
+        timer hits 0 - unless grill_burn_time is 0, in which case the item is
+        done at 0 and never burns. Blenders count down from blend_time after a
+        manual start and convert at 0; they never burn. Cutting boards are
+        purely interact-driven and need no per-step update.
+        """
+        static = grid[:, :, 0]
+        items = grid[:, :, 1]
+        extra = grid[:, :, 2]
+
+        is_grill = static == StaticObject.GRILL
+        is_blender = static == StaticObject.BLENDER
+        timer_running = extra > 0
+        ticking = (is_grill | is_blender) & timer_running
+        new_extra = jnp.where(ticking, extra - 1, extra)
+
+        raw_meat = DynamicObject.ingredient(PREP_RAW_START + 1)
+        grilled_meat = raw_meat << PREP_PROCESSED_SHIFT
+        burn_enabled = self.grill_burn_time > 0
+        cooked_threshold = self.grill_burn_time if burn_enabled else 0
+        grill_done = (
+            is_grill
+            & timer_running
+            & (items == raw_meat)
+            & (new_extra <= cooked_threshold)
+        )
+        new_items = jnp.where(grill_done, grilled_meat, items)
+
+        just_burned = (
+            is_grill
+            & burn_enabled
+            & timer_running
+            & (new_items == grilled_meat)
+            & (new_extra == 0)
+        )
+        new_items = jnp.where(just_burned, 0, new_items)
+        burn_count = jnp.sum(just_burned).astype(jnp.float32)
+
+        raw_carrot = DynamicObject.ingredient(PREP_RAW_START + 2)
+        blend_done = (
+            is_blender & timer_running & (items == raw_carrot) & (new_extra == 0)
+        )
+        new_items = jnp.where(
+            blend_done, raw_carrot << PREP_PROCESSED_SHIFT, new_items
+        )
+
+        new_grid = jnp.stack([static, new_items, new_extra], axis=-1)
+        return new_grid, burn_count
 
     def _process_item_conveyors(self, state: State) -> State:
         """Move items on item conveyor belts."""
@@ -2394,7 +2679,7 @@ class OvercookedV3(MultiAgentEnv):
 
         static_objects = state.grid[:, :, 0]
         ingredients = state.grid[:, :, 1]
-        static_encoding = jnp.array([
+        static_encoding_list = [
             StaticObject.WALL,
             StaticObject.GOAL,
             StaticObject.POT,
@@ -2406,7 +2691,14 @@ class OvercookedV3(MultiAgentEnv):
             StaticObject.BUTTON,
             StaticObject.BARRIER,
             StaticObject.PRESSURE_PLATE,
-        ])
+        ]
+        if self.has_prep_stations:
+            static_encoding_list += [
+                StaticObject.CUTTING_BOARD,
+                StaticObject.GRILL,
+                StaticObject.BLENDER,
+            ]
+        static_encoding = jnp.array(static_encoding_list)
         static_layers = static_objects[..., None] == static_encoding
 
         def _ingredient_layers(ingredients):
@@ -2437,7 +2729,16 @@ class OvercookedV3(MultiAgentEnv):
                 is_active, pot_timer_layer.at[y, x].set(timer), pot_timer_layer
             )
 
-        extra_layers = jnp.stack([pot_timer_layer], axis=-1)
+        extra_layer_list = [pot_timer_layer]
+        if self.has_prep_stations:
+            # Chop progress / grill timer / blender timer on station tiles
+            prep_progress_layer = jnp.where(
+                StaticObject.is_prep_station(static_objects),
+                state.grid[:, :, 2],
+                0,
+            )
+            extra_layer_list.append(prep_progress_layer)
+        extra_layers = jnp.stack(extra_layer_list, axis=-1)
 
         def _agent_layers(agent):
             pos = agent.pos

@@ -19,8 +19,17 @@ from jaxmarl.environments.overcooked_v3.common import (
     DynamicObject,
     Direction,
     ButtonAction,
+    MAX_INGREDIENT_TYPES,
 )
-from jaxmarl.environments.overcooked_v3.settings import POT_COOK_TIME, POT_BURN_TIME, DEFAULT_BARRIER_DURATION
+from jaxmarl.environments.overcooked_v3.settings import (
+    POT_COOK_TIME,
+    POT_BURN_TIME,
+    DEFAULT_BARRIER_DURATION,
+    CHOP_STAGES,
+    GRILL_COOK_TIME,
+    GRILL_BURN_TIME,
+    BLEND_TIME,
+)
 
 TILE_PIXELS = 32
 
@@ -40,19 +49,23 @@ COLORS = {
     "light_blue": jnp.array([173, 216, 230], dtype=jnp.uint8),
     "dark_green": jnp.array([0, 150, 0], dtype=jnp.uint8),
     "light_grey": jnp.array([180, 180, 180], dtype=jnp.uint8),
+    "carrot": jnp.array([237, 145, 33], dtype=jnp.uint8),
+    "peach": jnp.array([255, 200, 120], dtype=jnp.uint8),
+    "wood": jnp.array([205, 170, 125], dtype=jnp.uint8),
+    "dark_grey": jnp.array([60, 60, 60], dtype=jnp.uint8),
 }
 
 INGREDIENT_COLORS = jnp.array(
     [
-        COLORS["yellow"],      # Onion
-        COLORS["red"],         # Tomato
-        COLORS["dark_green"],  # Lettuce
-        COLORS["cyan"],
-        COLORS["orange"],
-        COLORS["purple"],
+        COLORS["yellow"],      # 0 Onion
+        COLORS["red"],         # 1 Tomato
+        COLORS["dark_green"],  # 2 Lettuce (raw)
+        COLORS["pink"],        # 3 Meat (raw)
+        COLORS["carrot"],      # 4 Carrot (raw)
+        COLORS["green"],       # 5 Chopped lettuce (processed)
+        COLORS["brown"],       # 6 Grilled meat (processed)
+        COLORS["peach"],       # 7 Carrot puree (processed)
         COLORS["blue"],
-        COLORS["pink"],
-        COLORS["brown"],
         COLORS["white"],
     ]
 )
@@ -111,6 +124,10 @@ class OvercookedV3Visualizer:
         self.subdivs = subdivs
         self.pot_cook_time = getattr(env, 'pot_cook_time', POT_COOK_TIME)
         self.pot_burn_time = getattr(env, 'pot_burn_time', POT_BURN_TIME)
+        self.chop_stages = getattr(env, 'chop_stages', CHOP_STAGES)
+        self.grill_cook_time = getattr(env, 'grill_cook_time', GRILL_COOK_TIME)
+        self.grill_burn_time = getattr(env, 'grill_burn_time', GRILL_BURN_TIME)
+        self.blend_time = getattr(env, 'blend_time', BLEND_TIME)
 
     def _lazy_init_window(self):
         if self.window is None:
@@ -442,44 +459,24 @@ class OvercookedV3Visualizer:
 
     @staticmethod
     def _get_ingredient_idx_list(ingredients):
-        """Get list of ingredient indices from encoded ingredients."""
-        # Strip plate and cooked flags
-        ing_only = ingredients >> 2
+        """Get list of up to 3 ingredient type indices from encoded ingredients.
 
-        # Check each ingredient slot (up to 3 ingredient types)
-        idx0 = jax.lax.select((ing_only & 0x3) > 0, 0, -1)
-        idx1 = jax.lax.select(((ing_only >> 2) & 0x3) > 0, 1, -1)
-        idx2 = jax.lax.select(((ing_only >> 4) & 0x3) > 0, 2, -1)
+        Expands the per-type 2-bit counts into a flat list of type indices,
+        padded with -1. Works for all encodable ingredient types (0-7).
+        """
+        # Strip plate/cooked/burn flags
+        ing_only = (ingredients & DynamicObject.INGREDIENT_BITS_MASK) >> 2
 
-        # Get counts for each
-        count0 = ing_only & 0x3
-        count1 = (ing_only >> 2) & 0x3
-        count2 = (ing_only >> 4) & 0x3
-
-        # Build result: expand counts into positions
-        result = jnp.array([-1, -1, -1])
-
-        # Simple expansion for up to 3 total ingredients
-        def add_ingredient(carry, _):
-            result, pos, idx0, idx1, idx2, count0, count1, count2 = carry
-
-            # Add from idx0 if count > 0
-            use_idx0 = count0 > 0
-            result = jax.lax.select(use_idx0, result.at[pos].set(idx0), result)
-            pos = jax.lax.select(use_idx0, pos + 1, pos)
-            count0 = jax.lax.select(use_idx0, count0 - 1, count0)
-
-            return (result, pos, idx0, idx1, idx2, count0, count1, count2), None
-
-        # Run 3 times to fill up to 3 slots
-        (result, _, _, _, _, _, _, _), _ = jax.lax.scan(
-            add_ingredient,
-            (result, 0, idx0, idx1, idx2, count0, count1, count2),
-            None,
-            length=3
+        counts = jnp.array(
+            [(ing_only >> (2 * i)) & 0x3 for i in range(MAX_INGREDIENT_TYPES)]
         )
+        cumulative = jnp.cumsum(counts)
+        total = cumulative[-1]
 
-        return result
+        def _slot_for(k):
+            return jnp.where(total > k, jnp.argmax(cumulative > k), -1)
+
+        return jnp.stack([_slot_for(0), _slot_for(1), _slot_for(2)])
 
     @staticmethod
     def _render_dynamic_item(
@@ -533,7 +530,16 @@ class OvercookedV3Visualizer:
         return img
 
     @staticmethod
-    def _render_cell(cell, img, pot_cook_time=POT_COOK_TIME, pot_burn_time=POT_BURN_TIME):
+    def _render_cell(
+        cell,
+        img,
+        pot_cook_time=POT_COOK_TIME,
+        pot_burn_time=POT_BURN_TIME,
+        chop_stages=CHOP_STAGES,
+        grill_cook_time=GRILL_COOK_TIME,
+        grill_burn_time=GRILL_BURN_TIME,
+        blend_time=BLEND_TIME,
+    ):
         static_object = cell[0]
 
         def _render_empty(cell, img):
@@ -833,6 +839,112 @@ class OvercookedV3Visualizer:
             
             return img
 
+        def _render_cutting_board(cell, img):
+            """Render cutting board: counter with a wood board and chop progress."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["grey"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.12, 0.88, 0.2, 0.8), COLORS["wood"]
+            )
+            # Knife: blade + handle in the top-right corner of the board
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.68, 0.82, 0.25, 0.45), COLORS["white"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.7, 0.8, 0.45, 0.58), COLORS["black"]
+            )
+
+            img = OvercookedV3Visualizer._render_dynamic_item(
+                cell[1],
+                img,
+                ingredient_fn=rendering.point_in_circle(0.4, 0.5, 0.15),
+            )
+
+            # Chop progress bar
+            progress = jnp.clip(cell[2] / jnp.maximum(chop_stages, 1), 0.0, 1.0)
+            progress_fn = rendering.point_in_rect(
+                0.1, 0.1 + 0.8 * progress, 0.85, 0.92
+            )
+            img_progress = rendering.fill_coords(img, progress_fn, COLORS["green"])
+            return jax.lax.select(cell[2] > 0, img_progress, img)
+
+        def _render_grill(cell, img):
+            """Render grill: dark tile with grates and cook/burn progress."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["dark_grey"]
+            )
+            # Grill grates
+            for i in range(4):
+                offset = 0.18 + i * 0.18
+                img = rendering.fill_coords(
+                    img,
+                    rendering.point_in_rect(0.1, 0.9, offset, offset + 0.06),
+                    COLORS["black"],
+                )
+
+            img = OvercookedV3Visualizer._render_dynamic_item(cell[1], img)
+
+            # Progress bar: green while cooking, orange while ready/burning
+            time_left = cell[2]
+            burn_enabled = grill_burn_time > 0
+            is_cooking = time_left > grill_burn_time
+            is_burning = burn_enabled & (time_left > 0) & (time_left <= grill_burn_time)
+            total_timer = grill_cook_time + grill_burn_time
+            cooking_progress = (total_timer - time_left) / jnp.maximum(
+                grill_cook_time, 1
+            )
+            burning_progress = (grill_burn_time - time_left) / jnp.maximum(
+                grill_burn_time, 1
+            )
+            progress_fn_cooking = rendering.point_in_rect(
+                0.1, 0.1 + 0.8 * jnp.clip(cooking_progress, 0, 1), 0.85, 0.92
+            )
+            progress_fn_burning = rendering.point_in_rect(
+                0.1, 0.1 + 0.8 * jnp.clip(burning_progress, 0, 1), 0.85, 0.92
+            )
+            img_cooking = rendering.fill_coords(
+                img, progress_fn_cooking, COLORS["green"]
+            )
+            img_burning = rendering.fill_coords(
+                img, progress_fn_burning, COLORS["orange"]
+            )
+            img = jax.lax.select(is_cooking, img_cooking, img)
+            img = jax.lax.select(is_burning, img_burning, img)
+            return img
+
+        def _render_blender(cell, img):
+            """Render blender: counter with a jar and blend progress."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["grey"]
+            )
+            # Jar body and lid
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.28, 0.72, 0.3, 0.82), COLORS["light_blue"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.24, 0.76, 0.2, 0.3), COLORS["black"]
+            )
+            # Base
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.2, 0.8, 0.82, 0.92), COLORS["black"]
+            )
+
+            img = OvercookedV3Visualizer._render_dynamic_item(
+                cell[1],
+                img,
+                ingredient_fn=rendering.point_in_circle(0.5, 0.6, 0.15),
+            )
+
+            # Blend progress bar (remaining time counts down to 0)
+            time_left = cell[2]
+            progress = (blend_time - time_left) / jnp.maximum(blend_time, 1)
+            progress_fn = rendering.point_in_rect(
+                0.1, 0.1 + 0.8 * jnp.clip(progress, 0, 1), 0.85, 0.92
+            )
+            img_progress = rendering.fill_coords(img, progress_fn, COLORS["green"])
+            return jax.lax.select(time_left > 0, img_progress, img)
+
         def _render_pressure_plate(cell, img):
             """Render pressure plate as red outline on a dark tile."""
             is_pressed = (cell[2] & 1) > 0
@@ -860,7 +972,7 @@ class OvercookedV3Visualizer:
         # Build render function lookup
         # Map static object types to render functions
         # Keep an extra slot at the end for ingredient piles dispatch.
-        render_fns = [_render_empty] * 27  # StaticObject max is 25, slot 26 is ingredient pile
+        render_fns = [_render_empty] * 30  # StaticObject max is 28, slot 29 is ingredient pile
         render_fns[StaticObject.EMPTY] = _render_empty
         render_fns[StaticObject.WALL] = _render_wall
         render_fns[StaticObject.AGENT] = _render_agent
@@ -875,6 +987,9 @@ class OvercookedV3Visualizer:
         render_fns[StaticObject.BUTTON] = _render_button
         render_fns[StaticObject.BARRIER] = _render_barrier
         render_fns[StaticObject.PRESSURE_PLATE] = _render_pressure_plate
+        render_fns[StaticObject.CUTTING_BOARD] = _render_cutting_board
+        render_fns[StaticObject.GRILL] = _render_grill
+        render_fns[StaticObject.BLENDER] = _render_blender
 
         # Handle ingredient piles (10-19)
         is_ingredient_pile = (static_object >= StaticObject.INGREDIENT_PILE_BASE) & \
@@ -981,7 +1096,14 @@ class OvercookedV3Visualizer:
         )
 
         img = OvercookedV3Visualizer._render_cell(
-            obj, img, self.pot_cook_time, self.pot_burn_time
+            obj,
+            img,
+            self.pot_cook_time,
+            self.pot_burn_time,
+            self.chop_stages,
+            self.grill_cook_time,
+            self.grill_burn_time,
+            self.blend_time,
         )
 
         img_highlight = rendering.highlight_img(img)

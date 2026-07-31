@@ -8,6 +8,10 @@ from jaxmarl.environments.overcooked_v3.common import (
     StaticObject,
     Direction,
     ButtonAction,
+    PREP_RAW_START,
+    NUM_PREP_CHAINS,
+    PREP_PROCESSED_OFFSET,
+    PREP_STATION_FOR_RAW,
 )
 from jaxmarl.environments.overcooked_v3.settings import (
     MAX_POTS,
@@ -433,6 +437,79 @@ W B XA!W
 WWWWWWWW
 """
 
+# Prep station kitchens. Each raw prep ingredient must be processed at its
+# station before it matches the recipe:
+#   2 lettuce -> C cutting board (interact repeatedly) -> 5 chopped lettuce
+#   3 meat    -> G grill (auto-cooks, can burn)        -> 6 grilled meat
+#   4 carrot  -> M blender (manual start, timed)       -> 7 carrot puree
+cutting_board_room = """
+WWPWW
+2A AC
+W   W
+WBWXW
+"""
+
+grill_room = """
+WWPWW
+3A AG
+W   W
+WBWXW
+"""
+
+blender_room = """
+WWPWW
+4A AM
+W   W
+WBWXW
+"""
+
+# All three prep chains in one kitchen with a recipe indicator.
+prep_kitchen = """
+WW2WCWWGW3WW
+W  A       W
+B          P
+W       A  W
+WW4WMWWRWXWW
+"""
+
+# Handoff variants: a full counter column splits the kitchen into a prep side
+# (raw pile + station) and a cook side (pot, plates, delivery), forced_coord
+# style. Neither agent can reach the other side, so processed ingredients must
+# be passed across the middle counter tiles.
+cutting_board_handoff = """
+WWWPW
+2 W B
+CAWAX
+W W W
+WWWWW
+"""
+
+grill_handoff = """
+WWWPW
+3 W B
+GAWAX
+W W W
+WWWWW
+"""
+
+blender_handoff = """
+WWWPW
+4 W B
+MAWAX
+W W W
+WWWWW
+"""
+
+# All three chains on the prep side, cooking and delivery on the other.
+prep_kitchen_handoff = """
+W23WPWW
+G  W  B
+4 AW AX
+C  W  R
+M  W  W
+WWWWWWW
+"""
+
 
 
 @dataclass
@@ -504,6 +581,9 @@ class Layout:
             StaticObject.POT: 'P',
             StaticObject.RECIPE_INDICATOR: 'R',
             StaticObject.PRESSURE_PLATE: '_',
+            StaticObject.CUTTING_BOARD: 'C',
+            StaticObject.GRILL: 'G',
+            StaticObject.BLENDER: 'M',
         }
 
         item_conveyor_symbols = {
@@ -582,6 +662,7 @@ class Layout:
             'num_player_conveyors': len(self.player_conveyor_info),
             'has_recipe_indicator': False,
             'possible_recipes': self.possible_recipes,
+            'num_prep_stations': {},
         }
 
         for y in range(self.height):
@@ -590,6 +671,11 @@ class Layout:
 
                 if obj == StaticObject.POT:
                     info['num_pots'] += 1
+                elif StaticObject.is_prep_station(obj):
+                    station = StaticObject(obj)
+                    info['num_prep_stations'][station] = (
+                        info['num_prep_stations'].get(station, 0) + 1
+                    )
                 elif obj == StaticObject.PLATE_PILE:
                     info['num_plate_piles'] += 1
                 elif obj == StaticObject.GOAL:
@@ -836,6 +922,19 @@ class Layout:
                             errors.append(
                                 f"Recipe {i} ingredient {ingredient_idx} must be non-negative"
                             )
+                        elif self._is_processed_ingredient(ingredient_idx):
+                            raw_idx = ingredient_idx - PREP_PROCESSED_OFFSET
+                            station = PREP_STATION_FOR_RAW[raw_idx]
+                            if raw_idx not in info['num_ingredient_piles']:
+                                warnings.append(
+                                    f"Recipe uses processed ingredient {ingredient_idx} but no "
+                                    f"pile for raw ingredient {raw_idx} exists in layout"
+                                )
+                            if info['num_prep_stations'].get(station, 0) == 0:
+                                warnings.append(
+                                    f"Recipe uses processed ingredient {ingredient_idx} but no "
+                                    f"{station.name} exists in layout"
+                                )
                         elif ingredient_idx not in info['num_ingredient_piles'] and ingredient_idx < self.num_ingredients:
                             warnings.append(f"Recipe uses ingredient {ingredient_idx} but no pile exists in layout")
 
@@ -843,6 +942,11 @@ class Layout:
         is_valid = len(errors) == 0
 
         return is_valid, all_messages
+
+    @staticmethod
+    def _is_processed_ingredient(idx) -> bool:
+        processed_start = PREP_RAW_START + PREP_PROCESSED_OFFSET
+        return processed_start <= idx < processed_start + NUM_PREP_CHAINS
 
     @staticmethod
     def _is_agent_walkable_tile(obj) -> bool:
@@ -943,15 +1047,33 @@ class Layout:
                 if not isinstance(recipe, list) or len(recipe) != 3:
                     continue
 
-                missing = sorted(set(recipe) - ingredient_piles)
+                # Processed ingredients are sourced from their raw pile plus
+                # the matching prep station rather than a direct pile.
+                required_piles = set()
+                required_stations = set()
+                for ingredient_idx in set(recipe):
+                    if self._is_processed_ingredient(ingredient_idx):
+                        raw_idx = ingredient_idx - PREP_PROCESSED_OFFSET
+                        required_piles.add(raw_idx)
+                        required_stations.add(PREP_STATION_FOR_RAW[raw_idx])
+                    else:
+                        required_piles.add(ingredient_idx)
+
+                missing = sorted(required_piles - ingredient_piles)
                 if missing:
                     errors.append(
                         f"Recipe {recipe} requires missing ingredient piles: {missing}"
                     )
 
+                for station in sorted(required_stations):
+                    if not self._has_interactable_object(station):
+                        errors.append(
+                            f"Recipe {recipe} requires a reachable {station.name}"
+                        )
+
                 blocked_ingredients = [
                     ingredient_idx
-                    for ingredient_idx in sorted(set(recipe))
+                    for ingredient_idx in sorted(required_piles)
                     if ingredient_idx in ingredient_piles
                     and not self._has_interactable_ingredient(ingredient_idx)
                 ]
@@ -1016,7 +1138,12 @@ class Layout:
             X = Delivery Zone (Goal)
             A = Agent Start Position
             R = Recipe Indicator (randomized recipes)
-            0-9 = Ingredient Piles (0=onion, 1=tomato, 2=lettuce, etc.)
+            0-9 = Ingredient Piles (0=onion, 1=tomato, 2=lettuce, 3=meat, 4=carrot, ...)
+
+            Prep Stations (multi-stage preparation):
+                C = cutting board (chop lettuce 2 -> chopped lettuce 5)
+                G = grill (grill meat 3 -> grilled meat 6, burns if left)
+                M = blender (blend carrot 4 -> carrot puree 7)
             
             Item Conveyors (move items):
                 > = moves right
@@ -1096,6 +1223,11 @@ class Layout:
             Barriers (togglable blocking tiles):
             #: barrier (blocks all movement when active)
 
+            Prep stations (multi-stage ingredient preparation):
+            C: cutting board (chops raw ingredient 2 -> processed 5)
+            G: grill (grills raw ingredient 3 -> processed 6, can burn)
+            M: blender (blends raw ingredient 4 -> processed 7)
+
         Args:
             grid: ASCII string layout
             possible_recipes: List of recipes, or None for auto-detect
@@ -1144,6 +1276,9 @@ class Layout:
             "R": StaticObject.RECIPE_INDICATOR,
             "#": StaticObject.BARRIER,
             "_": StaticObject.PRESSURE_PLATE,
+            "C": StaticObject.CUTTING_BOARD,
+            "G": StaticObject.GRILL,
+            "M": StaticObject.BLENDER,
         }
 
         # Add ingredient piles 0-9
@@ -1253,6 +1388,19 @@ class Layout:
         # Ensure at least one ingredient type
         if num_ingredients == 0:
             num_ingredients = 1
+
+        # Prep chains introduce processed ingredient types (raw idx + offset).
+        # Expand num_ingredients so recipes and observations can reference them.
+        prep_chain_raws = [
+            raw_idx
+            for raw_idx, station in PREP_STATION_FOR_RAW.items()
+            if (static_objects == StaticObject.INGREDIENT_PILE_BASE + raw_idx).any()
+            or (static_objects == station).any()
+        ]
+        if prep_chain_raws:
+            num_ingredients = max(
+                num_ingredients, max(prep_chain_raws) + PREP_PROCESSED_OFFSET + 1
+            )
 
         # Build moving wall info with bounce config
         if moving_wall_bounce is None:
@@ -1592,6 +1740,35 @@ overcooked_v3_layouts = {
     ),
     "island_plus_choke": Layout.from_string(
         island_plus_choke, possible_recipes=[[0, 0, 0]],
+    ),
+
+    # Prep station kitchens (multi-stage preparation)
+    "cutting_board_room": Layout.from_string(
+        cutting_board_room, possible_recipes=[[5, 5, 5]],
+    ),
+    "grill_room": Layout.from_string(
+        grill_room, possible_recipes=[[6, 6, 6]],
+    ),
+    "blender_room": Layout.from_string(
+        blender_room, possible_recipes=[[7, 7, 7]],
+    ),
+    "prep_kitchen": Layout.from_string(
+        prep_kitchen, possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+    ),
+
+    # Prep station handoff kitchens: a counter wall separates the prep side
+    # from the cook side, so processed ingredients must be handed over.
+    "cutting_board_handoff": Layout.from_string(
+        cutting_board_handoff, possible_recipes=[[5, 5, 5]],
+    ),
+    "grill_handoff": Layout.from_string(
+        grill_handoff, possible_recipes=[[6, 6, 6]],
+    ),
+    "blender_handoff": Layout.from_string(
+        blender_handoff, possible_recipes=[[7, 7, 7]],
+    ),
+    "prep_kitchen_handoff": Layout.from_string(
+        prep_kitchen_handoff, possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
     ),
 
 }

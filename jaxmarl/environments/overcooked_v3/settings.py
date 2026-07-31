@@ -4,6 +4,12 @@
 POT_COOK_TIME = 20        # Full pot becomes cooked after exactly 20 env steps
 POT_BURN_TIME = 40        # Cooked soup expires/burns after this many ready steps
 
+# Prep station timing.
+CHOP_STAGES = 3           # Interacts needed on a cutting board to finish chopping
+GRILL_COOK_TIME = 15      # Steps for a raw item on the grill to finish grilling
+GRILL_BURN_TIME = 30      # Grilled item burns after this many ready steps (0 = never)
+BLEND_TIME = 10           # Steps a started blender needs to finish
+
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
 BURN_PENALTY = -5.0       # Penalty when a cooked pot burns before pickup
@@ -23,6 +29,9 @@ SHAPED_REWARDS = {
     "PLATE_PICKUP_DURING_COOKING": 0.0,  # Disabled ablation; keep key for compatibility
     "DISH_TO_GOAL_PROGRESS": 0.0, # Logged only; no Euclidean distance reward
     "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
+    "PREP_PLACEMENT": 0.2,        # Placing a raw ingredient on its prep station
+    "PREP_ACTION": 0.1,           # Chop press / blender start on a prep station
+    "PREP_PICKUP": 0.2,           # Picking up a processed ingredient from a station
 }
 
 # Maximum number of pots to track (for fixed array sizes)
