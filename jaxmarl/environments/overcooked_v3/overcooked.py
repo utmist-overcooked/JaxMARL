@@ -1,5 +1,6 @@
 """Overcooked V3 Environment with pot cooking, order queue, and conveyor belts."""
 
+import dataclasses
 from enum import Enum
 from typing import List, Optional, Union, Tuple, Dict
 import warnings
@@ -26,6 +27,7 @@ from jaxmarl.environments.overcooked_v3.common import (
     PREP_RAW_START,
     NUM_PREP_CHAINS,
     PREP_PROCESSED_SHIFT,
+    DIRTY_PLATE_BIT_SHIFT,
 )
 from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts, Layout
 from jaxmarl.environments.overcooked_v3.settings import (
@@ -36,6 +38,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     GRILL_COOK_TIME,
     GRILL_BURN_TIME,
     BLEND_TIME,
+    DEFAULT_NUM_PLATES,
     BURN_PENALTY,
     ORDER_EXPIRED_PENALTY,
     DEFAULT_ORDER_GENERATION_RATE,
@@ -144,6 +147,12 @@ class State:
     # Delivery tracking
     new_correct_delivery: bool = False
 
+    # Dish washing (only meaningful when the env enables dish washing).
+    # plate_stack_count + dirty_pile_count + every plate held or lying on the
+    # grid is invariant and equals num_plates.
+    plate_stack_count: chex.Array = 0
+    dirty_pile_count: chex.Array = 0
+
 
 # =============================================================================
 # Overcooked V3 Environment
@@ -206,6 +215,9 @@ class OvercookedV3(MultiAgentEnv):
         "prep_action",
         "prep_pickup",
         "prep_burn",
+        "dirty_pickup",
+        "plate_wash",
+        "plate_return",
     )
     # -------------------------------------------------------------------------
     # Construction and Layout Preprocessing
@@ -227,6 +239,9 @@ class OvercookedV3(MultiAgentEnv):
         grill_cook_time: int = GRILL_COOK_TIME,
         grill_burn_time: int = GRILL_BURN_TIME,
         blend_time: int = BLEND_TIME,
+        # Dish washing settings
+        enable_dish_washing: bool = False,
+        num_plates: int = DEFAULT_NUM_PLATES,
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
@@ -263,6 +278,16 @@ class OvercookedV3(MultiAgentEnv):
             grill_burn_time: Steps a grilled item stays ready before burning
                 (0 disables burning)
             blend_time: Steps a started blender needs to finish
+            enable_dish_washing: Toggle the dish washing loop. When False
+                (default) the plate pile is infinite, no plate is ever consumed,
+                and sink / dirty pile tiles are inert - the environment behaves
+                and observes exactly as it did before dish washing existed.
+                When True the kitchen owns exactly num_plates plates: taking one
+                empties the stack by one, delivering a dish sends its plate to
+                the dirty pile, and a dirty plate must be carried to a sink to
+                become clean again. Requires a layout with a sink and a dirty
+                plate pile.
+            num_plates: Clean plates the kitchen starts with (dish washing only)
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
@@ -293,6 +318,20 @@ class OvercookedV3(MultiAgentEnv):
             layout = overcooked_v3_layouts[layout]
         elif not isinstance(layout, Layout):
             raise ValueError("Invalid layout, must be a Layout object or a string key")
+
+        # With dish washing off there is no sink and no dirty pile: those tiles
+        # collapse into ordinary counters, so the grid, the observation and the
+        # rendered frame look exactly as they would in a layout that never had
+        # them. Copy first - layouts are shared module-level objects.
+        if not enable_dish_washing:
+            dish_tiles = np.isin(
+                layout.static_objects,
+                [StaticObject.SINK, StaticObject.DIRTY_PLATE_PILE],
+            )
+            if dish_tiles.any():
+                neutral_statics = layout.static_objects.copy()
+                neutral_statics[dish_tiles] = StaticObject.WALL
+                layout = dataclasses.replace(layout, static_objects=neutral_statics)
 
         is_playable, validation_messages = layout.validate_playable()
         if not is_playable:
@@ -343,6 +382,29 @@ class OvercookedV3(MultiAgentEnv):
             ).any()
         )
 
+        # Dish washing settings. Everything is gated on this flag so that a
+        # layout without dish washing keeps the exact step graph and observation
+        # schema it had before the feature existed.
+        self.enable_dish_washing = enable_dish_washing
+        self.num_plates = num_plates
+        if enable_dish_washing:
+            if num_plates < 1:
+                raise ValueError("num_plates must be at least 1 for dish washing")
+            has_sink = bool((layout.static_objects == StaticObject.SINK).any())
+            has_dirty_pile = bool(
+                (layout.static_objects == StaticObject.DIRTY_PLATE_PILE).any()
+            )
+            missing = []
+            if not has_sink:
+                missing.append("a sink ('S')")
+            if not has_dirty_pile:
+                missing.append("a dirty plate pile ('D')")
+            if missing:
+                raise ValueError(
+                    "enable_dish_washing=True requires a layout containing "
+                    + " and ".join(missing)
+                )
+
         # Order queue settings
         self.enable_order_queue = enable_order_queue
         self.max_orders = max_orders
@@ -350,17 +412,37 @@ class OvercookedV3(MultiAgentEnv):
         self.order_expiration_time = order_expiration_time
         if order_queue_mode not in ("random", "alternating"):
             raise ValueError("order_queue_mode must be 'random' or 'alternating'")
-        if order_queue_mode == "alternating" and layout.num_ingredients < 2:
-            raise ValueError("alternating order queue requires onion and tomato piles")
+
+        # Which dishes orders can ask for. A layout that lists several recipes
+        # (e.g. the prep-station kitchens) drives its orders from exactly those,
+        # so the queue cycles through every dish the kitchen can make. Layouts
+        # that pin a single recipe but stock several ingredient piles keep the
+        # legacy behaviour: one single-ingredient soup per pile, capped at the
+        # onion/tomato pair the queue historically alternated between.
+        if len(layout.possible_recipes) >= 2:
+            order_recipes = [list(recipe) for recipe in layout.possible_recipes]
+        else:
+            order_recipes = [
+                [i] * 3 for i in range(min(layout.num_ingredients, 2))
+            ]
+        self.order_recipes = order_recipes
+        if order_queue_mode == "alternating" and len(order_recipes) < 2:
+            raise ValueError(
+                "alternating order queue needs at least two orderable dishes: "
+                "give the layout multiple possible_recipes, or a second "
+                "ingredient pile"
+            )
         self.order_queue_mode = order_queue_mode
+        # Index 0 is "no order"; order type i + 1 requests order_recipes[i].
         self._order_recipe_encodings = jnp.array(
-            [
-                0,
-                DynamicObject.get_recipe_encoding(jnp.array([0, 0, 0])),
-                DynamicObject.get_recipe_encoding(jnp.array([1, 1, 1])),
+            [0]
+            + [
+                DynamicObject.get_recipe_encoding(jnp.array(recipe))
+                for recipe in order_recipes
             ],
             dtype=jnp.int32,
         )
+        self.num_order_types = len(order_recipes)
 
         # Conveyor settings
         layout_has_item_conveyors = len(layout.item_conveyor_info) > 0
@@ -609,6 +691,11 @@ class OvercookedV3(MultiAgentEnv):
                 num_layers = 30 + 5 * num_ingredients
                 if self.has_prep_stations:
                     num_layers += 4
+                # Dish washing adds 2 static layers (sink, dirty pile), 1 extra
+                # layer (plate stack / dirty pile counts) and a dirty-plate bit
+                # in each of the 4 item-encoding blocks.
+                if self.enable_dish_washing:
+                    num_layers += 7
                 return (view_height, view_width, num_layers)
             elif obs_type == ObservationType.FEATURIZED:
                 # Simplified feature vector
@@ -676,7 +763,7 @@ class OvercookedV3(MultiAgentEnv):
         order_expirations = jnp.zeros(self.max_orders, dtype=jnp.int32)
         order_active_mask = jnp.zeros(self.max_orders, dtype=jnp.bool_)
         if self.enable_order_queue and self.order_queue_mode == "alternating":
-            first_order_type = jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32)
+            first_order_type = jnp.array(1, dtype=jnp.int32)
             order_types = order_types.at[0].set(first_order_type)
             order_expirations = order_expirations.at[0].set(self.order_expiration_time)
             order_active_mask = order_active_mask.at[0].set(True)
@@ -723,6 +810,10 @@ class OvercookedV3(MultiAgentEnv):
             terminal=False,
             recipe=recipe,
             new_correct_delivery=False,
+            plate_stack_count=jnp.array(
+                self.num_plates if self.enable_dish_washing else 0, dtype=jnp.int32
+            ),
+            dirty_pile_count=jnp.array(0, dtype=jnp.int32),
         )
 
         # Optional random initialization
@@ -748,12 +839,8 @@ class OvercookedV3(MultiAgentEnv):
         return self._order_recipe_encodings[safe_order_type]
 
     def _alternating_order_type(self, order_index: chex.Array) -> chex.Array:
-        """Return onion for even generated order slots, tomato for odd slots."""
-        return jnp.where(
-            (order_index % 2) == 0,
-            jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
-            jnp.array(SoupType.TOMATO_SOUP, dtype=jnp.int32),
-        )
+        """Cycle through every orderable dish: 1, 2, ..., n, 1, 2, ..."""
+        return (order_index % self.num_order_types) + 1
 
     def _front_order_type(
         self,
@@ -1097,7 +1184,7 @@ class OvercookedV3(MultiAgentEnv):
             is_interact = action == Actions.interact
 
             def _interact(carry, agent):
-                grid, correct_delivery, reward, pot_timers = carry
+                grid, correct_delivery, reward, pot_timers, plate_stack, dirty_pile = carry
 
                 (
                     new_grid,
@@ -1107,6 +1194,8 @@ class OvercookedV3(MultiAgentEnv):
                     shaped_reward,
                     event_metrics,
                     new_pot_timers,
+                    new_plate_stack,
+                    new_dirty_pile,
                 ) = self.process_interact(
                     grid,
                     agent,
@@ -1115,6 +1204,8 @@ class OvercookedV3(MultiAgentEnv):
                     pot_timers,
                     state.pot_positions,
                     state.pot_active_mask,
+                    plate_stack,
+                    dirty_pile,
                 )
 
                 carry = (
@@ -1122,6 +1213,8 @@ class OvercookedV3(MultiAgentEnv):
                     correct_delivery | new_correct_delivery,
                     reward + interact_reward,
                     new_pot_timers,
+                    new_plate_stack,
+                    new_dirty_pile,
                 )
                 return carry, (new_agent, shaped_reward, event_metrics)
 
@@ -1136,10 +1229,24 @@ class OvercookedV3(MultiAgentEnv):
                 agent,
             )
 
-        carry = (grid, False, 0.0, state.pot_cooking_timer)
+        carry = (
+            grid,
+            False,
+            0.0,
+            state.pot_cooking_timer,
+            state.plate_stack_count,
+            state.dirty_pile_count,
+        )
         xs = (new_agents, actions)
-        (new_grid, new_correct_delivery, reward, new_pot_timers), (new_agents, shaped_rewards, event_metrics) = (
-            jax.lax.scan(_interact_wrapper, carry, xs)
+        (
+            new_grid,
+            new_correct_delivery,
+            reward,
+            new_pot_timers,
+            new_plate_stack,
+            new_dirty_pile,
+        ), (new_agents, shaped_rewards, event_metrics) = jax.lax.scan(
+            _interact_wrapper, carry, xs
         )
 
         # Once an agent is carrying plated soup, shape by signed Euclidean
@@ -1448,6 +1555,8 @@ class OvercookedV3(MultiAgentEnv):
                 button_toggled=new_btn_toggled,
                 barrier_active=new_barrier_active,
                 barrier_timer=new_barrier_timer,
+                plate_stack_count=new_plate_stack,
+                dirty_pile_count=new_dirty_pile,
             ),
             reward,
             shaped_rewards,
@@ -1467,6 +1576,8 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
+        plate_stack: chex.Array = 0,
+        dirty_pile: chex.Array = 0,
     ):
         """Process an interact action for an agent."""
         inventory = agent.inventory
@@ -1487,10 +1598,16 @@ class OvercookedV3(MultiAgentEnv):
         object_is_plate_pile = fwd_pos_in_bounds & (
             interact_item == StaticObject.PLATE_PILE
         )
+        # With dish washing the plate pile is a finite stack, so it can only be
+        # drawn from while it still holds a plate. Otherwise it is infinite.
+        if self.enable_dish_washing:
+            object_is_plate_pile_stocked = object_is_plate_pile & (plate_stack > 0)
+        else:
+            object_is_plate_pile_stocked = object_is_plate_pile
         object_is_ingredient_pile = (
             fwd_pos_in_bounds & StaticObject.is_ingredient_pile(interact_item)
         )
-        object_is_pile = object_is_plate_pile | object_is_ingredient_pile
+        object_is_pile = object_is_plate_pile_stocked | object_is_ingredient_pile
 
         object_is_pot = fwd_pos_in_bounds & (interact_item == StaticObject.POT)
         object_is_goal = fwd_pos_in_bounds & (interact_item == StaticObject.GOAL)
@@ -1648,16 +1765,12 @@ class OvercookedV3(MultiAgentEnv):
                 & (interact_extra == 0)
             )
 
-            # Pickup: the grill returns whatever is on it (raw if retrieved
-            # early); board/blender only release the processed result since an
-            # empty-handed interact on raw contents chops/starts instead.
-            successful_prep_pickup = inventory_is_empty & (
-                (object_is_grill & ~station_is_empty)
-                | (
-                    (object_is_cutting_board | object_is_blender)
-                    & station_has_processed
-                )
-            )
+            # Pickup: stations only ever release the processed result, so
+            # placing a raw ingredient is a commitment (as with the pot).
+            # Letting the grill hand raw meat back made place -> pick up ->
+            # place a two-step loop that farmed PREP_PLACEMENT indefinitely,
+            # and grill maps collapsed into pickup spam with zero deliveries.
+            successful_prep_pickup = inventory_is_empty & station_has_processed
 
             successful_pickup = successful_pickup + successful_prep_pickup
             successful_drop = successful_drop | successful_prep_placement
@@ -1712,11 +1825,42 @@ class OvercookedV3(MultiAgentEnv):
 
         # Delivery
         successful_delivery = object_is_goal * inventory_is_dish
-        no_effect = ~successful_pickup * ~successful_drop * ~successful_delivery
+
+        # Dish washing. Plates are conserved: the stack, the dirty pile, every
+        # inventory and every plate lying on the grid always sum to num_plates.
+        # Delivering sends a plate to the dirty pile, and only the sink turns a
+        # dirty plate back into a clean one.
+        successful_plate_return = jnp.array(False)
+        successful_dirty_pickup = jnp.array(False)
+        successful_wash = jnp.array(False)
+        if self.enable_dish_washing:
+            object_is_sink = fwd_pos_in_bounds & (interact_item == StaticObject.SINK)
+            object_is_dirty_pile = fwd_pos_in_bounds & (
+                interact_item == StaticObject.DIRTY_PLATE_PILE
+            )
+            inventory_is_dirty_plate = DynamicObject.is_dirty_plate(inventory)
+
+            # Put a clean plate back on the stack
+            successful_plate_return = object_is_plate_pile & inventory_is_plate
+            # Collect a dirty plate that needs washing
+            successful_dirty_pickup = (
+                object_is_dirty_pile & inventory_is_empty & (dirty_pile > 0)
+            )
+            # Wash the held dirty plate clean
+            successful_wash = object_is_sink & inventory_is_dirty_plate
+
+        no_effect = (
+            ~successful_pickup
+            * ~successful_drop
+            * ~successful_delivery
+            * ~successful_plate_return
+            * ~successful_dirty_pickup
+            * ~successful_wash
+        )
 
         # Compute new ingredient layer
         pile_ingredient = (
-            object_is_plate_pile * DynamicObject.PLATE
+            object_is_plate_pile_stocked * DynamicObject.PLATE
             + object_is_ingredient_pile * StaticObject.get_ingredient(interact_item)
         )
 
@@ -1827,6 +1971,37 @@ class OvercookedV3(MultiAgentEnv):
             successful_pickup * (pile_ingredient + merged_ingredients)
             + no_effect * inventory
         )
+
+        new_plate_stack = plate_stack
+        new_dirty_pile = dirty_pile
+        if self.enable_dish_washing:
+            dirty_plate = DynamicObject.PLATE | DynamicObject.DIRTY
+            new_inventory = jnp.where(successful_dirty_pickup, dirty_plate, new_inventory)
+            new_inventory = jnp.where(
+                successful_wash, DynamicObject.PLATE, new_inventory
+            )
+            new_inventory = jnp.where(successful_plate_return, 0, new_inventory)
+
+            # A plate leaves the stack when drawn and returns when stacked back;
+            # a delivery converts the served plate into a dirty one.
+            drew_plate_from_pile = object_is_plate_pile_stocked & inventory_is_empty
+            new_plate_stack = (
+                plate_stack
+                - drew_plate_from_pile.astype(jnp.int32)
+                + successful_plate_return.astype(jnp.int32)
+            )
+            new_dirty_pile = (
+                dirty_pile
+                + successful_delivery.astype(jnp.int32)
+                - successful_dirty_pickup.astype(jnp.int32)
+            )
+
+            if self.shaped_rewards_enabled:
+                shaped_reward += (
+                    successful_dirty_pickup * SHAPED_REWARDS["DIRTY_PLATE_PICKUP"]
+                )
+                shaped_reward += successful_wash * SHAPED_REWARDS["PLATE_WASH"]
+
         new_agent = agent.replace(inventory=new_inventory)
 
         # Reward calculation
@@ -1889,6 +2064,9 @@ class OvercookedV3(MultiAgentEnv):
                 prep_action,
                 successful_prep_pickup,
                 0.0,  # Filled in after prep timers update if a grill burns.
+                successful_dirty_pickup,
+                successful_wash,
+                successful_plate_return,
             ),
             dtype=jnp.float32,
         )
@@ -1901,6 +2079,8 @@ class OvercookedV3(MultiAgentEnv):
             shaped_reward,
             event_metrics,
             new_pot_timers,
+            new_plate_stack,
+            new_dirty_pile,
         )
 
     # -------------------------------------------------------------------------
@@ -2567,19 +2747,16 @@ class OvercookedV3(MultiAgentEnv):
             newest_order_idx = jnp.maximum(num_active_orders - 1, 0)
             newest_order_type = new_order_types[newest_order_idx]
             has_active_order = num_active_orders > 0
-            next_after_newest = jnp.where(
-                newest_order_type == SoupType.ONION_SOUP,
-                jnp.array(SoupType.TOMATO_SOUP, dtype=jnp.int32),
-                jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
-            )
+            # Step to the next dish in the rotation, wrapping back to the first.
+            next_after_newest = (newest_order_type % self.num_order_types) + 1
             new_order_type = jnp.where(
                 has_active_order,
                 next_after_newest,
-                jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
+                jnp.array(1, dtype=jnp.int32),
             )
         else:
             new_order_type = jax.random.randint(
-                subkey, (), 1, min(self.layout.num_ingredients + 1, 3)
+                subkey, (), 1, self.num_order_types + 1
             )
 
         should_add = should_generate & has_empty_slot
@@ -2698,12 +2875,23 @@ class OvercookedV3(MultiAgentEnv):
                 StaticObject.GRILL,
                 StaticObject.BLENDER,
             ]
+        if self.enable_dish_washing:
+            static_encoding_list += [
+                StaticObject.SINK,
+                StaticObject.DIRTY_PLATE_PILE,
+            ]
         static_encoding = jnp.array(static_encoding_list)
         static_layers = static_objects[..., None] == static_encoding
 
         def _ingredient_layers(ingredients):
-            shift = jnp.array([0, 1] + [2 * (i + 1) for i in range(num_ingredients)])
-            mask = jnp.array([0x1, 0x1] + [0x3] * num_ingredients)
+            shifts = [0, 1] + [2 * (i + 1) for i in range(num_ingredients)]
+            masks = [0x1, 0x1] + [0x3] * num_ingredients
+            if self.enable_dish_washing:
+                # Dirty plates must be distinguishable from clean ones.
+                shifts = shifts + [DIRTY_PLATE_BIT_SHIFT]
+                masks = masks + [0x1]
+            shift = jnp.array(shifts)
+            mask = jnp.array(masks)
 
             layers = ingredients[..., None] >> shift
             layers = layers & mask
@@ -2730,6 +2918,20 @@ class OvercookedV3(MultiAgentEnv):
             )
 
         extra_layer_list = [pot_timer_layer]
+        if self.enable_dish_washing:
+            # Surface both plate counters spatially: the clean stack sits on the
+            # plate pile tiles, the dirty backlog on the dirty pile tiles.
+            plate_count_layer = jnp.where(
+                static_objects == StaticObject.PLATE_PILE,
+                state.plate_stack_count,
+                0,
+            )
+            plate_count_layer = jnp.where(
+                static_objects == StaticObject.DIRTY_PLATE_PILE,
+                state.dirty_pile_count,
+                plate_count_layer,
+            )
+            extra_layer_list.append(plate_count_layer)
         if self.has_prep_stations:
             # Chop progress / grill timer / blender timer on station tiles
             prep_progress_layer = jnp.where(

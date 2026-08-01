@@ -53,6 +53,9 @@ COLORS = {
     "peach": jnp.array([255, 200, 120], dtype=jnp.uint8),
     "wood": jnp.array([205, 170, 125], dtype=jnp.uint8),
     "dark_grey": jnp.array([60, 60, 60], dtype=jnp.uint8),
+    "dirty": jnp.array([124, 106, 62], dtype=jnp.uint8),
+    "water": jnp.array([90, 180, 220], dtype=jnp.uint8),
+    "steel": jnp.array([170, 175, 185], dtype=jnp.uint8),
 }
 
 INGREDIENT_COLORS = jnp.array(
@@ -430,6 +433,22 @@ class OvercookedV3Visualizer:
 
         static_objects = grid[:, :, 0]
 
+        # Dish washing counters ride in channel 2 of their tiles. The clean
+        # stack is stored as count+1 so that 0 keeps its "infinite pile"
+        # meaning for every layout that runs without dish washing.
+        if getattr(self.env, "enable_dish_washing", False):
+            grid = grid.at[:, :, 2].set(
+                jnp.where(
+                    static_objects == StaticObject.PLATE_PILE,
+                    state.plate_stack_count + 1,
+                    jnp.where(
+                        static_objects == StaticObject.DIRTY_PLATE_PILE,
+                        state.dirty_pile_count,
+                        grid[:, :, 2],
+                    ),
+                )
+            )
+
         # Show recipe on recipe indicators. Older fixed-recipe layouts may not
         # contain an R tile; when the order queue is enabled, draw a render-only
         # order board in the top-left corner so GIFs expose the active order.
@@ -490,7 +509,14 @@ class OvercookedV3Visualizer:
             return img
 
         def _render_plate(img, ingredients):
-            return rendering.fill_coords(img, plate_fn, COLORS["white"])
+            # A dirty plate (PLATE | DIRTY) renders muddy so it reads instantly
+            # as unusable for serving.
+            color = jax.lax.select(
+                DynamicObject.is_dirty_plate(ingredients),
+                COLORS["dirty"],
+                COLORS["white"],
+            )
+            return rendering.fill_coords(img, plate_fn, color)
 
         def _render_ingredient(img, ingredients):
             idx = DynamicObject.get_ingredient_type(ingredients)
@@ -606,12 +632,17 @@ class OvercookedV3Visualizer:
             img = rendering.fill_coords(
                 img, rendering.point_in_rect(0, 1, 0, 1), COLORS["grey"]
             )
+            # channel 2 holds count+1 under dish washing, 0 means infinite.
+            marker = cell[2]
+            is_infinite = marker == 0
+            count = marker - 1
             plate_fns = [
                 rendering.point_in_circle(*coord, 0.2)
                 for coord in [(0.3, 0.3), (0.75, 0.42), (0.4, 0.75)]
             ]
-            for plate_fn in plate_fns:
-                img = rendering.fill_coords(img, plate_fn, COLORS["white"])
+            for i, plate_fn in enumerate(plate_fns):
+                img_with = rendering.fill_coords(img, plate_fn, COLORS["white"])
+                img = jax.lax.select(is_infinite | (count > i), img_with, img)
             return img
 
         def _render_ingredient_pile(cell, img):
@@ -945,6 +976,43 @@ class OvercookedV3Visualizer:
             img_progress = rendering.fill_coords(img, progress_fn, COLORS["green"])
             return jax.lax.select(time_left > 0, img_progress, img)
 
+        def _render_sink(cell, img):
+            """Render sink: steel basin with water."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["grey"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.12, 0.88, 0.28, 0.86), COLORS["steel"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.2, 0.8, 0.38, 0.78), COLORS["water"]
+            )
+            # Faucet
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.46, 0.54, 0.1, 0.3), COLORS["steel"]
+            )
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0.46, 0.72, 0.1, 0.17), COLORS["steel"]
+            )
+            img = OvercookedV3Visualizer._render_dynamic_item(cell[1], img)
+            return img
+
+        def _render_dirty_plate_pile(cell, img):
+            """Render dirty plate pile; stacked plates show the current backlog."""
+            img = rendering.fill_coords(
+                img, rendering.point_in_rect(0, 1, 0, 1), COLORS["grey"]
+            )
+            # Channel 2 carries the dirty-plate count for this tile.
+            count = cell[2]
+            plate_fns = [
+                rendering.point_in_circle(*coord, 0.2)
+                for coord in [(0.3, 0.3), (0.75, 0.42), (0.4, 0.75)]
+            ]
+            for i, plate_fn in enumerate(plate_fns):
+                img_with = rendering.fill_coords(img, plate_fn, COLORS["dirty"])
+                img = jax.lax.select(count > i, img_with, img)
+            return img
+
         def _render_pressure_plate(cell, img):
             """Render pressure plate as red outline on a dark tile."""
             is_pressed = (cell[2] & 1) > 0
@@ -972,7 +1040,7 @@ class OvercookedV3Visualizer:
         # Build render function lookup
         # Map static object types to render functions
         # Keep an extra slot at the end for ingredient piles dispatch.
-        render_fns = [_render_empty] * 30  # StaticObject max is 28, slot 29 is ingredient pile
+        render_fns = [_render_empty] * 32  # StaticObject max is 30, slot 31 is ingredient pile
         render_fns[StaticObject.EMPTY] = _render_empty
         render_fns[StaticObject.WALL] = _render_wall
         render_fns[StaticObject.AGENT] = _render_agent
@@ -990,6 +1058,8 @@ class OvercookedV3Visualizer:
         render_fns[StaticObject.CUTTING_BOARD] = _render_cutting_board
         render_fns[StaticObject.GRILL] = _render_grill
         render_fns[StaticObject.BLENDER] = _render_blender
+        render_fns[StaticObject.SINK] = _render_sink
+        render_fns[StaticObject.DIRTY_PLATE_PILE] = _render_dirty_plate_pile
 
         # Handle ingredient piles (10-19)
         is_ingredient_pile = (static_object >= StaticObject.INGREDIENT_PILE_BASE) & \

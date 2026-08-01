@@ -10,6 +10,10 @@ GRILL_COOK_TIME = 15      # Steps for a raw item on the grill to finish grilling
 GRILL_BURN_TIME = 30      # Grilled item burns after this many ready steps (0 = never)
 BLEND_TIME = 10           # Steps a started blender needs to finish
 
+# Dish washing. Only used when the env runs with dish washing enabled; otherwise
+# the plate pile is infinite and no plate is ever consumed.
+DEFAULT_NUM_PLATES = 3    # Clean plates the kitchen starts with
+
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
 BURN_PENALTY = -5.0       # Penalty when a cooked pot burns before pickup
@@ -32,6 +36,8 @@ SHAPED_REWARDS = {
     "PREP_PLACEMENT": 0.2,        # Placing a raw ingredient on its prep station
     "PREP_ACTION": 0.1,           # Chop press / blender start on a prep station
     "PREP_PICKUP": 0.2,           # Picking up a processed ingredient from a station
+    "DIRTY_PLATE_PICKUP": 0.1,    # Collecting a dirty plate from the dirty pile
+    "PLATE_WASH": 0.3,            # Washing a dirty plate clean at the sink
 }
 
 # Maximum number of pots to track (for fixed array sizes)

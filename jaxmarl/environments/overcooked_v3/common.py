@@ -25,6 +25,10 @@ PREP_PROCESSED_OFFSET = NUM_PREP_CHAINS
 # ingredient into its processed counterpart (3 index steps of 2 bits each).
 PREP_PROCESSED_SHIFT = 2 * PREP_PROCESSED_OFFSET
 
+# Bit index of the dirty-plate flag (see DynamicObject.DIRTY). Exposed so the
+# observation builder can unpack it as its own layer.
+DIRTY_PLATE_BIT_SHIFT = 20
+
 
 class StaticObject(IntEnum):
     """Static objects on the grid (channel 0)."""
@@ -56,6 +60,10 @@ class StaticObject(IntEnum):
     CUTTING_BOARD = 26  # chop by repeated interacts
     GRILL = 27          # cooks automatically, can burn
     BLENDER = 28        # manual start, timed, never burns
+
+    # Dish washing (only meaningful when the env enables it)
+    SINK = 29             # converts a held dirty plate back into a clean plate
+    DIRTY_PLATE_PILE = 30  # delivered plates return here as dirty plates
 
     @staticmethod
     def is_ingredient_pile(obj):
@@ -113,8 +121,25 @@ class DynamicObject(IntEnum):
     BURNING = 1 << 18     # Pot is in burning window
     BURNED = 1 << 19      # Pot has burned (contents destroyed)
 
+    # Dish washing: a dirty plate is PLATE | DIRTY. Keeping DIRTY as a separate
+    # bit means `inventory == PLATE` still identifies a *clean* plate, so a
+    # dirty plate can never be used to serve soup.
+    DIRTY = 1 << DIRTY_PLATE_BIT_SHIFT
+
     # Mask selecting all ingredient count bits (bits 2..17)
     INGREDIENT_BITS_MASK = ((1 << (2 * MAX_INGREDIENT_TYPES)) - 1) << 2
+
+    @staticmethod
+    def is_dirty_plate(obj):
+        """Check if the object is a dirty plate (never usable for serving)."""
+        return ((obj & DynamicObject.DIRTY) != 0) & (
+            (obj & DynamicObject.PLATE) != 0
+        )
+
+    @staticmethod
+    def counts_as_plate(obj):
+        """Check if the object holds a plate in any form (clean, dirty, plated)."""
+        return (obj & DynamicObject.PLATE) != 0
 
     @staticmethod
     def ingredient(idx):

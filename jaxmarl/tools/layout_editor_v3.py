@@ -58,6 +58,8 @@ FALLBACK_PRESSURE_PLATE = 25
 FALLBACK_CUTTING_BOARD = 26
 FALLBACK_GRILL = 27
 FALLBACK_BLENDER = 28
+FALLBACK_SINK = 29
+FALLBACK_DIRTY_PLATE_PILE = 30
 
 # ButtonAction values. Keep these in sync with overcooked_v3.common.ButtonAction.
 BUTTON_ACTION_TOGGLE_PAUSE = 0
@@ -267,6 +269,12 @@ def _make_tools():
         EditorTool("Blender",        "M",  "Blends carrot (4) into puree (7).",       (173, 216, 230),
                    static_object=_so("BLENDER", FALLBACK_BLENDER),
                    keyboard_shortcut="m"),
+        EditorTool("Sink",           "S",  "Washes a held dirty plate clean.",        (90, 180, 220),
+                   static_object=_so("SINK", FALLBACK_SINK),
+                   keyboard_shortcut="s"),
+        EditorTool("Dirty Plates",   "D",  "Delivered plates return here dirty.",     (124, 106, 62),
+                   static_object=_so("DIRTY_PLATE_PILE", FALLBACK_DIRTY_PLATE_PILE),
+                   keyboard_shortcut="d"),
         EditorTool("Item Conv >",    ">",  "Moves items to the right.",               COLOR_CYAN,
                    conveyor_direction=2, keyboard_shortcut=">"),
         EditorTool("Item Conv <",    "<",  "Moves items to the left.",                COLOR_CYAN,
@@ -1116,6 +1124,8 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
                 StaticObject.CUTTING_BOARD: "C",
                 StaticObject.GRILL: "G",
                 StaticObject.BLENDER: "M",
+                StaticObject.SINK: "S",
+                StaticObject.DIRTY_PLATE_PILE: "D",
             }
         else:
             ingredient_base = FALLBACK_INGREDIENT_BASE
@@ -1132,6 +1142,8 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
                 FALLBACK_CUTTING_BOARD: "C",
                 FALLBACK_GRILL: "G",
                 FALLBACK_BLENDER: "M",
+                FALLBACK_SINK: "S",
+                FALLBACK_DIRTY_PLATE_PILE: "D",
             }
 
         item_symbols = {2: ">", 3: "<", 0: "^", 1: "v"}

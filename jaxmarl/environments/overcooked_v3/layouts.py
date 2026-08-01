@@ -501,13 +501,63 @@ WWWWW
 """
 
 # All three chains on the prep side, cooking and delivery on the other.
+# All food on the right, all machines on the left, split by a counter wall.
+# Neither agent can finish a dish alone:
+#   right agent  takes raw food from the piles -> passes it over the counter
+#   left agent   processes it at the matching machine -> pot -> plates it
+#                -> passes the plated soup back over the counter
+#   right agent  delivers at X
+# The recipe indicator sits on the machine side only - the agent that actually
+# cooks the dish is the one that needs to read the current order.
 prep_kitchen_handoff = """
-W23WPWW
-G  W  B
-4 AW AX
-C  W  R
-M  W  W
+WRPWWWWWW
+C   W   2
+G A W A 3
+M   W   4
+B   W   X
+WWWWWWWWW
+"""
+
+# Dish washing kitchens. With dish washing enabled the plate pile holds a finite
+# number of plates; a delivered dish returns to the dirty pile (D) and must be
+# carried to the sink (S) to become clean again. These layouts are ordinary
+# kitchens when dish washing is disabled (the S/D tiles are then inert counters).
+dish_washing_room = """
+WWPWW
+0A AS
+W   D
+WBWXW
+"""
+
+# Two agents, one sink, one pot: someone has to keep the dish cycle moving while
+# the other cooks, or the kitchen runs out of clean plates.
+dish_washing_kitchen = """
+WWWPWWW
+0     S
+W A A W
+B     D
+WWWXWWW
+"""
+
+# Dish washing behind a counter handoff. The cook side owns the pot and the plate
+# pile; the wash side owns delivery, the dirty pile and the sink. Plated soup goes
+# over the counter one way and clean plates come back the other, so the whole
+# plate cycle depends on both agents.
+dish_washing_handoff = """
+WWPWWWW
+0 AW  X
+B  WA D
+W  W  S
 WWWWWWW
+"""
+
+# Prep chains and dish washing combined: chop lettuce, cook, deliver, then wash.
+prep_dish_kitchen = """
+WW2WCWWPWW
+W  A     S
+B        W
+W     A  D
+WWWWRWWXWW
 """
 
 
@@ -584,6 +634,8 @@ class Layout:
             StaticObject.CUTTING_BOARD: 'C',
             StaticObject.GRILL: 'G',
             StaticObject.BLENDER: 'M',
+            StaticObject.SINK: 'S',
+            StaticObject.DIRTY_PLATE_PILE: 'D',
         }
 
         item_conveyor_symbols = {
@@ -663,6 +715,8 @@ class Layout:
             'has_recipe_indicator': False,
             'possible_recipes': self.possible_recipes,
             'num_prep_stations': {},
+            'num_sinks': 0,
+            'num_dirty_plate_piles': 0,
         }
 
         for y in range(self.height):
@@ -676,6 +730,10 @@ class Layout:
                     info['num_prep_stations'][station] = (
                         info['num_prep_stations'].get(station, 0) + 1
                     )
+                elif obj == StaticObject.SINK:
+                    info['num_sinks'] += 1
+                elif obj == StaticObject.DIRTY_PLATE_PILE:
+                    info['num_dirty_plate_piles'] += 1
                 elif obj == StaticObject.PLATE_PILE:
                     info['num_plate_piles'] += 1
                 elif obj == StaticObject.GOAL:
@@ -717,6 +775,17 @@ class Layout:
 
         if info['num_pots'] == 0:
             warnings.append("No pots found - agents won't be able to cook")
+
+        # A sink is only useful alongside a dirty plate pile and vice versa; the
+        # env errors out if dish washing is enabled without both.
+        if info['num_sinks'] > 0 and info['num_dirty_plate_piles'] == 0:
+            warnings.append(
+                "Layout has a sink but no dirty plate pile - dish washing cannot be enabled"
+            )
+        if info['num_dirty_plate_piles'] > 0 and info['num_sinks'] == 0:
+            warnings.append(
+                "Layout has a dirty plate pile but no sink - dish washing cannot be enabled"
+            )
 
         if info['num_pots'] > MAX_POTS:
             errors.append(f"Too many pots ({info['num_pots']} > {MAX_POTS}). Increase MAX_POTS in settings.py")
@@ -1144,6 +1213,10 @@ class Layout:
                 C = cutting board (chop lettuce 2 -> chopped lettuce 5)
                 G = grill (grill meat 3 -> grilled meat 6, burns if left)
                 M = blender (blend carrot 4 -> carrot puree 7)
+
+            Dish Washing (when enabled):
+                S = sink (wash a dirty plate clean)
+                D = dirty plate pile (delivered plates land here)
             
             Item Conveyors (move items):
                 > = moves right
@@ -1228,6 +1301,10 @@ class Layout:
             G: grill (grills raw ingredient 3 -> processed 6, can burn)
             M: blender (blends raw ingredient 4 -> processed 7)
 
+            Dish washing (only active when the env enables it):
+            S: sink (washes a held dirty plate clean)
+            D: dirty plate pile (delivered plates return here dirty)
+
         Args:
             grid: ASCII string layout
             possible_recipes: List of recipes, or None for auto-detect
@@ -1279,6 +1356,8 @@ class Layout:
             "C": StaticObject.CUTTING_BOARD,
             "G": StaticObject.GRILL,
             "M": StaticObject.BLENDER,
+            "S": StaticObject.SINK,
+            "D": StaticObject.DIRTY_PLATE_PILE,
         }
 
         # Add ingredient piles 0-9
@@ -1769,6 +1848,21 @@ overcooked_v3_layouts = {
     ),
     "prep_kitchen_handoff": Layout.from_string(
         prep_kitchen_handoff, possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+    ),
+
+    # Dish washing kitchens (pass enable_dish_washing=True to activate the
+    # finite plate stack, the dirty pile and the sink).
+    "dish_washing_room": Layout.from_string(
+        dish_washing_room, possible_recipes=[[0, 0, 0]],
+    ),
+    "dish_washing_kitchen": Layout.from_string(
+        dish_washing_kitchen, possible_recipes=[[0, 0, 0]],
+    ),
+    "dish_washing_handoff": Layout.from_string(
+        dish_washing_handoff, possible_recipes=[[0, 0, 0]],
+    ),
+    "prep_dish_kitchen": Layout.from_string(
+        prep_dish_kitchen, possible_recipes=[[5, 5, 5]],
     ),
 
 }

@@ -8,6 +8,7 @@ Prep chains:
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
@@ -208,17 +209,33 @@ class TestGrill:
         assert state.grid[y, x, 2] == 0
         assert info["event/prep_pickup"][0] == 1
 
-    def test_early_pickup_returns_raw(self):
+    def test_raw_cannot_be_retrieved_early(self):
+        """Placing on a station is a commitment; only processed items come back.
+
+        Retrieving raw made place -> pick up -> place a two-step loop that
+        farmed PREP_PLACEMENT forever, so grill maps never learned to deliver.
+        """
         env = OvercookedV3(layout="grill_room", grill_cook_time=10, grill_burn_time=5)
         key = jax.random.PRNGKey(0)
         obs, state = env.reset(key)
         state, info, key = _place_on_station(env, state, key)
 
-        state, rewards, info, key = _step(env, state, key, a0=Actions.interact)
         y, x = STATION_YX
-        assert state.agents.inventory[0] == RAW_MEAT
-        assert state.grid[y, x, 1] == 0
-        assert state.grid[y, x, 2] == 0  # timer reset on pickup
+        state, rewards, info, key = _step(env, state, key, a0=Actions.interact)
+        assert state.agents.inventory[0] == 0  # nothing handed back
+        assert state.grid[y, x, 1] == RAW_MEAT  # still cooking on the grill
+
+    def test_placement_reward_cannot_be_farmed(self):
+        """Repeated interacts on a loaded grill must not keep paying out."""
+        env = OvercookedV3(layout="grill_room")
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+        state, info, key = _place_on_station(env, state, key)
+
+        for _ in range(6):
+            state, rewards, info, key = _step(env, state, key, a0=Actions.interact)
+            assert info["shaped_reward"]["agent_0"] == 0.0
+            assert info["event/prep_placement"][0] == 0
 
     def test_grill_burns_item(self):
         env = OvercookedV3(layout="grill_room", grill_cook_time=3, grill_burn_time=2)
@@ -430,6 +447,150 @@ class TestHandoffLayouts:
         state, rewards, info, key = _step(env, state, key, a1=Actions.interact)
         assert state.agents.inventory[1] == CHOPPED_LETTUCE
         assert state.grid[counter_y, counter_x, 1] == 0
+
+
+class TestAlternatingOrdersAcrossDishes:
+    """Orders must rotate through every dish the kitchen can make."""
+
+    def _env(self, layout="prep_kitchen_handoff", **kw):
+        kw.setdefault("enable_order_queue", True)
+        kw.setdefault("order_queue_mode", "alternating")
+        kw.setdefault("order_generation_rate", 1.0)
+        kw.setdefault("order_expiration_time", 0)
+        return OvercookedV3(layout=layout, **kw)
+
+    def test_orderable_dishes_come_from_possible_recipes(self):
+        env = self._env()
+        assert env.order_recipes == [[5, 5, 5], [6, 6, 6], [7, 7, 7]]
+        assert env.num_order_types == 3
+
+    def test_queue_cycles_through_all_three(self):
+        env = self._env()
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+        step = jax.jit(env.step_env)
+        for _ in range(12):
+            key, subkey = jax.random.split(key)
+            actions = {a: jnp.array(Actions.stay) for a in env.agents}
+            obs, state, rewards, dones, info = step(subkey, state, actions)
+
+        types = [int(t) for t in state.order_types if int(t) > 0]
+        assert set(types) == {1, 2, 3}, types
+        # consecutive orders step through the rotation
+        for a, b in zip(types, types[1:]):
+            assert b == (a % 3) + 1
+
+    def test_each_order_type_maps_to_its_recipe(self):
+        env = self._env()
+        for i, recipe in enumerate(env.order_recipes):
+            expected = DynamicObject.get_recipe_encoding(jnp.array(recipe))
+            assert env._order_recipe_encodings[i + 1] == expected
+
+    def test_recipe_indicator_follows_front_order(self):
+        env = self._env()
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+        front = int(state.order_types[0])
+        assert front > 0
+        assert state.recipe == env._order_recipe_encodings[front]
+
+    def test_legacy_two_pile_layouts_keep_onion_tomato(self):
+        """around_the_island pins one recipe but orders both soups; keep that."""
+        env = self._env(layout="around_the_island")
+        assert env.order_recipes == [[0, 0, 0], [1, 1, 1]]
+        assert env._order_recipe_encodings[1] == DynamicObject.get_recipe_encoding(
+            jnp.array([0, 0, 0])
+        )
+        assert env._order_recipe_encodings[2] == DynamicObject.get_recipe_encoding(
+            jnp.array([1, 1, 1])
+        )
+
+    def test_alternating_rejected_without_two_dishes(self):
+        with pytest.raises(ValueError, match="two orderable dishes"):
+            OvercookedV3(
+                layout="cramped_room",
+                enable_order_queue=True,
+                order_queue_mode="alternating",
+            )
+
+    def test_random_mode_spans_all_dishes(self):
+        env = self._env(order_queue_mode="random")
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+        step = jax.jit(env.step_env)
+        seen = set()
+        for _ in range(60):
+            key, subkey = jax.random.split(key)
+            actions = {a: jnp.array(Actions.stay) for a in env.agents}
+            obs, state, rewards, dones, info = step(subkey, state, actions)
+            seen.update(int(t) for t in state.order_types if int(t) > 0)
+        assert seen == {1, 2, 3}
+
+
+class TestPrepKitchenHandoffLayout:
+    """Food on the right, machines on the left, split by a counter wall."""
+
+    def test_food_right_machines_left(self):
+        layout = overcooked_v3_layouts["prep_kitchen_handoff"]
+        statics = layout.static_objects
+        width = layout.width
+        mid = width // 2
+
+        stations = [
+            StaticObject.CUTTING_BOARD,
+            StaticObject.GRILL,
+            StaticObject.BLENDER,
+        ]
+        for station in stations:
+            ys, xs = np.where(statics == station)
+            assert len(xs) == 1
+            assert xs[0] < mid, f"{StaticObject(station).name} should be on the left"
+
+        for raw_idx in (2, 3, 4):
+            ys, xs = np.where(statics == StaticObject.INGREDIENT_PILE_BASE + raw_idx)
+            assert len(xs) == 1
+            assert xs[0] > mid, f"ingredient {raw_idx} should be on the right"
+
+    def test_agents_separated_by_counter(self):
+        env = OvercookedV3(layout="prep_kitchen_handoff")
+        (x0, y0), (x1, y1) = env.layout.agent_positions
+        assert env.enclosed_spaces[y0, x0] != env.enclosed_spaces[y1, x1]
+
+    def test_each_side_owns_its_half_of_the_chain(self):
+        """Machines/pot/plates on one side, food/delivery on the other."""
+        env = OvercookedV3(layout="prep_kitchen_handoff")
+        statics = env.layout.static_objects
+        (x0, y0), (x1, y1) = env.layout.agent_positions
+        zones = env.enclosed_spaces
+        left_zone = zones[y0, x0]
+
+        def side_of(obj):
+            ys, xs = np.where(statics == obj)
+            sides = set()
+            for y, x in zip(ys, xs):
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < env.height and 0 <= nx < env.width:
+                        if statics[ny, nx] == StaticObject.EMPTY:
+                            sides.add(int(zones[ny, nx]))
+            return sides
+
+        assert side_of(StaticObject.POT) == {int(left_zone)}
+        assert side_of(StaticObject.PLATE_PILE) == {int(left_zone)}
+        assert side_of(StaticObject.GOAL) != {int(left_zone)}
+        for raw_idx in (2, 3, 4):
+            assert side_of(StaticObject.INGREDIENT_PILE_BASE + raw_idx) != {
+                int(left_zone)
+            }
+
+    def test_recipe_indicator_only_on_machine_side(self):
+        """The order board sits with the machines, not the food."""
+        env = OvercookedV3(layout="prep_kitchen_handoff")
+        statics = env.layout.static_objects
+        ys, xs = np.where(statics == StaticObject.RECIPE_INDICATOR)
+        mid = env.width // 2
+        assert len(xs) == 1
+        assert xs[0] < mid
 
 
 class TestPrepShapedRewards:
