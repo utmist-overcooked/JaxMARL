@@ -10,6 +10,7 @@ plate lying on the grid always sum to num_plates.
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
@@ -31,6 +32,7 @@ DISH_LAYOUTS = [
     "dish_washing_kitchen",
     "dish_washing_handoff",
     "prep_dish_kitchen",
+    "prep_kitchen_handoff_orders_alt_dishes",
 ]
 
 # dish_washing_room geometry (x, y):
@@ -259,6 +261,119 @@ class TestDishWashingCycle:
         for _ in range(5):
             state, rewards, info, key = _interact(env, state, key)
             assert info["shaped_reward"]["agent_0"] == 0.0
+
+
+class TestPrepHandoffDishesLayout:
+    """The combined map: prep chains + counter handoff + dish washing."""
+
+    LAYOUT = "prep_kitchen_handoff_orders_alt_dishes"
+
+    def _env(self, **kw):
+        kw.setdefault("enable_dish_washing", True)
+        kw.setdefault("num_plates", 3)
+        kw.setdefault("enable_order_queue", True)
+        kw.setdefault("order_queue_mode", "alternating")
+        kw.setdefault("order_generation_rate", 1.0)
+        kw.setdefault("order_expiration_time", 0)
+        return OvercookedV3(layout=self.LAYOUT, **kw)
+
+    def test_registered_and_playable(self):
+        layout = overcooked_v3_layouts[self.LAYOUT]
+        is_playable, messages = layout.validate_playable()
+        assert is_playable, messages
+
+    def test_has_all_three_chains_plus_washing(self):
+        info = overcooked_v3_layouts[self.LAYOUT].get_info()
+        assert info["num_sinks"] == 1
+        assert info["num_dirty_plate_piles"] == 1
+        assert len(info["num_prep_stations"]) == 3
+
+    def test_orders_rotate_through_three_dishes(self):
+        env = self._env()
+        assert env.order_recipes == [[5, 5, 5], [6, 6, 6], [7, 7, 7]]
+
+    def test_sides_own_the_right_halves(self):
+        """Machines/pot/plates left; food/delivery/dirty pile/sink right."""
+        env = self._env()
+        statics = env.layout.static_objects
+        zones = env.enclosed_spaces
+        (x0, y0), (x1, y1) = env.layout.agent_positions
+        left = int(zones[y0, x0])
+        assert left != int(zones[y1, x1])
+
+        def sides(obj):
+            ys, xs = np.where(statics == obj)
+            found = set()
+            for y, x in zip(ys, xs):
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < env.height and 0 <= nx < env.width:
+                        if statics[ny, nx] == StaticObject.EMPTY:
+                            found.add(int(zones[ny, nx]))
+            return found
+
+        for obj in (
+            StaticObject.CUTTING_BOARD,
+            StaticObject.GRILL,
+            StaticObject.BLENDER,
+            StaticObject.POT,
+            StaticObject.PLATE_PILE,
+        ):
+            assert sides(obj) == {left}, StaticObject(obj).name
+
+        for obj in (
+            StaticObject.GOAL,
+            StaticObject.SINK,
+            StaticObject.DIRTY_PLATE_PILE,
+            StaticObject.INGREDIENT_PILE_BASE + 2,
+            StaticObject.INGREDIENT_PILE_BASE + 3,
+            StaticObject.INGREDIENT_PILE_BASE + 4,
+        ):
+            assert left not in sides(obj), int(obj)
+
+    def test_delivery_dirties_a_plate_on_the_food_side(self):
+        """Plate crosses the counter, is delivered, and returns dirty."""
+        env = self._env()
+        key = jax.random.PRNGKey(0)
+        obs, state = env.reset(key)
+
+        # Goal sits on the right wall; stand next to it holding a plated soup.
+        ys, xs = np.where(env.layout.static_objects == StaticObject.GOAL)
+        gy, gx = int(ys[0]), int(xs[0])
+        soup = int(state.recipe) | int(DynamicObject.PLATE) | int(DynamicObject.COOKED)
+        agents = state.agents
+        state = state.replace(
+            agents=agents.replace(
+                pos=Position(
+                    x=agents.pos.x.at[1].set(gx - 1), y=agents.pos.y.at[1].set(gy)
+                ),
+                dir=agents.dir.at[1].set(Direction.RIGHT),
+                inventory=agents.inventory.at[1].set(soup),
+            ),
+            # account for the plate this dish carries
+            plate_stack_count=state.plate_stack_count - 1,
+        )
+        key, subkey = jax.random.split(key)
+        actions = {"agent_0": jnp.array(Actions.stay), "agent_1": jnp.array(Actions.interact)}
+        obs, state, rewards, dones, info = env.step(subkey, state, actions)
+
+        assert rewards["agent_1"] == env.delivery_reward
+        assert state.dirty_pile_count == 1
+        assert _total_plates(state) == 3
+
+    def test_random_rollout_conserves_plates(self):
+        env = self._env()
+        key = jax.random.PRNGKey(3)
+        obs, state = env.reset(key)
+        step = jax.jit(env.step_env)
+        for _ in range(150):
+            key, k_act, k_step = jax.random.split(key, 3)
+            actions = {
+                agent: jax.random.randint(jax.random.fold_in(k_act, i), (), 0, 6)
+                for i, agent in enumerate(env.agents)
+            }
+            obs, state, rewards, dones, info = step(k_step, state, actions)
+            assert _total_plates(state) == 3
 
 
 class TestDirtyPlateIsUnusable:

@@ -518,6 +518,26 @@ B   W   X
 WWWWWWWWW
 """
 
+# prep_kitchen_handoff plus the dish washing loop. Same split - all food on the
+# right, all machines on the left - with the dirty pile and sink added to the
+# food side, next to the delivery window where used plates come back.
+#
+# The plate now makes a full circuit across the counter:
+#   B (left) -> plated soup -> counter -> delivered at X (right) -> D dirty pile
+#   -> washed at S (right) -> handed back over the counter -> plates the next soup
+#
+# Run it with enable_dish_washing=True and an alternating order queue so the
+# order rotates through all three dishes.
+prep_kitchen_handoff_orders_alt_dishes = """
+WRPWWWWWW
+C   W   2
+G A W A 3
+M   W   4
+B   W   X
+W   W   D
+WWWWWWSWW
+"""
+
 # Dish washing kitchens. With dish washing enabled the plate pile holds a finite
 # number of plates; a delivered dish returns to the dirty pile (D) and must be
 # carried to the sink (S) to become clean again. These layouts are ordinary
@@ -1863,6 +1883,10 @@ overcooked_v3_layouts = {
     ),
     "prep_dish_kitchen": Layout.from_string(
         prep_dish_kitchen, possible_recipes=[[5, 5, 5]],
+    ),
+    "prep_kitchen_handoff_orders_alt_dishes": Layout.from_string(
+        prep_kitchen_handoff_orders_alt_dishes,
+        possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
     ),
 
 }
