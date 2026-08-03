@@ -16,7 +16,7 @@ ANNEAL_LR: true
 
 ENV_NAME: overcooked_v3_macro_interruptible
 ENV_KWARGS:
-  layout: pressure_gated_circuit
+  layout: race_against_the_clock
   max_steps: 400
   max_macro_steps: 80
 
