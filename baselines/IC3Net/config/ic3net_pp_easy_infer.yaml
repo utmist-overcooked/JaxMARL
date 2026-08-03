@@ -1,0 +1,24 @@
+# IC3Net inference configuration for PredatorPrey Easy
+ENV_NAME: "predator_prey_grid"
+ENV_KWARGS:
+  num_agents: 3
+  dim: 5
+  vision: 0
+  max_steps: 20
+  mode: "mixed"
+
+BASELINE: "ic3net"
+HIDDEN_DIM: 128
+RECURRENT: true
+COMM_PASSES: 1
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false
+
+MODEL_PATH: "checkpoints/ic3net_pp_easy/model_update_20000.msgpack"
+NUM_EPISODES: 10
+MAX_STEPS: 20
+SAVE_GIF: "/tmp/ic3net_pp_easy.gif"
+
+SEED: 0
+

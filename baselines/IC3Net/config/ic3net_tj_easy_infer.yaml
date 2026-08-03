@@ -1,0 +1,24 @@
+# IC3Net inference configuration for TrafficJunction (Easy)
+ENV_NAME: "traffic_junction_grid"
+ENV_KWARGS:
+  num_agents: 5
+  dim: 6
+  vision: 0
+  max_steps: 20
+  difficulty: "easy"
+  add_rate: 0.3
+
+BASELINE: "ic3net"
+HIDDEN_DIM: 128
+RECURRENT: true
+COMM_PASSES: 1
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: true
+
+MODEL_PATH: "checkpoints/ic3net_tj_easy/model_update_20000.msgpack"
+NUM_EPISODES: 10
+MAX_STEPS: 20
+SAVE_GIF: "/tmp/ic3net_tj_easy.gif"
+
+SEED: 0

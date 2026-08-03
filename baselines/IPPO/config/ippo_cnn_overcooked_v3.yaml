@@ -1,0 +1,54 @@
+# IPPO CNN training configuration for Overcooked V3 - cramped_room
+ENV_NAME: "overcooked_v3"
+ENV_KWARGS:
+  layout: "cramped_room"
+  max_steps: 400
+  pot_cook_time: 20
+  pot_burn_time: 40
+  enable_order_queue: false
+  order_generation_rate: 0.0
+  order_expiration_time: 0
+
+# Network
+# Match the current RNN width defaults so CNN-vs-RNN comparisons are less
+# confounded by a smaller feed-forward CNN.
+CNN_CHANNELS: 128
+CNN_EMBED_DIM: 128
+FC_DIM_SIZE: 128
+ACTIVATION: "relu"
+
+LR: 0.0005
+NUM_ENVS: 64
+NUM_STEPS: 256
+TOTAL_TIMESTEPS: 5_000_000
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 16
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+VF_COEF: 0.5
+MAX_GRAD_NORM: 0.5
+ANNEAL_LR: true
+
+# v3 raw shaped rewards are 0.1-0.3; v1 are 3.0-5.0
+# COEFF=30 brings them to the same magnitude (~3.0 per useful action)
+SHAPED_REWARD_COEFF: 30.0
+REW_SHAPING_HORIZON: 2_500_000
+REW_SHAPING_MIN_COEFF: 0.0
+
+SEED: 42
+NUM_SEEDS: 1
+
+ENTITY: ""
+PROJECT: "ippo_v3_cnn"
+WANDB_NAME: ~
+WANDB_MODE: "disabled"
+
+# Set to an absolute path to control where the gif is saved
+SAVE_GIF_PATH: ~
+
+# Checkpoint paths (~ means use default auto-generated path)
+SAVE_CHECKPOINT_PATH: ~
+# Set to a .msgpack path to warm-start from pre-trained weights
+INIT_CHECKPOINT: ~

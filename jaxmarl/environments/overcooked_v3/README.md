@@ -139,7 +139,82 @@ Player conveyors (push agents):
 [  - Push agents left
 {  - Push agents up
 }  - Push agents down
+
+Prep stations (multi-stage preparation):
+C  - Cutting board
+G  - Grill
+M  - Blender (mixer)
 ```
+
+**Prep chains:** raw ingredients 2-4 never match a recipe directly; they must
+be processed at their station first. The processed result is a separate
+ingredient type (`raw index + 3`) that recipes reference:
+
+| Raw | Station | Mechanic | Processed |
+|-----|---------|----------|-----------|
+| 2 lettuce | `C` cutting board | place, then interact `chop_stages` (3) times empty-handed | 5 chopped lettuce |
+| 3 meat | `G` grill | place; cooks by itself in `grill_cook_time` steps, **burns** `grill_burn_time` steps later (-5 penalty) | 6 grilled meat |
+| 4 carrot | `M` blender | place, interact once to start, ready after `blend_time` steps, never burns | 7 carrot puree |
+
+Each station holds a single unit and only accepts its own raw ingredient.
+Empty-handed interact picks up the processed result. Placing a raw ingredient
+is a **commitment** — like the pot, a station never hands raw items back (an
+earlier version let the grill do so, which made place → pick up → place a
+two-step loop that farmed `PREP_PLACEMENT` forever and collapsed grill-map
+training into pickup spam with zero deliveries). A recipe such as `[[5, 5, 5]]` then means
+"soup of three chopped lettuce": prep 3 units, pot them, plate, deliver.
+See the `cutting_board_room`, `grill_room`, `blender_room` and `prep_kitchen`
+layouts, plus the `*_handoff` variants (`cutting_board_handoff`,
+`grill_handoff`, `blender_handoff`, `prep_kitchen_handoff`) where a counter
+wall fully separates the prep side from the cook side so processed
+ingredients must be handed over the middle counter (renders in
+`docs/imgs/overcooked_v3_prep_layouts/`). Layouts without any station keep
+the exact observation schema they
+had before prep stations existed; layouts with stations add 3 static layers
+plus a prep progress/timer layer.
+
+**Orders and the recipe indicator.** With `enable_order_queue=False` a single
+recipe is sampled at reset and stays fixed for the whole episode, so a rollout
+only ever shows one dish. To rotate through dishes, enable the queue:
+`enable_order_queue=True, order_queue_mode="alternating"` cycles through *every*
+orderable dish (`order_generation_rate=1.0` + `order_expiration_time=0` keeps the
+queue full and penalty-free). What is orderable is derived from the layout:
+
+- a layout listing **several** `possible_recipes` (the prep kitchens) orders
+  exactly those, so a 3-recipe kitchen rotates dish 1 → 2 → 3 → 1 …
+- a layout pinning **one** recipe but stocking several ingredient piles
+  (`around_the_island`, the conveyor maps) keeps the legacy behaviour: one
+  single-ingredient soup per pile, capped at the onion/tomato pair.
+
+`env.order_recipes` shows the resolved list. Alternating needs at least two
+orderable dishes.
+
+**Dish washing** (opt-in via `enable_dish_washing=True`): by default the plate
+pile is infinite and `S`/`D` tiles collapse into ordinary counters, so a layout
+behaves and observes exactly as it did before the feature existed. When enabled
+the kitchen owns exactly `num_plates` plates and they cycle:
+
+```
+plate pile --take--> clean plate --serve at goal--> dirty pile
+dirty pile --take--> dirty plate --sink--> clean plate (--> use, or stack back)
+```
+
+| Tile | Empty-handed interact | Holding |
+|------|----------------------|---------|
+| `B` plate pile | take a clean plate (nothing if the stack is empty) | clean plate → put it back on the stack |
+| `D` dirty pile | take a dirty plate (nothing if empty) | – |
+| `S` sink | – | dirty plate → becomes clean |
+
+A dirty plate is `PLATE \| DIRTY`, a distinct encoding from a clean plate, so it
+can never scoop soup from a pot. **Plates are conserved**: the clean stack, the
+dirty pile, every inventory and every plate on the grid always sum to
+`num_plates`, and the dirty count starts at 0. Running out of clean plates is
+therefore recoverable only by washing, which is what forces the division of
+labour. Layouts: `dish_washing_room`, `dish_washing_kitchen`,
+`dish_washing_handoff` and `prep_dish_kitchen` (prep chains + washing); renders
+in `docs/imgs/overcooked_v3_dish_washing/`. Enabling it adds 7 observation
+layers (sink, dirty pile, a plate-count layer, and a dirty-plate bit in each of
+the 4 item-encoding blocks).
 
 **Adding a new layout:**
 ```python

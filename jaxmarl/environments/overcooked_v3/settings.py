@@ -1,9 +1,21 @@
 """Configuration settings for Overcooked V3."""
 
-# Pot timing (matching CoGrid defaults)
+# Pot timing.
 POT_COOK_TIME = 90        # Steps until cooked/ready (CoGrid: cooking_time=90)
 POT_COOK_TIME_RANGE = ()  # Optional inclusive [min, max] range for random ready times
 POT_BURN_TIME = 60        # Steps in burning window before burned (CoGrid: burning_time=60)
+
+# Prep station timing.
+CHOP_STAGES = 3           # Interacts needed on a cutting board to finish chopping
+GRILL_COOK_TIME = 15      # Steps for a raw item on the grill to finish grilling
+GRILL_BURN_TIME = 30      # Grilled item burns after this many ready steps (0 = never)
+BLEND_TIME = 10           # Steps a started blender needs to finish
+
+# Dish washing. Only used when the env runs with dish washing enabled; otherwise
+# the plate pile is infinite and no plate is ever consumed.
+DEFAULT_NUM_PLATES = 3    # Clean plates the kitchen starts with
+# Pot timing (matching CoGrid defaults)
+
 
 # Prep station timing
 CHOP_STAGES = 3
@@ -16,7 +28,7 @@ DEFAULT_NUM_PLATES = 3
 
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
-BURN_PENALTY = -5.0       # Penalty when pot burns
+BURN_PENALTY = -5.0       # Penalty when a cooked pot burns before pickup
 ORDER_EXPIRED_PENALTY = -10.0  # Penalty when order expires
 
 # Order queue defaults

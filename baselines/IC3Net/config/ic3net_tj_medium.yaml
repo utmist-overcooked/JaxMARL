@@ -1,0 +1,40 @@
+# IC3Net training configuration for TrafficJunction (Medium)
+ENV_NAME: "traffic_junction_grid"
+ENV_KWARGS:
+  num_agents: 10
+  dim: 14
+  vision: 0
+  max_steps: 40
+  difficulty: "medium"
+  add_rate: 0.05
+
+BASELINE: "ic3net"
+HIDDEN_DIM: 128
+RECURRENT: true
+COMM_PASSES: 1
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: true
+DETACH_GAP: 10
+
+TOTAL_TIMESTEPS: 12_800_000
+NUM_ENVS: 16
+NUM_STEPS: 40
+GAMMA: 1.0
+NORMALIZE_ADVANTAGES: false
+
+LR: 0.001
+RMSPROP_ALPHA: 0.97
+RMSPROP_EPS: 1e-6
+MAX_GRAD_NORM: 0.5
+VALUE_COEFF: 0.01
+ENTROPY_COEFF: 0.0
+
+WANDB_MODE: "disabled"
+WANDB_PROJECT: "jaxmarl-ic3net"
+WANDB_NAME: "ic3net_tj_medium"
+SAVE_PATH: "checkpoints/ic3net_tj_medium"
+LOG_EVERY: 100
+
+SEED: 42
+
