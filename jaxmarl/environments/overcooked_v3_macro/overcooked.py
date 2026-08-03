@@ -118,6 +118,8 @@ class State:
     terminal: bool
     recipe: int
     new_correct_delivery: bool
+    plate_stack_count: chex.Array
+    dirty_pile_count: chex.Array
 
     current_macro_actions: chex.Array
     macro_action_done: chex.Array
@@ -313,6 +315,8 @@ class OvercookedV3Macro(OvercookedV3):
             terminal=state.terminal,
             recipe=state.recipe,
             new_correct_delivery=state.new_correct_delivery,
+            plate_stack_count=state.plate_stack_count,
+            dirty_pile_count=state.dirty_pile_count,
             current_macro_actions=jnp.full(
                 (self.num_agents,), MacroActions.wait, dtype=jnp.int32
             ),

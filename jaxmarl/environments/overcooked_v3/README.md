@@ -78,7 +78,7 @@ All tunable parameters with defaults:
 | `SHAPED_REWARDS` | dict | Intermediate rewards for useful actions |
 | `MAX_POTS` | 4 | Maximum pots tracked (fixed array size) |
 | `MAX_ITEM_CONVEYORS` | 16 | Maximum item conveyor cells |
-| `MAX_PLAYER_CONVEYORS` | 8 | Maximum player conveyor cells |
+| `MAX_PLAYER_CONVEYORS` | 16 | Maximum player conveyor cells |
 
 **Important:** `MAX_*` constants define fixed array sizes for JIT compatibility. Increase these if you need more objects.
 
@@ -215,6 +215,19 @@ labour. Layouts: `dish_washing_room`, `dish_washing_kitchen`,
 in `docs/imgs/overcooked_v3_dish_washing/`. Enabling it adds 7 observation
 layers (sink, dirty pile, a plate-count layer, and a dirty-plate bit in each of
 the 4 item-encoding blocks).
+
+**Procedural generation.** The JSON layout generator supports the prep and
+dish-washing tiles with the same boundary/interior/anywhere placement and
+single-region/complete-each/shared workflow modes as the original stations.
+Configure `cutting_boards`, `grills`, `blenders`, `sinks`, and
+`dirty_plate_piles` alongside the existing station counts. Processed recipes
+use indices `5` (raw pile `2` + `C`), `6` (raw pile `3` + `G`), and `7` (raw
+pile `4` + `M`). Sinks and dirty-plate piles must either both be absent or both
+have positive counts. Generated layouts validate source piles, required prep
+stations, workstation reachability, region-local or shared-counter workflow
+completion, and dish-cycle reachability. See
+[`docs/Environments/overcooked_v3_layout_generation.md`](../../../docs/Environments/overcooked_v3_layout_generation.md)
+for the full JSON schema and a combined prep/dish example.
 
 **Adding a new layout:**
 ```python

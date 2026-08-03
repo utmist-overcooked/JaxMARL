@@ -20,10 +20,20 @@ class OvercookedV3Config:
     pot_cook_time: int
     pot_cook_time_range: Tuple[int, ...]
     pot_burn_time: int
+    chop_stages: int
+    grill_cook_time: int
+    grill_burn_time: int
+    blend_time: int
+    has_prep_stations: bool
+    enable_dish_washing: bool
+    num_plates: int
     enable_order_queue: bool
     max_orders: int
     order_generation_rate: float
     order_expiration_time: int
+    order_queue_mode: str
+    order_recipe_encodings: Any
+    num_order_types: int
     enable_item_conveyors: bool
     enable_player_conveyors: bool
     enable_moving_walls: bool

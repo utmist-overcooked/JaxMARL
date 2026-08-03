@@ -1,10 +1,6 @@
 
-docs/
-scripts/
-
 # Byte-compiled / optimized / DLL files
 
-**pycache**/
 __pycache__/
 *.py[cod]
 *$py.class

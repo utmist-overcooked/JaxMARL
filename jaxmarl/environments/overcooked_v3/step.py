@@ -10,6 +10,7 @@ from jax import lax
 from jaxmarl.environments.overcooked_v3.agent_step import run_agent_action_phase
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.observations import get_obs
+from jaxmarl.environments.overcooked_v3.settings import EVENT_NAMES
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.barriers import (
     update_barrier_timers,
@@ -32,7 +33,7 @@ def step_overcooked_v3(
     agent_actions = translate_action_dict_to_ordered_action_array(actions, config)
     agent_key, order_key = partition_step_key(key, config)
 
-    state, reward, shaped_rewards = run_agent_action_phase(
+    state, reward, shaped_rewards, event_metrics = run_agent_action_phase(
         agent_key, state, agent_actions, config
     )
     state = advance_dynamic_environment_systems(state, config)
@@ -41,7 +42,9 @@ def step_overcooked_v3(
     )
     state = advance_time_and_update_terminal_flag(state, config)
 
-    return build_step_env_return_values(state, reward, shaped_rewards, config)
+    return build_step_env_return_values(
+        state, reward, shaped_rewards, event_metrics, config
+    )
 
 def translate_action_dict_to_ordered_action_array(
     actions: Dict[str, chex.Array], config: OvercookedV3Config
@@ -105,6 +108,7 @@ def build_step_env_return_values(
     state: State,
     reward: float,
     shaped_rewards: chex.Array,
+    event_metrics: chex.Array,
     config: OvercookedV3Config,
 ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
     """Build stopped-gradient observations, state, rewards, dones, and info."""
@@ -118,12 +122,16 @@ def build_step_env_return_values(
     dones = {f"agent_{i}": done for i in range(config.num_agents)}
     dones["__all__"] = done
 
+    info = {"shaped_reward": shaped_rewards_dict}
+    for event_idx, event_name in enumerate(EVENT_NAMES):
+        info[f"event/{event_name}"] = event_metrics[:, event_idx]
+    info["delivery"] = event_metrics[:, EVENT_NAMES.index("delivery")]
     return (
         lax.stop_gradient(obs),
         lax.stop_gradient(state),
         rewards,
         dones,
-        {"shaped_reward": shaped_rewards_dict},
+        info,
     )
 
 def is_terminal(state: State, config: OvercookedV3Config) -> bool:

@@ -83,3 +83,7 @@ class State:
 
     # Delivery tracking
     new_correct_delivery: bool = False
+
+    # Finite plate supply (unused and zero when dish washing is disabled).
+    plate_stack_count: chex.Array = 0
+    dirty_pile_count: chex.Array = 0

@@ -1,10 +1,13 @@
 """Tests for Layout utility methods."""
 
+import jax
 import numpy as np
 import pytest
 from jaxmarl.environments.overcooked_v3.common import (
+    Actions,
     ButtonAction,
     Direction,
+    Position,
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.layouts import (
@@ -115,6 +118,79 @@ class TestGetInfo:
         info = layout.get_info()
 
         assert info["num_player_conveyors"] > 0
+
+    def test_everything_kitchen_matches_editor_layout(self):
+        """The visual-editor transcription parses and resets without truncation."""
+        layout = overcooked_v3_layouts["everything_kitchen"]
+        info = layout.get_info()
+
+        assert info["dimensions"] == (10, 10)
+        assert info["num_item_conveyors"] == 6
+        assert info["num_player_conveyors"] == 11
+        assert len(layout.barrier_info) == 2
+        assert len(layout.moving_wall_info) == 4
+        assert all(wall[3] for wall in layout.moving_wall_info)
+        assert len(layout.button_info) == 2
+        assert len(layout.pressure_plate_info) == 2
+        assert layout.button_info[0][2:] == (
+            (1,),
+            ButtonAction.TIMED_BARRIER,
+        )
+        assert layout.button_info[1][2:] == (
+            (0, 1, 2, 3),
+            ButtonAction.TOGGLE_DIRECTION,
+        )
+        assert layout.static_objects[0, 3] == StaticObject.CUTTING_BOARD
+        assert layout.static_objects[2, 1] == StaticObject.GRILL
+        assert layout.static_objects[2, 2] == StaticObject.BLENDER
+        assert layout.static_objects[2, 3] == StaticObject.SINK
+        assert layout.static_objects[2, 4] == StaticObject.DIRTY_PLATE_PILE
+
+        env = OvercookedV3(
+            layout="everything_kitchen",
+            enable_dish_washing=True,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        assert int(state.item_conveyor_active_mask.sum()) == 6
+        assert int(state.player_conveyor_active_mask.sum()) == 11
+        assert int(state.barrier_active_mask.sum()) == 2
+        assert int(state.moving_wall_active_mask.sum()) == 4
+        assert np.all(np.asarray(state.moving_wall_bounce)[:4])
+        assert np.array_equal(
+            np.asarray(state.moving_wall_directions)[:4],
+            np.array(
+                [Direction.DOWN, Direction.UP, Direction.DOWN, Direction.UP]
+            ),
+        )
+
+        # Press the lower button from the tile directly above it.
+        state = state.replace(
+            agents=state.agents.replace(
+                pos=Position(
+                    x=state.agents.pos.x.at[0].set(1),
+                    y=state.agents.pos.y.at[0].set(7),
+                ),
+                dir=state.agents.dir.at[0].set(Direction.DOWN),
+            )
+        )
+        _, toggled_state, _, _, _ = env.step_env(
+            jax.random.PRNGKey(1),
+            state,
+            {
+                "agent_0": int(Actions.interact),
+                "agent_1": int(Actions.stay),
+            },
+        )
+
+        # Walls 0 and 3 immediately hit solid rows and bounce once more; walls
+        # 1 and 2 retain the directions selected by the button.
+        assert np.array_equal(
+            np.asarray(toggled_state.moving_wall_directions)[:4],
+            np.array(
+                [Direction.DOWN, Direction.DOWN, Direction.UP, Direction.UP]
+            ),
+        )
 
 
 class TestValidate:

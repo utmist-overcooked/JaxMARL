@@ -9,6 +9,10 @@ Only differences:
 """
 
 import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 import copy
 import jax
 import jax.numpy as jnp
@@ -32,7 +36,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     SHAPED_REWARDS,
 )
 from jaxmarl.wrappers.baselines import LogWrapper
-from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
+from jaxmarl.viz.overcooked_v3_visualizer import HAS_IMAGEIO, OvercookedV3Visualizer
 import hydra
 from omegaconf import OmegaConf
 import wandb
@@ -827,14 +831,14 @@ def main(config):
             train_jit = jax.jit(train_fn)
             out = jax.block_until_ready(jax.vmap(train_jit)(rngs))
 
-            monitor.log("Training finished; saving checkpoint and GIF.")
+            monitor.log("Training finished; saving configured outputs.")
             train_state = jax.tree.map(lambda x: x[0], out["runner_state"][0])
 
             # The checkpoint stores only model params. To resume training exactly
             # we would also need optimizer/env state; this file is sufficient for
             # inference and warm-starting a new run.
             save_path = config.get("SAVE_CHECKPOINT_PATH") or os.path.join(
-                "/workspace/JaxMARL/checkpoints",
+                "checkpoints",
                 f'ippo_cnn_v3_{config["ENV_KWARGS"]["layout"]}',
             )
             model_path = _save_model_params(train_state.params, save_path)
@@ -842,19 +846,24 @@ def main(config):
                 completed_env_steps = config["NUM_UPDATES"] * config["NUM_STEPS"] * config["NUM_ENVS"]
                 wandb.log({"saved_model_path": model_path}, step=int(completed_env_steps))
 
-            # Generate one rollout from the saved policy and animate it. This is
-            # the GIF we inspect after training to see what behavior emerged.
-            state_seq_list = get_rollout(train_state.params, config)
-            state_seq = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq_list)
-
             gif_path = config.get("SAVE_GIF_PATH") or os.path.join(
                 os.getcwd(),
                 f'overcooked_v3_{config["ENV_KWARGS"]["layout"]}_seed{config["SEED"]}.gif',
             )
-            env_viz = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
-            viz = OvercookedV3Visualizer(env_viz)
-            viz.animate(state_seq, filename=gif_path)
-            print(f"** GIF saved to: {gif_path} **", flush=True)
+            if HAS_IMAGEIO:
+                # Generate one rollout from the saved policy and animate it. This is
+                # the GIF we inspect after training to see what behavior emerged.
+                state_seq_list = get_rollout(train_state.params, config)
+                state_seq = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq_list)
+                env_viz = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
+                viz = OvercookedV3Visualizer(env_viz)
+                viz.animate(state_seq, filename=gif_path)
+                print(f"** GIF saved to: {gif_path} **", flush=True)
+            else:
+                print(
+                    "Skipping GIF export because imageio is not installed.",
+                    flush=True,
+                )
     finally:
         _ACTIVE_MONITOR = None
         wandb.finish()

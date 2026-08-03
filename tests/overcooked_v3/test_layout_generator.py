@@ -3,6 +3,7 @@ import random
 from collections import deque
 from pathlib import Path
 
+import jax
 import pytest
 
 import scripts.generate_overcooked_v3_layouts as layout_generator
@@ -80,7 +81,7 @@ def _accessible_symbols(rows, component):
             (row, col + 1),
         ):
             symbol = rows[station_row][station_col]
-            if symbol in set("012PBX"):
+            if symbol in set("01234PBXCGMSD"):
                 symbols.add(symbol)
     return symbols
 
@@ -258,6 +259,176 @@ def test_shared_workflow_constructs_two_regions_with_counter_handoff():
                 handoff_counters.append((row, col))
 
     assert handoff_counters
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_generator_places_all_new_workstations_and_runs_combined_environment():
+    config = validate_config(
+        _config(
+            count=1,
+            width=12,
+            height=10,
+            ingredient_piles=[0, 0, 1, 1, 1],
+            possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+            cutting_boards=1,
+            grills=1,
+            blenders=1,
+            sinks=1,
+            dirty_plate_piles=1,
+            object_placement="interior",
+            counter_density=0.1,
+        )["generator"]
+    )
+
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows = grid.splitlines()
+
+    for symbol in "234CGMSD":
+        assert grid.count(symbol) == 1
+    for row, line in enumerate(rows):
+        for col, symbol in enumerate(line):
+            if symbol in set("234CGMSD"):
+                assert 0 < row < len(rows) - 1
+                assert 0 < col < len(line) - 1
+
+    assert validate_generated_layout(layout) == (True, [])
+    env = OvercookedV3(layout=layout, enable_dish_washing=True)
+    obs, state = env.reset(jax.random.PRNGKey(0))
+    assert set(obs) == set(env.agents)
+    assert int(state.plate_stack_count) == env.num_plates
+
+
+def test_generator_auto_recipes_use_processed_ingredients_when_station_exists():
+    config = validate_config(
+        _config(
+            ingredient_piles=[0, 0, 1, 1, 1],
+            possible_recipes=None,
+            cutting_boards=1,
+            grills=1,
+            blenders=1,
+        )["generator"]
+    )
+
+    assert config["possible_recipes"] == [
+        [5, 5, 5],
+        [6, 6, 6],
+        [7, 7, 7],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ingredient_piles", "recipe", "setting"),
+    [
+        ([0, 0, 1], [5, 5, 5], "cutting_boards"),
+        ([0, 0, 0, 1], [6, 6, 6], "grills"),
+        ([0, 0, 0, 0, 1], [7, 7, 7], "blenders"),
+    ],
+)
+def test_processed_recipe_requires_matching_prep_station(
+    ingredient_piles,
+    recipe,
+    setting,
+):
+    with pytest.raises(ValueError, match=setting):
+        validate_config(
+            _config(
+                ingredient_piles=ingredient_piles,
+                possible_recipes=[recipe],
+            )["generator"]
+        )
+
+
+@pytest.mark.parametrize(
+    ("sinks", "dirty_plate_piles"),
+    [(1, 0), (0, 1)],
+)
+def test_generator_requires_sink_and_dirty_pile_together(
+    sinks,
+    dirty_plate_piles,
+):
+    with pytest.raises(ValueError, match="must either both be 0 or both be positive"):
+        validate_config(
+            _config(
+                sinks=sinks,
+                dirty_plate_piles=dirty_plate_piles,
+            )["generator"]
+        )
+
+
+def test_complete_each_requires_prep_and_dish_workstations_per_region():
+    base = _config(
+        num_regions=2,
+        workflow_mode="complete_each",
+        ingredient_piles=[0, 0, 2],
+        possible_recipes=[[5, 5, 5]],
+        cutting_boards=1,
+        pots=2,
+        plate_piles=2,
+        depots=2,
+        sinks=2,
+        dirty_plate_piles=2,
+    )["generator"]
+    with pytest.raises(ValueError, match="prep station"):
+        validate_config(base)
+
+    base["cutting_boards"] = 2
+    base["sinks"] = 1
+    with pytest.raises(ValueError, match="generator.sinks >= num_regions"):
+        validate_config(base)
+
+
+def test_complete_each_places_full_prep_and_dish_workflow_in_every_region():
+    config = validate_config(
+        _config(
+            count=1,
+            width=14,
+            height=10,
+            ingredient_piles=[0, 0, 2],
+            possible_recipes=[[5, 5, 5]],
+            cutting_boards=2,
+            pots=2,
+            plate_piles=2,
+            depots=2,
+            sinks=2,
+            dirty_plate_piles=2,
+            counter_density=0.4,
+            num_regions=2,
+            workflow_mode="complete_each",
+        )["generator"]
+    )
+
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows, components = _floor_components(grid)
+
+    assert len(components) == 2
+    for component in components:
+        assert set("2CPBXSD") <= _accessible_symbols(rows, component)
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_shared_workflow_supports_prep_and_dish_washing_stages():
+    config = validate_config(
+        _config(
+            count=1,
+            width=12,
+            height=10,
+            ingredient_piles=[0, 0, 1],
+            possible_recipes=[[5, 5, 5]],
+            cutting_boards=1,
+            sinks=1,
+            dirty_plate_piles=1,
+            counter_density=0.4,
+            num_regions=2,
+            workflow_mode="shared",
+        )["generator"]
+    )
+
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+
+    assert grid.count("C") == 1
+    assert grid.count("S") == 1
+    assert grid.count("D") == 1
+    assert _shared_tiles(grid)
     assert validate_generated_layout(layout) == (True, [])
 
 

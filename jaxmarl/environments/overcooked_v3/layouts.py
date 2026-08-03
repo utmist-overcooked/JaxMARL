@@ -339,6 +339,22 @@ WB  # AXW
 WWWWWWWWW
 """
 
+# 10x10 kitchen transcribed from the visual editor. The upper pressure plates
+# open barrier 0, the upper button temporarily opens barrier 1, and the lower
+# button reverses all four diagonal north/south moving walls.
+everything_kitchen = """
+WBPCRWWWWW
+XAA _#  _W
+WGMSDWW!#W
+W >>>>>  W
+W WWWWW }W
+W {}s   }W
+W {} n  }W
+1  {  s }W
+W!0{   n W
+WWWWWWWWWW
+"""
+
 twin_movement = """
 WWWWWWWWWWPWWWW
 WWWWWWWWWW#WWWW
@@ -1197,12 +1213,14 @@ class Layout:
         """Validate reachability of floor tiles and the full cooking workflow.
 
         Every walkable tile must be reachable from at least one agent spawn.
-        Every generated-layout workstation (ingredients, pots, plates, and
-        delivery zones) must be interactable from a reachable tile. Finally,
-        every configured recipe must be completable inside one agent-connected
-        region or a group of regions joined by shared handoff counters.
+        Every generated-layout workstation (ingredients, prep stations, pots,
+        plates, delivery zones, sinks, and dirty-plate piles) must be
+        interactable from a reachable tile. Finally, every configured recipe
+        must be completable inside one agent-connected region or a group of
+        regions joined by shared handoff counters.
         """
         errors = []
+        info = self.get_info()
         component_by_position = {}
         next_component = 0
 
@@ -1257,6 +1275,11 @@ class Layout:
             StaticObject.POT: "pot",
             StaticObject.PLATE_PILE: "plate pile",
             StaticObject.GOAL: "delivery zone",
+            StaticObject.CUTTING_BOARD: "cutting board",
+            StaticObject.GRILL: "grill",
+            StaticObject.BLENDER: "blender",
+            StaticObject.SINK: "sink",
+            StaticObject.DIRTY_PLATE_PILE: "dirty plate pile",
         }
         for y in range(self.height):
             for x in range(self.width):
@@ -1325,12 +1348,24 @@ class Layout:
             ("object", int(StaticObject.PLATE_PILE)),
             ("object", int(StaticObject.GOAL)),
         }
+        if info["num_sinks"] > 0 or info["num_dirty_plate_piles"] > 0:
+            required_objects |= {
+                ("object", int(StaticObject.SINK)),
+                ("object", int(StaticObject.DIRTY_PLATE_PILE)),
+            }
         for recipe in self.possible_recipes or []:
             if not isinstance(recipe, list) or len(recipe) != 3:
                 continue
-            required_stations = required_objects | {
-                ("ingredient", int(ingredient_idx)) for ingredient_idx in recipe
-            }
+            required_stations = set(required_objects)
+            for ingredient_idx in set(recipe):
+                if self._is_processed_ingredient(ingredient_idx):
+                    raw_idx = ingredient_idx - PREP_PROCESSED_OFFSET
+                    required_stations.add(("ingredient", int(raw_idx)))
+                    required_stations.add(
+                        ("object", int(PREP_STATION_FOR_RAW[raw_idx]))
+                    )
+                else:
+                    required_stations.add(("ingredient", int(ingredient_idx)))
             feasible_components = None
             for station in required_stations:
                 components = station_workflow_groups.get(station, set())
@@ -1948,6 +1983,21 @@ overcooked_v3_layouts = {
             ((6, 7, 8, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[True] * 12,
+    ),
+
+    "everything_kitchen": Layout.from_string(
+        everything_kitchen,
+        possible_recipes=[[0, 0, 0]],
+        moving_wall_bounce=[True] * 4,
+        pressure_plate_config=[
+            ((0,), ButtonAction.TOGGLE_BARRIER),
+            ((0,), ButtonAction.TOGGLE_BARRIER),
+        ],
+        button_config=[
+            ((1,), ButtonAction.TIMED_BARRIER),
+            ((0, 1, 2, 3), ButtonAction.TOGGLE_DIRECTION),
+        ],
+        barrier_config=[True] * 2,
     ),
 
     "twin_movement": Layout.from_string(

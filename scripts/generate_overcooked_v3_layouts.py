@@ -17,7 +17,13 @@ import random
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from jaxmarl.environments.overcooked_v3.common import MAX_INGREDIENTS
+from jaxmarl.environments.overcooked_v3.common import (
+    NUM_PREP_CHAINS,
+    PREP_PROCESSED_OFFSET,
+    PREP_RAW_START,
+    PREP_STATION_FOR_RAW,
+    StaticObject,
+)
 from jaxmarl.environments.overcooked_v3.layouts import (
     Layout,
     validate_generated_layout,
@@ -36,6 +42,11 @@ DEFAULTS = {
     "pots": 1,
     "plate_piles": 1,
     "depots": 1,
+    "cutting_boards": 0,
+    "grills": 0,
+    "blenders": 0,
+    "sinks": 0,
+    "dirty_plate_piles": 0,
     "object_placement": "boundary",
     "counter_density": 0.1,
     "num_regions": 1,
@@ -49,6 +60,21 @@ DEFAULTS = {
 WORKFLOW_MODES = {"complete_each", "single_region", "shared"}
 NEIGHBOUR_DELTAS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 
+PREP_CONFIG_FOR_STATION = {
+    StaticObject.CUTTING_BOARD: ("cutting_boards", "C"),
+    StaticObject.GRILL: ("grills", "G"),
+    StaticObject.BLENDER: ("blenders", "M"),
+}
+PREP_CONFIG_FOR_RAW = {
+    raw_idx: PREP_CONFIG_FOR_STATION[station]
+    for raw_idx, station in PREP_STATION_FOR_RAW.items()
+}
+DISH_CONFIG_SYMBOLS = {
+    "sinks": "S",
+    "dirty_plate_piles": "D",
+}
+MAX_RAW_INGREDIENT_TYPES = PREP_RAW_START + NUM_PREP_CHAINS
+
 
 class CandidateGenerationError(RuntimeError):
     """A constructive candidate could not satisfy all requested constraints."""
@@ -61,13 +87,45 @@ def _integer(config: dict[str, Any], key: str, minimum: int) -> int:
     return value
 
 
-def _validate_recipes(recipes: Any, ingredient_counts: list[int]) -> list[list[int]]:
+def _processed_raw_index(ingredient_idx: int) -> Optional[int]:
+    processed_start = PREP_RAW_START + PREP_PROCESSED_OFFSET
+    if processed_start <= ingredient_idx < processed_start + NUM_PREP_CHAINS:
+        return ingredient_idx - PREP_PROCESSED_OFFSET
+    return None
+
+
+def _recipe_workstation_requirements(
+    recipes: list[list[int]],
+) -> tuple[set[int], set[str]]:
+    required_piles = set()
+    required_prep_symbols = set()
+    for recipe in recipes:
+        for ingredient_idx in recipe:
+            raw_idx = _processed_raw_index(ingredient_idx)
+            if raw_idx is None:
+                required_piles.add(ingredient_idx)
+            else:
+                required_piles.add(raw_idx)
+                required_prep_symbols.add(PREP_CONFIG_FOR_RAW[raw_idx][1])
+    return required_piles, required_prep_symbols
+
+
+def _validate_recipes(
+    recipes: Any,
+    ingredient_counts: list[int],
+    config: dict[str, Any],
+) -> list[list[int]]:
     if recipes is None:
-        return [
-            [ingredient_idx] * 3
-            for ingredient_idx, count in enumerate(ingredient_counts)
-            if count > 0
-        ]
+        generated = []
+        for ingredient_idx, count in enumerate(ingredient_counts):
+            if count == 0:
+                continue
+            recipe_idx = ingredient_idx
+            prep_config = PREP_CONFIG_FOR_RAW.get(ingredient_idx)
+            if prep_config is not None and config[prep_config[0]] > 0:
+                recipe_idx += PREP_PROCESSED_OFFSET
+            generated.append([recipe_idx] * 3)
+        return generated
     if not isinstance(recipes, list) or not recipes:
         raise ValueError("generator.possible_recipes must be a non-empty list")
 
@@ -88,15 +146,26 @@ def _validate_recipes(recipes: Any, ingredient_counts: list[int]) -> list[list[i
                 "currently supports same-ingredient soups"
             )
         ingredient_idx = recipe[0]
+        raw_idx = _processed_raw_index(ingredient_idx)
+        pile_idx = ingredient_idx if raw_idx is None else raw_idx
         if (
-            ingredient_idx < 0
-            or ingredient_idx >= len(ingredient_counts)
-            or ingredient_counts[ingredient_idx] == 0
+            pile_idx < 0
+            or pile_idx >= len(ingredient_counts)
+            or ingredient_counts[pile_idx] == 0
         ):
             raise ValueError(
                 f"generator.possible_recipes[{index}] references ingredient "
-                f"{ingredient_idx}, which has no pile"
+                f"{ingredient_idx}, which has no source pile"
             )
+        if raw_idx is not None:
+            setting, _ = PREP_CONFIG_FOR_RAW[raw_idx]
+            if config[setting] == 0:
+                station = PREP_STATION_FOR_RAW[raw_idx].name
+                raise ValueError(
+                    f"generator.possible_recipes[{index}] references processed "
+                    f"ingredient {ingredient_idx}, but generator.{setting} is 0 "
+                    f"({station} required)"
+                )
         validated.append(list(recipe))
     return validated
 
@@ -119,6 +188,14 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     _integer(config, "pots", 1)
     _integer(config, "plate_piles", 1)
     _integer(config, "depots", 1)
+    for key in (
+        "cutting_boards",
+        "grills",
+        "blenders",
+        "sinks",
+        "dirty_plate_piles",
+    ):
+        _integer(config, key, 0)
     num_regions = _integer(config, "num_regions", 1)
     _integer(config, "max_attempts", 1)
     num_shared_tiles = config["num_shared_tiles"]
@@ -172,7 +249,7 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     ingredient_counts = config["ingredient_piles"]
     if (
         not isinstance(ingredient_counts, list)
-        or not 1 <= len(ingredient_counts) <= MAX_INGREDIENTS
+        or not 1 <= len(ingredient_counts) <= MAX_RAW_INGREDIENT_TYPES
         or any(
             isinstance(count, bool) or not isinstance(count, int) or count < 0
             for count in ingredient_counts
@@ -181,13 +258,23 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     ):
         raise ValueError(
             "generator.ingredient_piles must be a list of non-negative pile "
-            f"counts for 1-{MAX_INGREDIENTS} ingredients, with at least one pile"
+            f"counts for 1-{MAX_RAW_INGREDIENT_TYPES} raw ingredients, with "
+            "at least one pile"
         )
     config["ingredient_piles"] = list(ingredient_counts)
     config["possible_recipes"] = _validate_recipes(
         config.get("possible_recipes"),
         ingredient_counts,
+        config,
     )
+
+    has_sinks = config["sinks"] > 0
+    has_dirty_piles = config["dirty_plate_piles"] > 0
+    if has_sinks != has_dirty_piles:
+        raise ValueError(
+            "generator.sinks and generator.dirty_plate_piles must either both "
+            "be 0 or both be positive"
+        )
 
     density = config["counter_density"]
     if isinstance(density, bool) or not isinstance(density, (int, float)):
@@ -216,11 +303,9 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
         )
 
     if config["workflow_mode"] == "complete_each":
-        required_ingredients = {
-            ingredient_idx
-            for recipe in config["possible_recipes"]
-            for ingredient_idx in recipe
-        }
+        required_ingredients, required_prep_symbols = (
+            _recipe_workstation_requirements(config["possible_recipes"])
+        )
         insufficient = [
             str(ingredient_idx)
             for ingredient_idx in sorted(required_ingredients)
@@ -231,20 +316,37 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
                 "generator.workflow_mode 'complete_each' needs at least "
                 f"num_regions piles for recipe ingredient(s): {', '.join(insufficient)}"
             )
+        prep_counts_by_symbol = {
+            symbol: config[setting]
+            for setting, symbol in PREP_CONFIG_FOR_STATION.values()
+        }
+        insufficient_prep = sorted(
+            symbol
+            for symbol in required_prep_symbols
+            if prep_counts_by_symbol[symbol] < num_regions
+        )
+        if insufficient_prep:
+            raise ValueError(
+                "generator.workflow_mode 'complete_each' needs at least "
+                "num_regions copies of required prep station(s): "
+                + ", ".join(insufficient_prep)
+            )
         for key in ("pots", "plate_piles", "depots"):
             if config[key] < num_regions:
                 raise ValueError(
                     "generator.workflow_mode 'complete_each' requires "
                     f"generator.{key} >= num_regions"
                 )
+        if has_sinks:
+            for key in ("sinks", "dirty_plate_piles"):
+                if config[key] < num_regions:
+                    raise ValueError(
+                        "generator.workflow_mode 'complete_each' requires "
+                        f"generator.{key} >= num_regions when dish washing "
+                        "tiles are configured"
+                    )
 
-    workstation_count = (
-        sum(ingredient_counts)
-        + config["pots"]
-        + config["plate_piles"]
-        + config["depots"]
-        + (len(config["possible_recipes"]) > 1)
-    )
+    workstation_count = len(_station_symbols(config))
     boundary_slots = 2 * (width - 2) + 2 * (height - 2)
     max_interior_workstations = interior_tiles - counter_count - 2
     placement = config["object_placement"]
@@ -294,9 +396,13 @@ def _station_symbols(config: dict[str, Any]) -> list[str]:
     stations = []
     for ingredient_idx, pile_count in enumerate(config["ingredient_piles"]):
         stations.extend([str(ingredient_idx)] * pile_count)
+    for setting, symbol in PREP_CONFIG_FOR_STATION.values():
+        stations.extend([symbol] * config[setting])
     stations.extend(["P"] * config["pots"])
     stations.extend(["B"] * config["plate_piles"])
     stations.extend(["X"] * config["depots"])
+    for setting, symbol in DISH_CONFIG_SYMBOLS.items():
+        stations.extend([symbol] * config[setting])
     if len(config["possible_recipes"]) > 1:
         stations.append("R")
     return stations
@@ -323,7 +429,6 @@ def _allocate_stations_to_regions(
         # from accidentally becoming independently complete.
         first_region = rng.randrange(2)
         second_region = 1 - first_region
-        split_after = rng.randint(1, 3)
         stages = [
             [
                 str(ingredient_idx)
@@ -332,10 +437,19 @@ def _allocate_stations_to_regions(
                 )
                 for _ in range(pile_count)
             ],
+            [
+                symbol
+                for setting, symbol in PREP_CONFIG_FOR_STATION.values()
+                for _ in range(config[setting])
+            ],
             ["P"] * config["pots"],
             ["B"] * config["plate_piles"],
             ["X"] * config["depots"],
+            ["D"] * config["dirty_plate_piles"],
+            ["S"] * config["sinks"],
         ]
+        stages = [stage for stage in stages if stage]
+        split_after = rng.randint(1, len(stages) - 1)
         for stage_idx, stage in enumerate(stages):
             target = first_region if stage_idx < split_after else second_region
             allocations[target].extend(stage)
@@ -346,16 +460,15 @@ def _allocate_stations_to_regions(
     # complete_each: reserve one complete workflow in every region, then
     # distribute duplicate/unused workstations for variety.
     remaining = stations.copy()
-    required_ingredients = sorted(
-        {
-            ingredient_idx
-            for recipe in config["possible_recipes"]
-            for ingredient_idx in recipe
-        }
+    required_ingredients, required_prep_symbols = _recipe_workstation_requirements(
+        config["possible_recipes"]
     )
     for region in range(num_regions):
-        required_symbols = [str(idx) for idx in required_ingredients]
+        required_symbols = [str(idx) for idx in sorted(required_ingredients)]
+        required_symbols.extend(sorted(required_prep_symbols))
         required_symbols.extend(["P", "B", "X"])
+        if config["sinks"] > 0:
+            required_symbols.extend(["D", "S"])
         for symbol in required_symbols:
             remaining.remove(symbol)
             allocations[region].append(symbol)

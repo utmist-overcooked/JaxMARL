@@ -29,7 +29,7 @@ from flax import serialization
 import distrax
 import jaxmarl
 from jaxmarl.wrappers.baselines import LogWrapper
-from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
+from jaxmarl.viz.overcooked_v3_visualizer import HAS_IMAGEIO, OvercookedV3Visualizer
 import hydra
 from omegaconf import OmegaConf
 import wandb
@@ -768,7 +768,9 @@ def run_wandb_sweep(base_config):
             train_state = runner_state[0]
             params = train_state.params
 
-            base_save_path = train_config.get("SAVE_PATH", "checkpoints/ippo_overcooked_v3")
+            base_save_path = (
+                train_config.get("SAVE_PATH") or "checkpoints/ippo_overcooked_v3"
+            )
             run_save_path = os.path.join(base_save_path, f"sweep_{run.id}")
             model_path = _save_model_params(params, run_save_path)
             wandb.log({"saved_model_path": model_path})
@@ -838,26 +840,35 @@ def main(config):
             train_jit = jax.jit(train_fn)
             out = jax.block_until_ready(train_jit(rng))
 
-            monitor.log("Training finished; saving checkpoint and GIF.")
+            monitor.log("Training finished; saving configured outputs.")
             runner_state = out["runner_state"]
             train_state = runner_state[0]
             params = train_state.params
-            save_path = config.get("SAVE_PATH", "checkpoints/ippo_overcooked_v3")
-            model_path = _save_model_params(params, save_path)
-            print(f"Saved model checkpoint to: {model_path}", flush=True)
-
             completed_env_steps = config["NUM_UPDATES"] * config["NUM_STEPS"] * config["NUM_ENVS"]
-            if wandb.run is not None:
-                wandb.log({"saved_model_path": model_path}, step=int(completed_env_steps))
+
+            save_path = config.get("SAVE_PATH")
+            if save_path:
+                model_path = _save_model_params(params, save_path)
+                print(f"Saved model checkpoint to: {model_path}", flush=True)
+                if wandb.run is not None:
+                    wandb.log(
+                        {"saved_model_path": model_path},
+                        step=int(completed_env_steps),
+                    )
 
             gif_path = config.get("SAVE_GIF_PATH")
-            if gif_path:
+            if gif_path and HAS_IMAGEIO:
                 state_seq_list = get_rollout(params, config)
                 state_seq = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq_list)
                 env_viz = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
                 viz = OvercookedV3Visualizer(env_viz)
                 viz.animate(state_seq, filename=gif_path)
                 print(f"Saved GIF to: {gif_path}", flush=True)
+            elif gif_path:
+                print(
+                    "Skipping GIF export because imageio is not installed.",
+                    flush=True,
+                )
     finally:
         _ACTIVE_MONITOR = None
         wandb.finish()

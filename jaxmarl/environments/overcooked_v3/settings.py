@@ -1,21 +1,9 @@
 """Configuration settings for Overcooked V3."""
 
-# Pot timing.
-POT_COOK_TIME = 90        # Steps until cooked/ready (CoGrid: cooking_time=90)
-POT_COOK_TIME_RANGE = ()  # Optional inclusive [min, max] range for random ready times
-POT_BURN_TIME = 60        # Steps in burning window before burned (CoGrid: burning_time=60)
-
-# Prep station timing.
-CHOP_STAGES = 3           # Interacts needed on a cutting board to finish chopping
-GRILL_COOK_TIME = 15      # Steps for a raw item on the grill to finish grilling
-GRILL_BURN_TIME = 30      # Grilled item burns after this many ready steps (0 = never)
-BLEND_TIME = 10           # Steps a started blender needs to finish
-
-# Dish washing. Only used when the env runs with dish washing enabled; otherwise
-# the plate pile is infinite and no plate is ever consumed.
-DEFAULT_NUM_PLATES = 3    # Clean plates the kitchen starts with
 # Pot timing (matching CoGrid defaults)
-
+POT_COOK_TIME = 90
+POT_COOK_TIME_RANGE = ()
+POT_BURN_TIME = 60
 
 # Prep station timing
 CHOP_STAGES = 3
@@ -27,9 +15,9 @@ BLEND_TIME = 10
 DEFAULT_NUM_PLATES = 3
 
 # Rewards
-DELIVERY_REWARD = 20.0    # Base reward for correct delivery
-BURN_PENALTY = -5.0       # Penalty when a cooked pot burns before pickup
-ORDER_EXPIRED_PENALTY = -10.0  # Penalty when order expires
+DELIVERY_REWARD = 20.0
+BURN_PENALTY = -5.0
+ORDER_EXPIRED_PENALTY = -10.0
 
 # Order queue defaults
 DEFAULT_ORDER_GENERATION_RATE = 0.1
@@ -57,12 +45,12 @@ EVENT_NAMES = (
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
     "INGREDIENT_PICKUP": 0.1,
-    "PLACEMENT_IN_POT": 0.1,      # Adding correct ingredient to pot
-    "SOUP_IN_DISH": 0.3,          # Picking up cooked soup with plate
-    "PLATE_PICKUP": 0.1,          # Picking up a plate when useful
+    "PLACEMENT_IN_POT": 0.1,
+    "SOUP_IN_DISH": 0.3,
+    "PLATE_PICKUP": 0.1,
     "PLATE_PICKUP_DURING_COOKING": 0.0,
     "DISH_TO_GOAL_PROGRESS": 0.0,
-    "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
+    "POT_START_COOKING": 0.2,
     "PREP_PLACEMENT": 0.2,
     "PREP_ACTION": 0.1,
     "PREP_PICKUP": 0.2,
@@ -70,22 +58,12 @@ SHAPED_REWARDS = {
     "PLATE_WASH": 0.3,
 }
 
-# Maximum number of pots to track (for fixed array sizes)
 MAX_POTS = 4
-
-# Maximum conveyor belt cells
 MAX_ITEM_CONVEYORS = 16
-MAX_PLAYER_CONVEYORS = 8
-
-# Moving walls, pressure plates and buttons
+MAX_PLAYER_CONVEYORS = 16
 MAX_MOVING_WALLS = 8
 MAX_BUTTONS = 16
 MAX_PRESSURE_PLATES = 16
-
-# Barriers
 MAX_BARRIERS = 16
-DEFAULT_BARRIER_DURATION = 5  # Default duration for timed barrier deactivation (steps)
-
-# Maximum targets a single button can control. Moving-wall buttons use moving wall
-# indexes, barrier buttons use barrier indexes.
+DEFAULT_BARRIER_DURATION = 5
 MAX_BUTTON_TARGETS = max(MAX_MOVING_WALLS, MAX_BARRIERS)

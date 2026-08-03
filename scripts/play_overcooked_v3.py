@@ -29,6 +29,7 @@ from jaxmarl.environments.overcooked_v3.layouts import (
 PLAYABLE = [
     "pressure_plate_demo",
     "pressure_gated_conveyor_access",
+    "everything_kitchen",
     "pressure_gated_circuit",
     "pressure_gated_zones",
     "twin_movement",
@@ -46,7 +47,7 @@ TILE = 48
 POT_COOK_TIME_RANGE = [15, 25]
 
 
-def build(layout_name):
+def build(layout_name, *, enable_dish_washing=False):
     """Create env + viz, auto-enabling all interactive features."""
     env = make(
         "overcooked_v3",
@@ -54,6 +55,7 @@ def build(layout_name):
         pot_cook_time=20,
         pot_cook_time_range=POT_COOK_TIME_RANGE,
         pot_burn_time=10,
+        enable_dish_washing=enable_dish_washing,
         # None => auto-enable from the layout (walls/buttons/plates).
         enable_moving_walls=None,
         enable_buttons=None,
@@ -85,6 +87,14 @@ def main():
         "--list",
         action="store_true",
         help="list all registered layouts and exit",
+    )
+    parser.add_argument(
+        "--enable-dish-washing",
+        action="store_true",
+        help=(
+            "activate finite plates, sinks, and dirty-plate piles; the selected "
+            "layout must contain both S and D"
+        ),
     )
     args = parser.parse_args()
 
@@ -138,7 +148,10 @@ def main():
 
     def load(i):
         name = layouts[i]
-        env, viz = build(name)
+        env, viz = build(
+            name,
+            enable_dish_washing=args.enable_dish_washing,
+        )
         nonlocal_key = jax.random.split(key)[1]
         obs, state = env.reset(nonlocal_key)
         screen = pygame.display.set_mode((env.width * TILE, env.height * TILE))
@@ -146,7 +159,8 @@ def main():
         print(f"\n=== Layout: {name}  ({env.width}x{env.height}, agents={len(env.agents)}) ===")
         print(f"    enable_moving_walls={env.enable_moving_walls} "
               f"enable_buttons={env.enable_buttons} "
-              f"enable_pressure_plates={env.enable_pressure_plates}")
+              f"enable_pressure_plates={env.enable_pressure_plates} "
+              f"enable_dish_washing={env.enable_dish_washing}")
         return env, viz, state, screen, name
 
     env, viz, state, screen, name = load(idx)

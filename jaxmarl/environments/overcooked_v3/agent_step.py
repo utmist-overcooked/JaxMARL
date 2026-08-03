@@ -20,6 +20,8 @@ from jaxmarl.environments.overcooked_v3.interactions import (
     sample_pot_cook_time,
 )
 from jaxmarl.environments.overcooked_v3.settings import (
+    BURN_PENALTY,
+    EVENT_NAMES,
     MAX_BARRIERS,
     MAX_BUTTONS,
     MAX_BUTTON_TARGETS,
@@ -28,6 +30,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
 )
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
+from jaxmarl.environments.overcooked_v3.systems.prep import update_prep_stations
 from jaxmarl.environments.overcooked_v3.utils import tree_select
 
 def is_agent_walkable(static_object, pos, state: State) -> chex.Array:
@@ -62,7 +65,7 @@ def run_agent_action_phase(
     state: State,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> Tuple[State, float, chex.Array]:
+) -> Tuple[State, float, chex.Array, chex.Array]:
     """Run movement, collision handling, interactions, and button effects."""
     barrier_walkable_by_pressure_plate = (
         find_barriers_opened_by_current_pressure_plate_occupants(state, config)
@@ -75,12 +78,12 @@ def run_agent_action_phase(
     )
     moved_agents = prevent_agents_from_swapping_positions(state.agents, moved_agents)
 
-    state, reward, shaped_rewards = apply_agent_interact_actions(
+    state, reward, shaped_rewards, event_metrics = apply_agent_interact_actions(
         key, state, moved_agents, actions, config
     )
     state = apply_agent_button_interactions(state, actions, config)
 
-    return state, reward, shaped_rewards
+    return state, reward, shaped_rewards, event_metrics
 
 def find_barriers_opened_by_current_pressure_plate_occupants(
     state: State, config: OvercookedV3Config
@@ -228,7 +231,7 @@ def apply_agent_interact_actions(
     moved_agents: Agent,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> Tuple[State, float, chex.Array]:
+) -> Tuple[State, float, chex.Array, chex.Array]:
     """Apply interact actions, update carried items, and advance pot timers."""
 
     def _interact_wrapper(carry, x):
@@ -242,6 +245,8 @@ def apply_agent_interact_actions(
                 reward,
                 pot_timers,
                 pot_cook_durations,
+                plate_stack,
+                dirty_pile,
                 key,
             ) = carry
 
@@ -254,7 +259,10 @@ def apply_agent_interact_actions(
                 new_correct_delivery,
                 interact_reward,
                 shaped_reward,
+                event_metrics,
                 new_pot_timers,
+                new_plate_stack,
+                new_dirty_pile,
             ) = process_interact(
                 grid,
                 agent,
@@ -265,6 +273,8 @@ def apply_agent_interact_actions(
                 state.pot_active_mask,
                 config,
                 pot_cook_time,
+                plate_stack,
+                dirty_pile,
             )
 
             pot_started = (pot_timers == 0) & (new_pot_timers > 0)
@@ -281,12 +291,21 @@ def apply_agent_interact_actions(
                 reward + interact_reward,
                 new_pot_timers,
                 new_pot_cook_durations,
+                new_plate_stack,
+                new_dirty_pile,
                 key,
             )
-            return carry, (new_agent, shaped_reward)
+            return carry, (new_agent, shaped_reward, event_metrics)
 
         return jax.lax.cond(
-            is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
+            is_interact,
+            _interact,
+            lambda c, a: (
+                c,
+                (a, 0.0, jnp.zeros((len(EVENT_NAMES),), dtype=jnp.float32)),
+            ),
+            carry,
+            agent,
         )
 
     carry = (
@@ -295,6 +314,8 @@ def apply_agent_interact_actions(
         0.0,
         state.pot_cooking_timer,
         state.pot_cook_durations,
+        state.plate_stack_count,
+        state.dirty_pile_count,
         key,
     )
     xs = (moved_agents, actions)
@@ -305,14 +326,26 @@ def apply_agent_interact_actions(
             reward,
             new_pot_timers,
             new_pot_cook_durations,
+            new_plate_stack,
+            new_dirty_pile,
             _key,
         ),
-        (new_agents, shaped_rewards),
+        (new_agents, shaped_rewards, event_metrics),
     ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
-    new_grid, new_pot_timers = update_pot_timers(
+    new_grid, new_pot_timers, burn_count = update_pot_timers(
         new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask, config
     )
+    reward = reward + burn_count * BURN_PENALTY
+    event_metrics = event_metrics.at[0, EVENT_NAMES.index("pot_burn")].set(
+        burn_count
+    )
+    if config.has_prep_stations:
+        new_grid, prep_burn_count = update_prep_stations(new_grid, config)
+        reward = reward + prep_burn_count * BURN_PENALTY
+        event_metrics = event_metrics.at[0, EVENT_NAMES.index("prep_burn")].set(
+            prep_burn_count
+        )
     new_pot_cook_durations = jnp.where(
         new_pot_timers == 0, 0, new_pot_cook_durations
     )
@@ -324,9 +357,12 @@ def apply_agent_interact_actions(
             pot_cooking_timer=new_pot_timers,
             pot_cook_durations=new_pot_cook_durations,
             new_correct_delivery=new_correct_delivery,
+            plate_stack_count=new_plate_stack,
+            dirty_pile_count=new_dirty_pile,
         ),
         reward,
         shaped_rewards,
+        event_metrics,
     )
 
 def apply_agent_button_interactions(
