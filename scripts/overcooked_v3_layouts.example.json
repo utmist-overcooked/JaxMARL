@@ -1,0 +1,23 @@
+{
+  "generator": {
+    "seed": 7,
+    "count": 1000,
+    "name_prefix": "random_kitchen",
+    "width": 20,
+    "height": 10,
+    "ingredient_piles": [2, 2],
+    "possible_recipes": [
+      [0, 0, 0],
+      [1, 1, 1]
+    ],
+    "pots": 2,
+    "plate_piles": 2,
+    "depots": 2,
+    "object_placement": "anywhere",
+    "counter_density": 0.6,
+    "num_regions": 2,
+    "workflow_mode": "complete_each",
+    "max_attempts": 100000
+  },
+  "layouts": {}
+}
