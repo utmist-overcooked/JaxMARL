@@ -986,6 +986,30 @@ class Layout:
                 f"agent; first inaccessible tile: {unreachable[0]}"
             )
 
+        pressure_plate_positions = {
+            (y, x): target_idxs
+            for y, x, target_idxs, _ in self.pressure_plate_info
+        }
+        controllable_barriers = {
+            int(target_idx)
+            for position, target_idxs in pressure_plate_positions.items()
+            if position in component_by_position
+            for target_idx in target_idxs
+        }
+        barrier_index_by_position = {
+            (y, x): index
+            for index, (y, x, _) in enumerate(self.barrier_info)
+        }
+        reachable_barrier_components = {
+            position: {
+                component_by_position[adjacent]
+                for adjacent in neighbours(*position)
+                if adjacent in component_by_position
+            }
+            for position, barrier_idx in barrier_index_by_position.items()
+            if barrier_idx in controllable_barriers
+        }
+
         station_components = {}
         station_labels = {
             StaticObject.POT: "pot",
@@ -1004,11 +1028,13 @@ class Layout:
                 else:
                     continue
 
-                components = {
-                    component_by_position[adjacent]
-                    for adjacent in neighbours(y, x)
-                    if adjacent in component_by_position
-                }
+                components = set()
+                for adjacent in neighbours(y, x):
+                    if adjacent in component_by_position:
+                        components.add(component_by_position[adjacent])
+                    components.update(
+                        reachable_barrier_components.get(adjacent, set())
+                    )
                 if not components:
                     errors.append(
                         f"{label.capitalize()} at {(y, x)} is inaccessible to both agents"
@@ -1037,7 +1063,17 @@ class Layout:
 
         for y in range(self.height):
             for x in range(self.width):
-                if self.static_objects[y, x] != StaticObject.WALL:
+                obj = self.static_objects[y, x]
+                is_handoff_counter = obj == StaticObject.WALL
+                is_pressure_controlled_barrier = (
+                    obj == StaticObject.BARRIER
+                    and barrier_index_by_position.get((y, x))
+                    in controllable_barriers
+                )
+                if not (
+                    is_handoff_counter
+                    or is_pressure_controlled_barrier
+                ):
                     continue
                 adjacent_components = sorted(
                     {
@@ -1469,8 +1505,10 @@ def load_layouts_from_json(
     """Load named Overcooked V3 layouts from a single JSON file.
 
     Each value in the top-level ``layouts`` object must contain an ``ascii``
-    string (or the legacy ``grid`` key) and a ``possible_recipes`` field. This
-    is the format written by ``scripts/generate_overcooked_v3_layouts.py``.
+    string (or the legacy ``grid`` key) and a ``possible_recipes`` field.
+    Optional ``barrier_config`` and ``pressure_plate_config`` fields preserve
+    barrier activation and plate links. This is the format written by
+    ``scripts/generate_overcooked_v3_layouts.py``.
     """
     json_path = Path(path)
     with json_path.open("r", encoding="utf-8") as file:
@@ -1491,6 +1529,8 @@ def load_layouts_from_json(
 
         grid = entry.get("ascii", entry.get("grid"))
         possible_recipes = entry.get("possible_recipes")
+        barrier_config = entry.get("barrier_config")
+        pressure_plate_config = entry.get("pressure_plate_config")
         if not isinstance(grid, str):
             raise ValueError(
                 f"Layout {name!r} must contain an 'ascii' or 'grid' string"
@@ -1505,6 +1545,8 @@ def load_layouts_from_json(
             layout = Layout.from_string(
                 grid,
                 possible_recipes=possible_recipes,
+                barrier_config=barrier_config,
+                pressure_plate_config=pressure_plate_config,
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid layout {name!r}: {exc}") from exc

@@ -38,6 +38,9 @@ the results to the top-level `layouts` object.
     "num_regions": 1,
     "num_shared_tiles": null,
     "workflow_mode": "single_region",
+    "barriers": 0,
+    "barrier_placement": "anywhere",
+    "pressure_plates_per_barrier": 1,
     "max_attempts": 1000
   },
   "layouts": {}
@@ -62,6 +65,9 @@ the results to the top-level `layouts` object.
 | `num_regions` | Number of disconnected walkable regions: `1` or `2`. Two regions place one agent in each. |
 | `num_shared_tiles` | Exact number of ordinary counters accessible from both regions, or `null` to leave the count unconstrained. Requires two regions. |
 | `workflow_mode` | Distribution of the cooking workflow: `single_region`, `complete_each`, or `shared`. |
+| `barriers` | Exact number of active, pressure-plate-controlled barriers. At most 16. |
+| `barrier_placement` | Barrier placement mode: `anywhere`, `shared`, `action_adjacent`, or `shared_or_action_adjacent`. |
+| `pressure_plates_per_barrier` | `1` for one pressure plate per barrier or `2` for a pair. |
 | `max_attempts` | Maximum constructive retries for recoverable frontier or placement dead ends. |
 
 `possible_recipes` may be omitted. In that case, the generator creates one
@@ -86,6 +92,34 @@ depots, and any required recipe indicator:
 Interior workstations occupy otherwise walkable floor positions, like internal
 counters. The capacity checks reserve room for the configured interior
 counters and both agents.
+
+### Barriers and pressure plates
+
+Set `barriers` to the exact number of barriers required in each generated
+layout. Generated barriers start active. Each pressure plate controls one
+barrier with `TOGGLE_BARRIER`; standing on either plate in a configured pair
+opens its barrier. The generator never places a pressure plate in a component
+without an agent spawn.
+
+`barrier_placement` controls the eligible barrier tiles:
+
+- `anywhere` uses any empty floor or ordinary wall/counter tile accessible
+  from a region.
+- `shared` uses only interface counters accessible from both regions and
+  therefore requires `num_regions` to be `2`.
+- `action_adjacent` uses only floor tiles orthogonally adjacent to an
+  ingredient pile, pot, plate pile, or delivery depot.
+- `shared_or_action_adjacent` uses the union of the previous two candidate
+  sets. In a one-region layout, only action-adjacent candidates can exist.
+
+For shared placement, `num_shared_tiles` is checked before selected interface
+counters are converted to barriers. A pressure-controlled barrier can connect
+the two workflow regions when opened, so the accessibility validator treats it
+as a valid dynamic connection.
+
+`pressure_plates_per_barrier` must be `1` (single) or `2` (paired). The total
+number of generated pressure plates cannot exceed the V3
+`MAX_PRESSURE_PLATES` capacity of 16.
 
 ### Regions and workflow modes
 
@@ -140,6 +174,8 @@ from an agent.
 | `P` | Pot |
 | `B` | Plate pile |
 | `X` | Delivery depot |
+| `#` | Active pressure-plate-controlled barrier |
+| `_` | Pressure plate |
 | Space | Walkable floor |
 
 Each generated layout contains exactly two `A` spawn positions.
@@ -159,8 +195,10 @@ For every requested layout, the generator:
 6. For two regions, checks the requested exact shared-tile count; in `shared`
    mode, also verifies that at least one counter is accessible from both
    regions.
-7. Places both agents on carved floor, one per region when `num_regions` is two.
-8. Parses the ASCII through `Layout.from_string` and runs the structural,
+7. Places the requested barriers and one or two reachable pressure plates for
+   each barrier.
+8. Places both agents on carved floor, one per region when `num_regions` is two.
+9. Parses the ASCII through `Layout.from_string` and runs the structural,
    playability, accessibility, handoff, and recipe-solvability checks once.
 
 Constructive generation normally succeeds on the first attempt. A retry can
@@ -187,6 +225,8 @@ A generated map is accepted only when:
 - It has at least one ingredient pile, pot, plate pile, and delivery depot.
 - Every walkable tile can be reached from at least one agent spawn using
   four-direction movement.
+- Every pressure plate can be reached by at least one agent, and every
+  generated barrier has exactly the configured number of linked plates.
 - Every ingredient pile, pot, plate pile, and depot can be interacted with from
   a reachable adjacent tile.
 - Every configured recipe has its required ingredient piles.
@@ -224,6 +264,8 @@ The output contains entries similar to:
         [0, 0, 0],
         [1, 1, 1]
       ],
+      "barrier_config": [],
+      "pressure_plate_config": [],
       "validation": {
         "valid": true,
         "errors": []

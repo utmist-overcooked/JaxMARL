@@ -46,7 +46,7 @@ def _floor_components(grid):
         (row, col)
         for row, line in enumerate(rows)
         for col, symbol in enumerate(line)
-        if symbol in {" ", "A"}
+        if symbol in {" ", "A", "_"}
     }
     components = []
     while walkable:
@@ -109,6 +109,23 @@ def _shared_tiles(grid):
         }
         == {0, 1}
     }
+
+
+def _barrier_positions(grid):
+    return {
+        (row, col)
+        for row, line in enumerate(grid.splitlines())
+        for col, symbol in enumerate(line)
+        if symbol == "#"
+    }
+
+
+def _assert_pressure_plates_are_agent_accessible(grid):
+    rows, components = _floor_components(grid)
+    assert grid.count("_") > 0
+    for component in components:
+        if any(rows[row][col] == "_" for row, col in component):
+            assert any(rows[row][col] == "A" for row, col in component)
 
 
 def test_generator_is_deterministic_and_produces_valid_exact_size_layouts():
@@ -307,6 +324,168 @@ def test_shared_workflow_rejects_zero_shared_tiles():
                 num_shared_tiles=0,
             )
         )
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True, "2"])
+def test_generator_rejects_invalid_barrier_count(value):
+    with pytest.raises(ValueError, match="barriers"):
+        generate_document(_config(barriers=value))
+
+
+@pytest.mark.parametrize("value", [0, 3, 1.5, True, "2"])
+def test_generator_rejects_invalid_pressure_plate_multiplicity(value):
+    with pytest.raises(ValueError, match="pressure_plates_per_barrier"):
+        generate_document(_config(pressure_plates_per_barrier=value))
+
+
+def test_shared_barrier_placement_requires_two_regions():
+    with pytest.raises(ValueError, match="requires generator.num_regions = 2"):
+        generate_document(
+            _config(
+                barriers=1,
+                barrier_placement="shared",
+            )
+        )
+
+
+@pytest.mark.parametrize("plates_per_barrier", [1, 2])
+def test_generator_spawns_exact_barriers_with_single_or_paired_reachable_plates(
+    plates_per_barrier,
+):
+    document = generate_document(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            counter_density=0.4,
+            barriers=3,
+            pressure_plates_per_barrier=plates_per_barrier,
+            max_attempts=5000,
+        )
+    )
+    entry = next(iter(document["layouts"].values()))
+
+    assert entry["ascii"].count("#") == 3
+    assert entry["ascii"].count("_") == 3 * plates_per_barrier
+    assert entry["barrier_config"] == [True, True, True]
+    target_counts = [0, 0, 0]
+    for targets, _ in entry["pressure_plate_config"]:
+        assert len(targets) == 1
+        target_counts[targets[0]] += 1
+    assert target_counts == [plates_per_barrier] * 3
+    _assert_pressure_plates_are_agent_accessible(entry["ascii"])
+
+
+def test_shared_barrier_placement_uses_only_two_region_interface_tiles():
+    document = generate_document(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            counter_density=0.4,
+            num_regions=2,
+            num_shared_tiles=4,
+            workflow_mode="shared",
+            barriers=2,
+            barrier_placement="shared",
+            max_attempts=5000,
+        )
+    )
+    grid = next(iter(document["layouts"].values()))["ascii"]
+    rows, components = _floor_components(grid)
+    component_by_position = {
+        position: component_idx
+        for component_idx, component in enumerate(components)
+        for position in component
+    }
+
+    assert len(components) == 2
+    for row, col in _barrier_positions(grid):
+        adjacent_components = {
+            component_by_position[position]
+            for position in (
+                (row - 1, col),
+                (row + 1, col),
+                (row, col - 1),
+                (row, col + 1),
+            )
+            if position in component_by_position
+        }
+        assert adjacent_components == {0, 1}
+
+
+@pytest.mark.parametrize(
+    "placement",
+    ["action_adjacent", "shared_or_action_adjacent"],
+)
+def test_action_barrier_placements_are_adjacent_to_action_items(placement):
+    document = generate_document(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            counter_density=0.4,
+            num_regions=2,
+            workflow_mode="shared",
+            barriers=2,
+            barrier_placement=placement,
+            max_attempts=5000,
+        )
+    )
+    grid = next(iter(document["layouts"].values()))["ascii"]
+    rows = grid.splitlines()
+    action_symbols = set("0123456789PBX")
+
+    for row, col in _barrier_positions(grid):
+        is_shared = len(
+            {
+                component_idx
+                for component_idx, component in enumerate(_floor_components(grid)[1])
+                for position in (
+                    (row - 1, col),
+                    (row + 1, col),
+                    (row, col - 1),
+                    (row, col + 1),
+                )
+                if position in component
+            }
+        ) == 2
+        is_action_adjacent = any(
+            rows[adjacent_row][adjacent_col] in action_symbols
+            for adjacent_row, adjacent_col in (
+                (row - 1, col),
+                (row + 1, col),
+                (row, col - 1),
+                (row, col + 1),
+            )
+        )
+        assert is_action_adjacent if placement == "action_adjacent" else (
+            is_shared or is_action_adjacent
+        )
+
+
+def test_json_loader_preserves_generated_barrier_controls(tmp_path):
+    document = generate_document(
+        _config(
+            count=1,
+            barriers=2,
+            pressure_plates_per_barrier=2,
+            max_attempts=5000,
+        )
+    )
+    path = tmp_path / "barrier-layouts.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    layout = load_layouts_from_json(path)["test_kitchen_0"]
+
+    assert [active for _, _, active in layout.barrier_info] == [True, True]
+    targets = [
+        target
+        for _, _, target_idxs, _ in layout.pressure_plate_info
+        for target in target_idxs
+    ]
+    assert targets.count(0) == 2
+    assert targets.count(1) == 2
 
 
 def test_complete_each_rejects_insufficient_workstation_copies():
