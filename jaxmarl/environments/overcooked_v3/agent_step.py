@@ -10,23 +10,22 @@ from jaxmarl.environments.overcooked_v3.common import (
     ACTION_TO_DIRECTION,
     Actions,
     Agent,
-    ButtonAction,
-    Direction,
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.interactions import (
+    apply_agent_button_interactions,
     process_interact,
     sample_pot_cook_time,
 )
 from jaxmarl.environments.overcooked_v3.settings import (
     MAX_BARRIERS,
-    MAX_BUTTONS,
-    MAX_BUTTON_TARGETS,
-    MAX_MOVING_WALLS,
     MAX_PRESSURE_PLATES,
 )
 from jaxmarl.environments.overcooked_v3.state import State
+from jaxmarl.environments.overcooked_v3.systems.barriers import (
+    barriers_occupied as barriers_occupied,
+)
 from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
 from jaxmarl.environments.overcooked_v3.utils import tree_select
 
@@ -46,16 +45,6 @@ def is_agent_walkable(static_object, pos, state: State) -> chex.Array:
         | (static_object == StaticObject.PRESSURE_PLATE)
         | (is_barrier_tile & ~barrier_blocks)
     )
-
-def barriers_occupied(
-    agent_ys, agent_xs, barrier_positions, barrier_active_mask
-) -> chex.Array:
-    """Return a barrier mask showing which barrier tiles currently hold agents."""
-    on_barrier = (
-        (agent_ys[None, :] == barrier_positions[:, 0][:, None])
-        & (agent_xs[None, :] == barrier_positions[:, 1][:, None])
-    )
-    return jnp.any(on_barrier, axis=1) & barrier_active_mask
 
 def run_agent_action_phase(
     key: chex.PRNGKey,
@@ -327,231 +316,4 @@ def apply_agent_interact_actions(
         ),
         reward,
         shaped_rewards,
-    )
-
-def apply_agent_button_interactions(
-    state: State,
-    actions: chex.Array,
-    config: OvercookedV3Config,
-) -> State:
-    """Apply button interactions that affect moving walls and barriers."""
-    if not config.enable_buttons:
-        return state
-
-    barrier_occupied = barriers_occupied(
-        state.agents.pos.y,
-        state.agents.pos.x,
-        state.barrier_positions,
-        state.barrier_active_mask,
-    )
-
-    def _process_agent_button(carry, x):
-        mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = carry
-        agent, action = x
-        is_interact = action == Actions.interact
-        fwd_pos = agent.get_fwd_pos()
-        fwd_static = state.grid[fwd_pos.y, fwd_pos.x, 0]
-        is_button = fwd_static == StaticObject.BUTTON
-
-        def _scan_buttons(carry):
-            (
-                mw_dirs,
-                mw_paused,
-                mw_bounce,
-                btn_toggled,
-                bar_active,
-                bar_timer,
-            ) = carry
-
-            def _check_button(carry, button_idx):
-                (
-                    mw_dirs,
-                    mw_paused,
-                    mw_bounce,
-                    btn_toggled,
-                    bar_active,
-                    bar_timer,
-                ) = carry
-                btn_y = state.button_positions[button_idx, 0]
-                btn_x = state.button_positions[button_idx, 1]
-                is_active = state.button_active_mask[button_idx]
-                is_this = (btn_y == fwd_pos.y) & (btn_x == fwd_pos.x) & is_active
-
-                action_type = state.button_action_type[button_idx]
-
-                new_toggled = jax.lax.select(
-                    is_this, ~btn_toggled[button_idx], btn_toggled[button_idx]
-                )
-                btn_toggled = btn_toggled.at[button_idx].set(new_toggled)
-
-                def _apply_target(carry, target_slot):
-                    (
-                        mw_dirs,
-                        mw_paused,
-                        mw_bounce,
-                        bar_active,
-                        bar_timer,
-                    ) = carry
-                    target_idx = state.button_target_idxs[button_idx, target_slot]
-                    target_enabled = state.button_target_mask[button_idx, target_slot]
-                    should_apply = is_this & target_enabled
-                    mw_idx = jnp.clip(target_idx, 0, MAX_MOVING_WALLS - 1)
-                    barrier_idx = jnp.clip(target_idx, 0, MAX_BARRIERS - 1)
-
-                    mw_paused = jax.lax.select(
-                        should_apply & (action_type == ButtonAction.TOGGLE_PAUSE),
-                        mw_paused.at[mw_idx].set(~mw_paused[mw_idx]),
-                        mw_paused,
-                    )
-
-                    new_dir = Direction.opposite(mw_dirs[mw_idx])
-                    mw_dirs = jax.lax.select(
-                        should_apply & (action_type == ButtonAction.TOGGLE_DIRECTION),
-                        mw_dirs.at[mw_idx].set(new_dir),
-                        mw_dirs,
-                    )
-
-                    mw_bounce = jax.lax.select(
-                        should_apply & (action_type == ButtonAction.TOGGLE_BOUNCE),
-                        mw_bounce.at[mw_idx].set(~mw_bounce[mw_idx]),
-                        mw_bounce,
-                    )
-
-                    mw_paused = jax.lax.select(
-                        should_apply & (action_type == ButtonAction.TRIGGER_MOVE),
-                        mw_paused.at[mw_idx].set(False),
-                        mw_paused,
-                    )
-
-                    toggled_active = ~bar_active[barrier_idx]
-                    safe_active = jnp.where(
-                        toggled_active & barrier_occupied[barrier_idx],
-                        bar_active[barrier_idx],
-                        toggled_active,
-                    )
-                    bar_active = jax.lax.select(
-                        should_apply & (action_type == ButtonAction.TOGGLE_BARRIER),
-                        bar_active.at[barrier_idx].set(safe_active),
-                        bar_active,
-                    )
-
-                    bar_active = jax.lax.select(
-                        should_apply & (action_type == ButtonAction.TIMED_BARRIER),
-                        bar_active.at[barrier_idx].set(False),
-                        bar_active,
-                    )
-                    bar_timer = jax.lax.select(
-                        should_apply & (action_type == ButtonAction.TIMED_BARRIER),
-                        bar_timer.at[barrier_idx].set(
-                            state.barrier_duration[barrier_idx]
-                        ),
-                        bar_timer,
-                    )
-
-                    return (
-                        mw_dirs,
-                        mw_paused,
-                        mw_bounce,
-                        bar_active,
-                        bar_timer,
-                    ), None
-
-                (
-                    mw_dirs,
-                    mw_paused,
-                    mw_bounce,
-                    bar_active,
-                    bar_timer,
-                ), _ = jax.lax.scan(
-                    _apply_target,
-                    (
-                        mw_dirs,
-                        mw_paused,
-                        mw_bounce,
-                        bar_active,
-                        bar_timer,
-                    ),
-                    jnp.arange(MAX_BUTTON_TARGETS),
-                )
-
-                return (
-                    mw_dirs,
-                    mw_paused,
-                    mw_bounce,
-                    btn_toggled,
-                    bar_active,
-                    bar_timer,
-                ), None
-
-            (
-                (
-                    mw_dirs,
-                    mw_paused,
-                    mw_bounce,
-                    btn_toggled,
-                    bar_active,
-                    bar_timer,
-                ),
-                _,
-            ) = jax.lax.scan(
-                _check_button,
-                (
-                    mw_dirs,
-                    mw_paused,
-                    mw_bounce,
-                    btn_toggled,
-                    bar_active,
-                    bar_timer,
-                ),
-                jnp.arange(MAX_BUTTONS),
-            )
-            return (
-                mw_dirs,
-                mw_paused,
-                mw_bounce,
-                btn_toggled,
-                bar_active,
-                bar_timer,
-            )
-
-        should_process = is_interact & is_button
-        new_carry = jax.lax.cond(
-            should_process,
-            _scan_buttons,
-            lambda c: c,
-            (mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer),
-        )
-
-        return new_carry, None
-
-    (
-        (
-            new_mw_directions,
-            new_mw_paused,
-            new_mw_bounce,
-            new_btn_toggled,
-            new_barrier_active,
-            new_barrier_timer,
-        ),
-        _,
-    ) = jax.lax.scan(
-        _process_agent_button,
-        (
-            state.moving_wall_directions,
-            state.moving_wall_paused,
-            state.moving_wall_bounce,
-            state.button_toggled,
-            state.barrier_active,
-            state.barrier_timer,
-        ),
-        (state.agents, actions),
-    )
-
-    return state.replace(
-        moving_wall_directions=new_mw_directions,
-        moving_wall_paused=new_mw_paused,
-        moving_wall_bounce=new_mw_bounce,
-        button_toggled=new_btn_toggled,
-        barrier_active=new_barrier_active,
-        barrier_timer=new_barrier_timer,
     )
