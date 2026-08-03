@@ -1,6 +1,6 @@
 """Agent interaction rules for Overcooked V3."""
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import chex
 import jax
@@ -25,6 +25,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
 )
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.barriers import barriers_occupied
+from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
 
 
 def sample_pot_cook_time(
@@ -269,6 +270,114 @@ def apply_agent_button_interactions(
         button_toggled=new_btn_toggled,
         barrier_active=new_barrier_active,
         barrier_timer=new_barrier_timer,
+    )
+
+
+def apply_agent_interact_actions(
+    key: chex.PRNGKey,
+    state: State,
+    moved_agents: Agent,
+    actions: chex.Array,
+    config: OvercookedV3Config,
+) -> Tuple[State, float, chex.Array]:
+    """Apply interact actions, update carried items, and advance pot timers."""
+
+    def _interact_wrapper(carry, x):
+        agent, action = x
+        is_interact = action == Actions.interact
+
+        def _interact(carry, agent):
+            (
+                grid,
+                correct_delivery,
+                reward,
+                pot_timers,
+                pot_cook_durations,
+                key,
+            ) = carry
+
+            key, subkey = jax.random.split(key)
+            pot_cook_time = sample_pot_cook_time(subkey, config)
+
+            (
+                new_grid,
+                new_agent,
+                new_correct_delivery,
+                interact_reward,
+                shaped_reward,
+                new_pot_timers,
+            ) = process_interact(
+                grid,
+                agent,
+                moved_agents.inventory,
+                state.recipe,
+                pot_timers,
+                state.pot_positions,
+                state.pot_active_mask,
+                config,
+                pot_cook_time,
+            )
+
+            pot_started = (pot_timers == 0) & (new_pot_timers > 0)
+            new_pot_cook_durations = jnp.where(
+                pot_started, pot_cook_time, pot_cook_durations
+            )
+            new_pot_cook_durations = jnp.where(
+                new_pot_timers == 0, 0, new_pot_cook_durations
+            )
+
+            carry = (
+                new_grid,
+                correct_delivery | new_correct_delivery,
+                reward + interact_reward,
+                new_pot_timers,
+                new_pot_cook_durations,
+                key,
+            )
+            return carry, (new_agent, shaped_reward)
+
+        return jax.lax.cond(
+            is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
+        )
+
+    carry = (
+        state.grid,
+        False,
+        0.0,
+        state.pot_cooking_timer,
+        state.pot_cook_durations,
+        key,
+    )
+    xs = (moved_agents, actions)
+    (
+        (
+            new_grid,
+            new_correct_delivery,
+            reward,
+            new_pot_timers,
+            new_pot_cook_durations,
+            _key,
+        ),
+        (new_agents, shaped_rewards),
+    ) = jax.lax.scan(_interact_wrapper, carry, xs)
+
+    new_grid, new_pot_timers = update_pot_timers(
+        new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask, config
+    )
+    new_pot_cook_durations = jnp.where(
+        new_pot_timers == 0, 0, new_pot_cook_durations
+    )
+
+    return (
+        state.replace(
+            agents=new_agents,
+            grid=new_grid,
+            pot_cooking_timer=new_pot_timers,
+            pot_cook_durations=new_pot_cook_durations,
+            new_correct_delivery=new_correct_delivery,
+        ),
+        reward,
+        shaped_rewards,
     )
 
 
