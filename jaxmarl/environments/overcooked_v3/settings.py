@@ -5,6 +5,15 @@ POT_COOK_TIME = 90        # Steps until cooked/ready (CoGrid: cooking_time=90)
 POT_COOK_TIME_RANGE = ()  # Optional inclusive [min, max] range for random ready times
 POT_BURN_TIME = 60        # Steps in burning window before burned (CoGrid: burning_time=60)
 
+# Prep station timing
+CHOP_STAGES = 3
+GRILL_COOK_TIME = 15
+GRILL_BURN_TIME = 30
+BLEND_TIME = 10
+
+# Finite plate supply used only when dish washing is enabled.
+DEFAULT_NUM_PLATES = 3
+
 # Rewards
 DELIVERY_REWARD = 20.0    # Base reward for correct delivery
 BURN_PENALTY = -5.0       # Penalty when pot burns
@@ -15,12 +24,38 @@ DEFAULT_ORDER_GENERATION_RATE = 0.1
 DEFAULT_ORDER_EXPIRATION_TIME = 200
 DEFAULT_MAX_ORDERS = 5
 
+EVENT_NAMES = (
+    "pot_start_cooking",
+    "pot_placement",
+    "pickup",
+    "drop",
+    "dish_pickup",
+    "dish_to_goal_progress",
+    "delivery",
+    "pot_burn",
+    "prep_placement",
+    "prep_action",
+    "prep_pickup",
+    "prep_burn",
+    "dirty_pickup",
+    "plate_wash",
+    "plate_return",
+)
+
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
+    "INGREDIENT_PICKUP": 0.1,
     "PLACEMENT_IN_POT": 0.1,      # Adding correct ingredient to pot
     "SOUP_IN_DISH": 0.3,          # Picking up cooked soup with plate
     "PLATE_PICKUP": 0.1,          # Picking up a plate when useful
+    "PLATE_PICKUP_DURING_COOKING": 0.0,
+    "DISH_TO_GOAL_PROGRESS": 0.0,
     "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
+    "PREP_PLACEMENT": 0.2,
+    "PREP_ACTION": 0.1,
+    "PREP_PICKUP": 0.2,
+    "DIRTY_PLATE_PICKUP": 0.1,
+    "PLATE_WASH": 0.3,
 }
 
 # Maximum number of pots to track (for fixed array sizes)
