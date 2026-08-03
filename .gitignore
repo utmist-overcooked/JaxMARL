@@ -5,6 +5,7 @@ scripts/
 # Byte-compiled / optimized / DLL files
 
 **pycache**/
+__pycache__/
 *.py[cod]
 *$py.class
 
@@ -45,3 +46,7 @@ exports/
 
 build/
 *.csv
+slurm-*.out
+slurm_logs/
+artifacts/macro_mappo_rollouts/
+artifacts/overcooked_v3_macro_cooperative_barrier_flood_fill.gif
