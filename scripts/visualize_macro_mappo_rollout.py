@@ -33,7 +33,28 @@ def parse_args():
     parser.add_argument("--frame-skip", type=int, default=1)
     parser.add_argument("--frame-ms", type=int, default=150)
     parser.add_argument("--tile-size", type=int, default=40)
+    parser.add_argument(
+        "--render-chunk-size",
+        type=int,
+        default=25,
+        help="Render this many frames per visualizer call instead of the whole "
+        "trajectory at once. Lower this further if you still see OOM.",
+    )
+    parser.add_argument(
+        "--num-episodes",
+        type=int,
+        default=1,
+        help="Run this many separate episodes, each seeded with --seed + episode "
+        "index, saving one GIF per episode.",
+    )
     return parser.parse_args()
+
+
+def episode_output_path(base: Path, index: int, total: int) -> Path:
+    if total == 1:
+        return base
+    suffix = base.suffix if base.suffix else ".gif"
+    return base.with_name(f"{base.stem}_ep{index}{suffix}")
 
 
 def select_actions(variant, actor, params, obs, env):
@@ -94,20 +115,8 @@ def add_header(frame, variant, checkpoint_label, step, action_names, total_retur
     return np.asarray(canvas)
 
 
-def main():
-    args = parse_args()
-    config = OmegaConf.to_container(
-        OmegaConf.load(args.run_dir / "config.yaml"), resolve=True
-    )
-    env = build_env(config)
-    actor = (
-        ReplanActor(env.num_actions, int(config["HIDDEN_SIZE"]))
-        if args.variant == "replan"
-        else Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
-    )
-    params = load_params(args.run_dir / "final_actor.safetensors")
-
-    key = jax.random.PRNGKey(args.seed)
+def run_episode(args, config, env, actor, params, seed, output_path):
+    key = jax.random.PRNGKey(seed)
     obs, log_state = env.reset(key)
     state = log_state.env_state
     rollout_env = env._env._env
@@ -143,9 +152,21 @@ def main():
     if frame_indices[-1] != len(states) - 1:
         frame_indices.append(len(states) - 1)
     selected_states = [states[index] for index in frame_indices]
-    stacked_states = jax.tree.map(lambda *values: jnp.stack(values), *selected_states)
+
     visualizer = OvercookedV3Visualizer(rollout_env, tile_size=args.tile_size)
-    rendered = jax.device_get(visualizer.render_sequence(stacked_states))
+
+    # Render in chunks rather than stacking the whole trajectory into one
+    # batched call — stacking up to max_steps frames at full tile resolution
+    # and rendering them in a single shot is the likely OOM source.
+    rendered = []
+    chunk_size = max(1, args.render_chunk_size)
+    for chunk_start in range(0, len(selected_states), chunk_size):
+        chunk = selected_states[chunk_start : chunk_start + chunk_size]
+        stacked_chunk = jax.tree.map(lambda *values: jnp.stack(values), *chunk)
+        rendered_chunk = jax.device_get(visualizer.render_sequence(stacked_chunk))
+        rendered.extend(rendered_chunk)
+        del stacked_chunk, rendered_chunk
+
     frames = [
         add_header(
             frame,
@@ -158,17 +179,54 @@ def main():
         for frame, step in zip(rendered, frame_indices)
     ]
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     gif_frames = [Image.fromarray(frame) for frame in frames]
     gif_frames[0].save(
-        args.output,
+        output_path,
+        format="GIF",
         save_all=True,
         append_images=gif_frames[1:],
         duration=args.frame_ms,
         loop=0,
         optimize=False,
     )
-    print(f"Saved {args.output} ({len(frames)} frames, return={total_return:.1f})")
+    print(f"Saved {output_path} ({len(frames)} frames, return={total_return:.1f})")
+    return total_return, len(states) - 1
+
+
+def main():
+    args = parse_args()
+    config = OmegaConf.to_container(
+        OmegaConf.load(args.run_dir / "config.yaml"), resolve=True
+    )
+    env = build_env(config)
+    actor = (
+        ReplanActor(env.num_actions, int(config["HIDDEN_SIZE"]))
+        if args.variant == "replan"
+        else Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
+    )
+    params = load_params(args.run_dir / "final_actor.safetensors")
+
+    episode_returns = []
+    episode_lengths = []
+    for episode_index in range(args.num_episodes):
+        seed = args.seed + episode_index
+        output_path = episode_output_path(args.output, episode_index, args.num_episodes)
+        total_return, length = run_episode(
+            args, config, env, actor, params, seed, output_path
+        )
+        episode_returns.append(total_return)
+        episode_lengths.append(length)
+
+    if args.num_episodes > 1:
+        returns_array = np.asarray(episode_returns)
+        lengths_array = np.asarray(episode_lengths)
+        print(
+            f"\n{args.num_episodes} episodes: "
+            f"return mean={returns_array.mean():.2f} std={returns_array.std():.2f} "
+            f"min={returns_array.min():.2f} max={returns_array.max():.2f} | "
+            f"length mean={lengths_array.mean():.1f}"
+        )
 
 
 if __name__ == "__main__":
