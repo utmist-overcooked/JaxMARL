@@ -1309,6 +1309,36 @@ overcooked_v3_layouts = {
         player_conveyor_loop, possible_recipes=[[0, 0, 0]]
     ),
 
+    # coordinated_temporal_conveyor_harder
+    "coordinated_temporal_conveyor": Layout.from_string(
+        coordinated_temporal_conveyor, possible_recipes=[[0, 0, 0]]
+    ),
+
+    # general_conveyor_level_1
+    "general_conveyor_level_1": Layout.from_string(
+        general_conveyor_level_1, possible_recipes=[[0, 0, 0]]
+    ),
+
+    # general_conveyor_level_2
+    "general_conveyor_level_2": Layout.from_string(
+        general_conveyor_level_2, possible_recipes=[[0, 0, 0]]
+    ),
+
+    # general_conveyor_level_3
+    "general_conveyor_level_3": Layout.from_string(
+        general_conveyor_level_3, possible_recipes=[[0, 0, 0]]
+    ),
+
+    # race_against_the_clock
+    "race_against_the_clock": Layout.from_string(
+        race_against_the_clock, possible_recipes=[[0, 0, 0]]
+    ),
+
+    # maze_conveyor_hell
+    "maze_conveyor_hell": Layout.from_string(
+        maze_conveyor_hell, possible_recipes=[[0, 0, 0]]
+    ),    
+
     # Moving wall demos
     "moving_wall_demo": Layout.from_string(
         moving_wall_demo,
