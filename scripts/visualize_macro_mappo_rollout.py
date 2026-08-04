@@ -17,8 +17,8 @@ from omegaconf import OmegaConf
 from jaxmarl.wrappers.baselines import load_params
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 
-from mappo_macro_common import Actor, ReplanActor, build_env
-from mappo_macro_replan import REPLAN
+from baselines.MAPPO.mappo_macro_common import Actor, ReplanActor, build_env
+from baselines.MAPPO.mappo_macro_replan import REPLAN
 
 
 def parse_args():
