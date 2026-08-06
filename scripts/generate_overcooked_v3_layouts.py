@@ -848,6 +848,19 @@ def _generate_candidate(
                 f"requested exactly {requested_shared_tiles}"
             )
         if config["workflow_mode"] == "shared" and not shared_tiles:
+    if config["workflow_mode"] == "shared":
+        all_positions = {
+            (row, col)
+            for row in range(height)
+            for col in range(width)
+        }
+        handoff_counters = [
+            position
+            for position in interior - set().union(*regions)
+            if grid[position[0]][position[1]] == "W"
+            and _adjacent_regions(position, regions, all_positions) == {0, 1}
+        ]
+        if not handoff_counters:
             raise CandidateGenerationError(
                 "shared workflow has no counter accessible from both regions"
             )
@@ -951,7 +964,11 @@ def generate_document(document: Any) -> dict[str, Any]:
     for index in range(config["count"]):
         name = f"{config['name_prefix']}_{index:0{digits}d}"
         grid, layout, _ = generate_layout(config, rng)
-        generated[name] = _layout_entry(grid, layout, config)
+        generated[name] = {
+            "ascii": grid,
+            "possible_recipes": config["possible_recipes"],
+            "validation": {"valid": True, "errors": []},
+        }
 
     result = dict(document)
     result["generator"] = config
@@ -1019,7 +1036,11 @@ def generate_to_file(
                 )
             continue
 
-        result["layouts"][name] = _layout_entry(grid, layout, config)
+        result["layouts"][name] = {
+            "ascii": grid,
+            "possible_recipes": config["possible_recipes"],
+            "validation": {"valid": True, "errors": []},
+        }
         result["generation_progress"]["completed"] += 1
         _write_json_checkpoint(result, output_path)
         if emit is not None:

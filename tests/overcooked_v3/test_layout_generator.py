@@ -46,7 +46,7 @@ def _floor_components(grid):
         (row, col)
         for row, line in enumerate(rows)
         for col, symbol in enumerate(line)
-        if symbol in {" ", "A", "_"}
+        if symbol in {" ", "A"}
     }
     components = []
     while walkable:
