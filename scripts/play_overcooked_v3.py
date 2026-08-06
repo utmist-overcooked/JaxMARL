@@ -2,9 +2,10 @@
 """Interactive Overcooked V3 player with keyboard controls.
 
 Usage:
-    python play_scripts/play_overcooked_v3.py                # default layout
-    python play_scripts/play_overcooked_v3.py --layout pressure_plate_demo
-    python play_scripts/play_overcooked_v3.py --list         # list all layouts
+    python scripts/play_overcooked_v3.py
+    python scripts/play_overcooked_v3.py --layout pressure_plate_demo
+    python scripts/play_overcooked_v3.py --layout-json generated.json
+    python scripts/play_overcooked_v3.py --layout-json generated.json --list
 
 In game:
     Agent 0 (Blue):  WASD to move, SPACE to interact
@@ -19,7 +20,10 @@ import pygame
 import numpy as np
 from jaxmarl import make
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
-from jaxmarl.environments.overcooked_v3.layouts import overcooked_v3_layouts
+from jaxmarl.environments.overcooked_v3.layouts import (
+    load_layouts_from_json,
+    overcooked_v3_layouts,
+)
 
 # Curated list to cycle with N/P keys.
 PLAYABLE = [
@@ -39,6 +43,7 @@ AGENT0_KEYS = {pygame.K_w: 3, pygame.K_s: 1, pygame.K_a: 2, pygame.K_d: 0, pygam
 AGENT1_KEYS = {pygame.K_UP: 3, pygame.K_DOWN: 1, pygame.K_LEFT: 2, pygame.K_RIGHT: 0, pygame.K_RETURN: 5}
 
 TILE = 48
+POT_COOK_TIME_RANGE = [15, 25]
 
 
 def build(layout_name):
@@ -47,6 +52,7 @@ def build(layout_name):
         "overcooked_v3",
         layout=layout_name,
         pot_cook_time=20,
+        pot_cook_time_range=POT_COOK_TIME_RANGE,
         pot_burn_time=10,
         # None => auto-enable from the layout (walls/buttons/plates).
         enable_moving_walls=None,
@@ -57,11 +63,34 @@ def build(layout_name):
     return env, viz
 
 
+def register_json_layouts(path):
+    """Load and register layouts, preserving their order from the JSON file."""
+    return list(load_layouts_from_json(path, register=True))
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--layout", default=DEFAULT_LAYOUT)
-    parser.add_argument("--list", action="store_true", help="list all registered layouts and exit")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--layout",
+        help=(
+            "layout name to open; defaults to the first JSON layout when "
+            "--layout-json is used"
+        ),
+    )
+    parser.add_argument(
+        "--layout-json",
+        help="load generated layouts from this JSON file before opening pygame",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="list all registered layouts and exit",
+    )
     args = parser.parse_args()
+
+    json_layouts = (
+        register_json_layouts(args.layout_json) if args.layout_json else []
+    )
 
     if args.list:
         print("Registered overcooked_v3 layouts:")
@@ -69,12 +98,27 @@ def main():
             print(f"  {name}")
         return
 
-    if args.layout not in overcooked_v3_layouts:
-        raise SystemExit(f"Unknown layout {args.layout!r}. Use --list to see options.")
+    selected_layout = args.layout or (
+        json_layouts[0] if json_layouts else DEFAULT_LAYOUT
+    )
+    if selected_layout not in overcooked_v3_layouts:
+        raise SystemExit(
+            f"Unknown layout {selected_layout!r}. Use --list to see options."
+        )
 
-    # Cycle index: start the N/P cycle at the requested layout if it's in PLAYABLE.
-    layouts = PLAYABLE if args.layout in PLAYABLE else [args.layout] + PLAYABLE
-    idx = layouts.index(args.layout)
+    # With a JSON file, N/P focuses on its generated layouts. An explicitly
+    # selected built-in layout is prepended so it remains part of the cycle.
+    if json_layouts:
+        layouts = list(json_layouts)
+        if selected_layout not in layouts:
+            layouts.insert(0, selected_layout)
+    else:
+        layouts = (
+            PLAYABLE
+            if selected_layout in PLAYABLE
+            else [selected_layout] + PLAYABLE
+        )
+    idx = layouts.index(selected_layout)
 
     print("=" * 56)
     print("  OVERCOOKED V3 - Interactive Mode")
@@ -82,6 +126,11 @@ def main():
     print("  Agent 0 (Blue):  WASD move, SPACE interact")
     print("  Agent 1 (Green): Arrows move, ENTER interact")
     print("  N/P = next/prev layout   R = reset   Q/ESC = quit")
+    print(
+        "  Pot timing: time until ready=random inclusive range "
+        f"{POT_COOK_TIME_RANGE}; burn window=10 steps"
+    )
+    print("  A pot-start line prints when a full pot begins cooking.")
     print("=" * 56)
 
     pygame.init()
@@ -137,11 +186,25 @@ def main():
         if "agent_1" in env.agents:
             actions["agent_1"] = a1
 
+        previous_pot_timers = np.array(state.pot_cooking_timer)
         key, sk = jax.random.split(key)
         obs, state, rewards, dones, info = env.step(sk, state, actions)
+        current_pot_timers = np.array(state.pot_cooking_timer)
+        current_pot_durations = np.array(state.pot_cook_durations)
         step_count += 1
         r = float(rewards["agent_0"])
         total_reward += r
+
+        started_cooking = np.where(
+            (previous_pot_timers == 0) & (current_pot_timers > 0)
+        )[0]
+        for pot_idx in started_cooking:
+            sampled_ready_time = int(current_pot_durations[pot_idx])
+            print(
+                f"Pot {pot_idx} started cooking at step {step_count}: "
+                f"sampled time until ready = {sampled_ready_time} steps"
+            )
+
         if r > 0:
             print(f"DELIVERY! +{r:.0f} (total {total_reward:.0f})")
 

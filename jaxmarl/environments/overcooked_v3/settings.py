@@ -2,6 +2,7 @@
 
 # Pot timing.
 POT_COOK_TIME = 20        # Full pot becomes cooked after exactly 20 env steps
+POT_COOK_TIME_RANGE = ()  # Optional inclusive [min, max] range for random ready times
 POT_BURN_TIME = 40        # Cooked soup expires/burns after this many ready steps
 
 # Rewards
@@ -24,6 +25,19 @@ SHAPED_REWARDS = {
     "DISH_TO_GOAL_PROGRESS": 0.0, # Logged only; no Euclidean distance reward
     "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
 }
+
+# Per-agent event counters emitted in step_env's info dict, in the order they
+# occupy columns of the event_metrics array threaded through the step pipeline.
+EVENT_NAMES = (
+    "pot_start_cooking",
+    "pot_placement",
+    "pickup",
+    "drop",
+    "dish_pickup",
+    "dish_to_goal_progress",
+    "delivery",
+    "pot_burn",
+)
 
 # Maximum number of pots to track (for fixed array sizes)
 MAX_POTS = 4

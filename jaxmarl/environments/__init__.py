@@ -19,6 +19,7 @@ from .switch_riddle import SwitchRiddle
 from .overcooked import Overcooked, overcooked_layouts
 from .overcooked_v2 import OvercookedV2, overcooked_v2_layouts
 from .overcooked_v3 import OvercookedV3, overcooked_v3_layouts
+from .overcooked_v3_macro import OvercookedV3Macro, OvercookedV3MacroInterruptible
 from .mabrax import Ant, Humanoid, Hopper, Walker2d, HalfCheetah
 from .hanabi import Hanabi
 from .storm import InTheGrid, InTheGrid_2p, InTheMatrix

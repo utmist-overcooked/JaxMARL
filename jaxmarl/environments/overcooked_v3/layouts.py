@@ -4,6 +4,10 @@ DESIGN NOTES:
 - don't make item conveyor belts / player conveyor belts move things to the same destination - this will cause race conditions and maybe make the items disappear.
 """
 
+import json
+from collections import deque
+from pathlib import Path
+
 from jaxmarl.environments.overcooked_v3.common import (
     StaticObject,
     Direction,
@@ -20,7 +24,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_BUTTON_TARGETS,
 )
 import numpy as np
-from typing import List, Tuple, Optional, Union
+from typing import List, Mapping, Tuple, Optional, Union
 from dataclasses import dataclass, field
 import itertools
 
@@ -998,6 +1002,160 @@ class Layout:
 
         return len(errors) == 0, errors
 
+    def validate_accessibility(self) -> Tuple[bool, List[str]]:
+        """Validate reachability of floor tiles and the full cooking workflow.
+
+        Every walkable tile must be reachable from at least one agent spawn.
+        Every generated-layout workstation (ingredients, pots, plates, and
+        delivery zones) must be interactable from a reachable tile. Finally,
+        every configured recipe must be completable inside one agent-connected
+        region or a group of regions joined by shared handoff counters.
+        """
+        errors = []
+        component_by_position = {}
+        next_component = 0
+
+        def neighbours(y, x):
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                adjacent = (y + dy, x + dx)
+                if 0 <= adjacent[0] < self.height and 0 <= adjacent[1] < self.width:
+                    yield adjacent
+
+        for agent_x, agent_y in self.agent_positions:
+            start = (agent_y, agent_x)
+            if (
+                not (0 <= agent_y < self.height and 0 <= agent_x < self.width)
+                or not self._is_agent_walkable_tile(
+                    self.static_objects[agent_y, agent_x]
+                )
+                or start in component_by_position
+            ):
+                continue
+
+            component = next_component
+            next_component += 1
+            component_by_position[start] = component
+            queue = deque([start])
+            while queue:
+                position = queue.popleft()
+                for adjacent in neighbours(*position):
+                    if (
+                        adjacent not in component_by_position
+                        and self._is_agent_walkable_tile(
+                            self.static_objects[adjacent]
+                        )
+                    ):
+                        component_by_position[adjacent] = component
+                        queue.append(adjacent)
+
+        walkable_positions = {
+            (y, x)
+            for y in range(self.height)
+            for x in range(self.width)
+            if self._is_agent_walkable_tile(self.static_objects[y, x])
+        }
+        unreachable = sorted(walkable_positions - set(component_by_position))
+        if unreachable:
+            errors.append(
+                f"{len(unreachable)} walkable tile(s) cannot be reached by either "
+                f"agent; first inaccessible tile: {unreachable[0]}"
+            )
+
+        station_components = {}
+        station_labels = {
+            StaticObject.POT: "pot",
+            StaticObject.PLATE_PILE: "plate pile",
+            StaticObject.GOAL: "delivery zone",
+        }
+        for y in range(self.height):
+            for x in range(self.width):
+                obj = self.static_objects[y, x]
+                if StaticObject.is_ingredient_pile(obj):
+                    station = ("ingredient", int(obj - StaticObject.INGREDIENT_PILE_BASE))
+                    label = f"ingredient {station[1]} pile"
+                elif obj in station_labels:
+                    station = ("object", int(obj))
+                    label = station_labels[obj]
+                else:
+                    continue
+
+                components = {
+                    component_by_position[adjacent]
+                    for adjacent in neighbours(y, x)
+                    if adjacent in component_by_position
+                }
+                if not components:
+                    errors.append(
+                        f"{label.capitalize()} at {(y, x)} is inaccessible to both agents"
+                    )
+                station_components.setdefault(station, set()).update(components)
+
+        # Disconnected agents can cooperate through a counter that is
+        # interactable from both regions. Collapse floor components connected
+        # by such counters into workflow groups before checking recipes.
+        component_ids = set(component_by_position.values())
+        component_parent = {component: component for component in component_ids}
+
+        def find_component(component):
+            while component_parent[component] != component:
+                component_parent[component] = component_parent[
+                    component_parent[component]
+                ]
+                component = component_parent[component]
+            return component
+
+        def union_components(first, second):
+            first_root = find_component(first)
+            second_root = find_component(second)
+            if first_root != second_root:
+                component_parent[second_root] = first_root
+
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.static_objects[y, x] != StaticObject.WALL:
+                    continue
+                adjacent_components = sorted(
+                    {
+                        component_by_position[adjacent]
+                        for adjacent in neighbours(y, x)
+                        if adjacent in component_by_position
+                    }
+                )
+                for component in adjacent_components[1:]:
+                    union_components(adjacent_components[0], component)
+
+        station_workflow_groups = {
+            station: {find_component(component) for component in components}
+            for station, components in station_components.items()
+        }
+
+        required_objects = {
+            ("object", int(StaticObject.POT)),
+            ("object", int(StaticObject.PLATE_PILE)),
+            ("object", int(StaticObject.GOAL)),
+        }
+        for recipe in self.possible_recipes or []:
+            if not isinstance(recipe, list) or len(recipe) != 3:
+                continue
+            required_stations = required_objects | {
+                ("ingredient", int(ingredient_idx)) for ingredient_idx in recipe
+            }
+            feasible_components = None
+            for station in required_stations:
+                components = station_workflow_groups.get(station, set())
+                feasible_components = (
+                    set(components)
+                    if feasible_components is None
+                    else feasible_components & components
+                )
+            if not feasible_components:
+                errors.append(
+                    f"Recipe {recipe} cannot be completed within one "
+                    "agent-accessible region or counter-connected region group"
+                )
+
+        return len(errors) == 0, errors
+
     @staticmethod
     def annotate_layout_string(layout_string: str) -> str:
         """Add annotations to a layout string explaining the symbols.
@@ -1348,6 +1506,101 @@ class Layout:
         )
 
         return layout
+
+
+def validate_generated_layout(
+    layout: Layout,
+    *,
+    expected_agents: int = 2,
+) -> Tuple[bool, List[str]]:
+    """Apply all checks required for a generated training layout."""
+    messages = []
+    is_playable, playable_messages = layout.validate_playable()
+    if not is_playable:
+        messages.extend(playable_messages)
+
+    is_accessible, accessibility_messages = layout.validate_accessibility()
+    if not is_accessible:
+        messages.extend(accessibility_messages)
+
+    if len(layout.agent_positions) != expected_agents:
+        messages.append(
+            f"Expected exactly {expected_agents} agent spawns, found "
+            f"{len(layout.agent_positions)}"
+        )
+
+    # A single issue can be found by both the structural and reachability checks.
+    unique_messages = list(dict.fromkeys(messages))
+    return len(unique_messages) == 0, unique_messages
+
+
+def load_layouts_from_json(
+    path: Union[str, Path],
+    *,
+    register: bool = False,
+    overwrite: bool = False,
+    validate: bool = True,
+) -> dict[str, Layout]:
+    """Load named Overcooked V3 layouts from a single JSON file.
+
+    Each value in the top-level ``layouts`` object must contain an ``ascii``
+    string (or the legacy ``grid`` key) and a ``possible_recipes`` field. This
+    is the format written by ``scripts/generate_overcooked_v3_layouts.py``.
+    """
+    json_path = Path(path)
+    with json_path.open("r", encoding="utf-8") as file:
+        document = json.load(file)
+
+    if not isinstance(document, Mapping):
+        raise ValueError("Layout JSON must contain a top-level object")
+    entries = document.get("layouts")
+    if not isinstance(entries, Mapping):
+        raise ValueError("Layout JSON must contain a top-level 'layouts' object")
+
+    loaded = {}
+    for name, entry in entries.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("Every layout name must be a non-empty string")
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"Layout {name!r} must be a JSON object")
+
+        grid = entry.get("ascii", entry.get("grid"))
+        possible_recipes = entry.get("possible_recipes")
+        if not isinstance(grid, str):
+            raise ValueError(
+                f"Layout {name!r} must contain an 'ascii' or 'grid' string"
+            )
+        if possible_recipes is None and "R" not in grid:
+            raise ValueError(
+                f"Layout {name!r} must contain 'possible_recipes' when it has "
+                "no recipe indicator"
+            )
+
+        try:
+            layout = Layout.from_string(
+                grid,
+                possible_recipes=possible_recipes,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid layout {name!r}: {exc}") from exc
+
+        if validate:
+            is_valid, messages = validate_generated_layout(layout)
+            if not is_valid:
+                raise ValueError(
+                    f"Invalid layout {name!r}: " + "; ".join(messages)
+                )
+        loaded[name] = layout
+
+    if register:
+        conflicts = sorted(set(loaded) & set(overcooked_v3_layouts))
+        if conflicts and not overwrite:
+            raise ValueError(
+                "Layout name(s) already registered: " + ", ".join(conflicts)
+            )
+        overcooked_v3_layouts.update(loaded)
+
+    return loaded
 
 
 # Pre-defined layouts
