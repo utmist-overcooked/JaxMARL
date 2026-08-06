@@ -75,6 +75,7 @@ class State:
     pot_positions: chex.Array
     pot_cooking_timer: chex.Array
     pot_active_mask: chex.Array
+    pot_cook_durations: chex.Array
 
     order_types: chex.Array
     order_expirations: chex.Array
@@ -272,6 +273,7 @@ class OvercookedV3Macro(OvercookedV3):
             pot_positions=state.pot_positions,
             pot_cooking_timer=state.pot_cooking_timer,
             pot_active_mask=state.pot_active_mask,
+            pot_cook_durations=state.pot_cook_durations,
             order_types=state.order_types,
             order_expirations=state.order_expirations,
             order_active_mask=state.order_active_mask,
