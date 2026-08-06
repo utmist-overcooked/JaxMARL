@@ -64,8 +64,8 @@ def build(layout_name):
 
 
 def register_json_layouts(path):
-    """Load and register layouts, preserving their order from the JSON file."""
-    return list(load_layouts_from_json(path, register=True))
+    """Load and register layouts, returning their names in JSON order."""
+    return list(load_layouts_from_json(path, register=True).keys())
 
 
 def main():
