@@ -1505,7 +1505,7 @@ def load_layouts_from_json(
     """Load named Overcooked V3 layouts from a single JSON file.
 
     Each value in the top-level ``layouts`` object must contain an ``ascii``
-    string (or the legacy ``grid`` key) and a ``possible_recipes`` field.
+    string (or the legacy ``grid`` key). A ``possible_recipes`` field is required unless the grid contains an ``R`` recipe indicator.
     Optional ``barrier_config`` and ``pressure_plate_config`` fields preserve
     barrier activation and plate links. This is the format written by
     ``scripts/generate_overcooked_v3_layouts.py``.
