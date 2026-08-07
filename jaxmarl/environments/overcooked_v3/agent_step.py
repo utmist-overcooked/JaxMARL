@@ -32,6 +32,9 @@ from jaxmarl.environments.overcooked_v3.settings import (
 )
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
+from jaxmarl.environments.overcooked_v3.systems.prep_stations import (
+    update_prep_stations,
+)
 from jaxmarl.environments.overcooked_v3.utils import tree_select
 
 def is_agent_walkable(static_object, pos, state: State) -> chex.Array:
@@ -247,6 +250,8 @@ def apply_agent_interact_actions(
                 reward,
                 pot_timers,
                 pot_cook_durations,
+                plate_stack,
+                dirty_pile,
                 key,
             ) = carry
 
@@ -261,6 +266,8 @@ def apply_agent_interact_actions(
                 shaped_reward,
                 event_metrics,
                 new_pot_timers,
+                new_plate_stack,
+                new_dirty_pile,
             ) = process_interact(
                 grid,
                 agent,
@@ -271,6 +278,8 @@ def apply_agent_interact_actions(
                 state.pot_active_mask,
                 config,
                 pot_cook_time,
+                plate_stack,
+                dirty_pile,
             )
 
             pot_started = (pot_timers == 0) & (new_pot_timers > 0)
@@ -287,6 +296,8 @@ def apply_agent_interact_actions(
                 reward + interact_reward,
                 new_pot_timers,
                 new_pot_cook_durations,
+                new_plate_stack,
+                new_dirty_pile,
                 key,
             )
             return carry, (new_agent, shaped_reward, event_metrics)
@@ -308,6 +319,8 @@ def apply_agent_interact_actions(
         0.0,
         state.pot_cooking_timer,
         state.pot_cook_durations,
+        state.plate_stack_count,
+        state.dirty_pile_count,
         key,
     )
     xs = (moved_agents, actions)
@@ -318,6 +331,8 @@ def apply_agent_interact_actions(
             reward,
             new_pot_timers,
             new_pot_cook_durations,
+            new_plate_stack,
+            new_dirty_pile,
             _key,
         ),
         (new_agents, shaped_rewards, event_metrics),
@@ -344,6 +359,19 @@ def apply_agent_interact_actions(
     )
     event_metrics = event_metrics.at[:, EVENT_NAMES.index("pot_burn")].set(burn_events)
 
+    # Advance prep station timers (grill cooking/burning, blender mixing)
+    if config.has_prep_stations:
+        new_grid, prep_burn_count = update_prep_stations(new_grid, config)
+        reward = reward + prep_burn_count * BURN_PENALTY
+        prep_burn_events = (
+            jnp.zeros((config.num_agents,), dtype=jnp.float32)
+            .at[0]
+            .set(prep_burn_count)
+        )
+        event_metrics = event_metrics.at[
+            :, EVENT_NAMES.index("prep_burn")
+        ].set(prep_burn_events)
+
     return (
         state.replace(
             agents=new_agents,
@@ -351,6 +379,8 @@ def apply_agent_interact_actions(
             pot_cooking_timer=new_pot_timers,
             pot_cook_durations=new_pot_cook_durations,
             new_correct_delivery=new_correct_delivery,
+            plate_stack_count=new_plate_stack,
+            dirty_pile_count=new_dirty_pile,
         ),
         reward,
         shaped_rewards,

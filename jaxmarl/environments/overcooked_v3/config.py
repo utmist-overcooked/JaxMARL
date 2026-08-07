@@ -64,3 +64,20 @@ class OvercookedV3Config:
     pressure_plate_linked_barrier: Any
     pressure_plate_action_type: Any
     pressure_plate_active_mask: Any
+
+    # Number of distinct orderable dishes; order type i + 1 requests the i-th
+    # entry of the layout's orderable recipe list.
+    num_order_types: int = 2
+
+    # Prep stations. has_prep_stations gates the whole feature so layouts
+    # without stations keep the exact step graph they had before it existed.
+    has_prep_stations: bool = False
+    chop_stages: int = 3
+    grill_cook_time: int = 15
+    grill_burn_time: int = 30
+    blend_time: int = 10
+
+    # Dish washing. Gated the same way: with it off the plate pile is infinite
+    # and sink / dirty pile tiles never appear in the grid.
+    enable_dish_washing: bool = False
+    num_plates: int = 3

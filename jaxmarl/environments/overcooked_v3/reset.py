@@ -62,15 +62,15 @@ def reset_overcooked_v3(
     )
 
     # Sample recipe. When the alternating order queue is enabled, seed the
-    # queue with onion first and expose that order through the recipe
-    # indicator immediately.
+    # queue with the first orderable dish and expose that order through the
+    # recipe indicator immediately.
     key, subkey = jax.random.split(key)
     recipe = sample_recipe(subkey, config)
     order_types = jnp.zeros(config.max_orders, dtype=jnp.int32)
     order_expirations = jnp.zeros(config.max_orders, dtype=jnp.int32)
     order_active_mask = jnp.zeros(config.max_orders, dtype=jnp.bool_)
     if config.enable_order_queue and config.order_queue_mode == "alternating":
-        first_order_type = jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32)
+        first_order_type = jnp.array(1, dtype=jnp.int32)
         order_types = order_types.at[0].set(first_order_type)
         order_expirations = order_expirations.at[0].set(config.order_expiration_time)
         order_active_mask = order_active_mask.at[0].set(True)
@@ -117,6 +117,10 @@ def reset_overcooked_v3(
         terminal=False,
         recipe=recipe,
         new_correct_delivery=False,
+        plate_stack_count=jnp.array(
+            config.num_plates if config.enable_dish_washing else 0, dtype=jnp.int32
+        ),
+        dirty_pile_count=jnp.array(0, dtype=jnp.int32),
     )
 
     key, key_randomize = jax.random.split(key)
