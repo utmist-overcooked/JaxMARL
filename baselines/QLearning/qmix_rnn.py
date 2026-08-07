@@ -1,5 +1,6 @@
 import os
 import copy
+import inspect
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -26,6 +27,29 @@ from jaxmarl.wrappers.baselines import (
     LogWrapper,
     CTRolloutManager,
 )
+
+
+def _ensure_flax_scan_jax_compatibility():
+    api_util = jax.api_util
+    linear_util = jax.extend.linear_util
+
+    if not hasattr(api_util, "debug_info"):
+        def _debug_info(*args, **kwargs):
+            return None
+
+        api_util.debug_info = _debug_info
+
+    wrap_init_sig = inspect.signature(linear_util.wrap_init)
+    if "debug_info" not in wrap_init_sig.parameters:
+        original_wrap_init = linear_util.wrap_init
+
+        def _wrap_init_compat(f, params=None, debug_info=None):
+            return original_wrap_init(f, params=params)
+
+        linear_util.wrap_init = _wrap_init_compat
+
+
+_ensure_flax_scan_jax_compatibility()
 
 
 class ScannedRNN(nn.Module):

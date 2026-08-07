@@ -102,10 +102,18 @@ def process_interact(
         (interact_ingredients & DynamicObject.COOKED) != 0
     )
     pot_is_cooking = object_is_pot * (current_pot_timer > 0) * ~pot_is_cooked
-    pot_is_idle = object_is_pot * (current_pot_timer == 0) * ~pot_is_cooked
+    pot_is_burned = object_is_pot * (
+        (interact_ingredients & DynamicObject.BURNED) != 0
+    )
+    pot_is_idle = (
+        object_is_pot
+        * (current_pot_timer == 0)
+        * ~pot_is_cooked
+        * ~pot_is_burned
+    )
+    any_pot_cooking = jnp.any(pot_timers > config.pot_burn_time)
 
-    # Check if pot is ready (in burning window)
-    # In V3: dish_ready when cooking_timer is between 1 and burn_time
+    # Check if pot is ready.
     pot_is_ready = pot_is_cooked
 
     # Pickup success conditions
@@ -150,9 +158,12 @@ def process_interact(
         )
 
     # Drop on counter/conveyor
-    successful_drop = (
-        object_is_wall | object_is_conveyor
-    ) * object_has_no_ingredients * ~inventory_is_empty + successful_pot_placement
+    successful_counter_drop = (
+        (object_is_wall | object_is_conveyor)
+        * object_has_no_ingredients
+        * ~inventory_is_empty
+    )
+    successful_drop = successful_counter_drop | successful_pot_placement
 
     # Delivery
     successful_delivery = object_is_goal * inventory_is_dish
@@ -164,13 +175,40 @@ def process_interact(
         + object_is_ingredient_pile * StaticObject.get_ingredient(interact_item)
     )
 
+    # Ingredient pickup reward. Infinite ingredient piles are easy to farm
+    # by repeatedly picking up and dropping ingredients, so only pay for a
+    # pile pickup while the current recipe still needs that ingredient in
+    # play. Ingredients already on counters, in pots, or in inventories count
+    # toward the recipe demand.
+    successful_ingredient_pickup = object_is_ingredient_pile * inventory_is_empty
+    ingredient_selector_for_pile = pile_ingredient | (pile_ingredient << 1)
+    safe_pile_ingredient = jnp.maximum(pile_ingredient, 1)
+    ingredients_in_grid = jnp.sum(
+        (grid[:, :, 1] & ingredient_selector_for_pile) // safe_pile_ingredient
+    )
+    ingredients_in_inventories = jnp.sum(
+        (all_inventories & ingredient_selector_for_pile) // safe_pile_ingredient
+    )
+    ingredients_needed = (
+        recipe & ingredient_selector_for_pile
+    ) // safe_pile_ingredient
+    is_ingredient_pickup_useful = (
+        ingredients_in_grid + ingredients_in_inventories
+    ) < ingredients_needed
+    if config.shaped_rewards_enabled:
+        shaped_reward += (
+            successful_ingredient_pickup
+            * is_ingredient_pickup_useful
+            * SHAPED_REWARDS["INGREDIENT_PICKUP"]
+        )
+
     new_ingredients = (
         successful_drop * merged_ingredients + no_effect * interact_ingredients
     )
 
-    # Start cooking when pot becomes full
+    # Start cooking only when the final ingredient is placed.
     pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
-    auto_cook = pot_is_idle & pot_full_after_drop
+    auto_cook = successful_pot_placement & pot_full_after_drop
     initial_pot_timer = pot_cook_time + config.pot_burn_time
 
     # Update pot timer
@@ -216,7 +254,15 @@ def process_interact(
     if config.shaped_rewards_enabled:
         inventory_is_plate_now = new_inventory == DynamicObject.PLATE
         successful_plate_pickup = successful_pickup * inventory_is_plate_now
-        num_plates_in_inventory = jnp.sum(all_inventories == DynamicObject.PLATE)
+        # Count plates already committed to the task, whether held or
+        # dropped on counters. The previous gate only counted inventories,
+        # so pickup->drop->pickup from a plate pile could repeatedly earn
+        # PLATE_PICKUP while a full pot existed.
+        num_plates_in_grid = jnp.sum((grid[:, :, 1] & DynamicObject.PLATE) != 0)
+        num_plates_in_inventory = jnp.sum(
+            (all_inventories & DynamicObject.PLATE) != 0
+        )
+        num_plates_in_play = num_plates_in_grid + num_plates_in_inventory
         pot_ingredient_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
             grid[:, :, 1]
         )
@@ -226,14 +272,33 @@ def process_interact(
             & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
         )
         num_useful_pots = jnp.sum(full_unburned_pots)
-        is_plate_pickup_useful = num_plates_in_inventory < num_useful_pots
+        is_plate_pickup_useful = num_plates_in_play < num_useful_pots
         shaped_reward += (
             is_plate_pickup_useful
             * successful_plate_pickup
             * SHAPED_REWARDS["PLATE_PICKUP"]
         )
+        shaped_reward += (
+            any_pot_cooking
+            * is_plate_pickup_useful
+            * successful_plate_pickup
+            * SHAPED_REWARDS["PLATE_PICKUP_DURING_COOKING"]
+        )
 
     correct_delivery = successful_delivery & is_correct_recipe
+    event_metrics = jnp.array(
+        (
+            auto_cook & successful_pot_placement,
+            successful_pot_placement,
+            successful_pickup,
+            successful_counter_drop,
+            successful_dish_pickup,
+            0.0,  # Filled in after movement with progress toward delivery.
+            correct_delivery,
+            0.0,  # Filled in after pot timers update if a pot burns.
+        ),
+        dtype=jnp.float32,
+    )
 
     return (
         new_grid,
@@ -241,5 +306,6 @@ def process_interact(
         correct_delivery,
         reward,
         shaped_reward,
+        event_metrics,
         new_pot_timers,
     )

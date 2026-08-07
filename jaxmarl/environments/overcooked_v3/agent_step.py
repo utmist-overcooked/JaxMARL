@@ -12,6 +12,7 @@ from jaxmarl.environments.overcooked_v3.common import (
     Agent,
     ButtonAction,
     Direction,
+    DynamicObject,
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
@@ -20,11 +21,14 @@ from jaxmarl.environments.overcooked_v3.interactions import (
     sample_pot_cook_time,
 )
 from jaxmarl.environments.overcooked_v3.settings import (
+    BURN_PENALTY,
+    EVENT_NAMES,
     MAX_BARRIERS,
     MAX_BUTTONS,
     MAX_BUTTON_TARGETS,
     MAX_MOVING_WALLS,
     MAX_PRESSURE_PLATES,
+    SHAPED_REWARDS,
 )
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
@@ -62,7 +66,7 @@ def run_agent_action_phase(
     state: State,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> Tuple[State, float, chex.Array]:
+) -> Tuple[State, float, chex.Array, chex.Array]:
     """Run movement, collision handling, interactions, and button effects."""
     barrier_walkable_by_pressure_plate = (
         find_barriers_opened_by_current_pressure_plate_occupants(state, config)
@@ -75,12 +79,12 @@ def run_agent_action_phase(
     )
     moved_agents = prevent_agents_from_swapping_positions(state.agents, moved_agents)
 
-    state, reward, shaped_rewards = apply_agent_interact_actions(
+    state, reward, shaped_rewards, event_metrics = apply_agent_interact_actions(
         key, state, moved_agents, actions, config
     )
     state = apply_agent_button_interactions(state, actions, config)
 
-    return state, reward, shaped_rewards
+    return state, reward, shaped_rewards, event_metrics
 
 def find_barriers_opened_by_current_pressure_plate_occupants(
     state: State, config: OvercookedV3Config
@@ -228,8 +232,9 @@ def apply_agent_interact_actions(
     moved_agents: Agent,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> Tuple[State, float, chex.Array]:
+) -> Tuple[State, float, chex.Array, chex.Array]:
     """Apply interact actions, update carried items, and advance pot timers."""
+    num_events = len(EVENT_NAMES)
 
     def _interact_wrapper(carry, x):
         agent, action = x
@@ -254,6 +259,7 @@ def apply_agent_interact_actions(
                 new_correct_delivery,
                 interact_reward,
                 shaped_reward,
+                event_metrics,
                 new_pot_timers,
             ) = process_interact(
                 grid,
@@ -283,10 +289,17 @@ def apply_agent_interact_actions(
                 new_pot_cook_durations,
                 key,
             )
-            return carry, (new_agent, shaped_reward)
+            return carry, (new_agent, shaped_reward, event_metrics)
 
         return jax.lax.cond(
-            is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
+            is_interact,
+            _interact,
+            lambda c, a: (
+                c,
+                (a, 0.0, jnp.zeros((num_events,), dtype=jnp.float32)),
+            ),
+            carry,
+            agent,
         )
 
     carry = (
@@ -307,15 +320,29 @@ def apply_agent_interact_actions(
             new_pot_cook_durations,
             _key,
         ),
-        (new_agents, shaped_rewards),
+        (new_agents, shaped_rewards, event_metrics),
     ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
-    new_grid, new_pot_timers = update_pot_timers(
+    # Once an agent is carrying plated soup, shape by signed Euclidean
+    # progress toward the nearest delivery zone. The sign is important:
+    # positive-only progress lets the agent move toward delivery, move away
+    # for free, and repeat forever without actually delivering.
+    shaped_rewards, event_metrics = add_dish_to_goal_progress_shaping(
+        state.agents, new_agents, shaped_rewards, event_metrics, config
+    )
+
+    new_grid, new_pot_timers, burn_count = update_pot_timers(
         new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask, config
     )
     new_pot_cook_durations = jnp.where(
         new_pot_timers == 0, 0, new_pot_cook_durations
     )
+
+    reward = reward + burn_count * BURN_PENALTY
+    burn_events = (
+        jnp.zeros((config.num_agents,), dtype=jnp.float32).at[0].set(burn_count)
+    )
+    event_metrics = event_metrics.at[:, EVENT_NAMES.index("pot_burn")].set(burn_events)
 
     return (
         state.replace(
@@ -327,7 +354,44 @@ def apply_agent_interact_actions(
         ),
         reward,
         shaped_rewards,
+        event_metrics,
     )
+
+
+def add_dish_to_goal_progress_shaping(
+    original_agents: Agent,
+    new_agents: Agent,
+    shaped_rewards: chex.Array,
+    event_metrics: chex.Array,
+    config: OvercookedV3Config,
+) -> Tuple[chex.Array, chex.Array]:
+    """Add signed distance-to-delivery shaping for agents carrying plated soup."""
+    goal_positions = jnp.asarray(config.goal_positions, dtype=jnp.float32)
+
+    if goal_positions.shape[0] == 0:
+        return shaped_rewards, event_metrics
+
+    def _nearest_goal_distance(pos):
+        dx = goal_positions[:, 1] - pos.x.astype(jnp.float32)
+        dy = goal_positions[:, 0] - pos.y.astype(jnp.float32)
+        return jnp.min(jnp.sqrt(dx * dx + dy * dy))
+
+    old_goal_distance = jax.vmap(_nearest_goal_distance)(original_agents.pos)
+    new_goal_distance = jax.vmap(_nearest_goal_distance)(new_agents.pos)
+    carrying_dish_before = (original_agents.inventory & DynamicObject.COOKED) != 0
+    carrying_dish_after = (new_agents.inventory & DynamicObject.COOKED) != 0
+    dish_to_goal_progress = (
+        carrying_dish_before & carrying_dish_after & config.shaped_rewards_enabled
+    ) * (old_goal_distance - new_goal_distance)
+
+    shaped_rewards = shaped_rewards + (
+        dish_to_goal_progress * SHAPED_REWARDS["DISH_TO_GOAL_PROGRESS"]
+    )
+    event_metrics = event_metrics.at[
+        :, EVENT_NAMES.index("dish_to_goal_progress")
+    ].set(dish_to_goal_progress)
+
+    return shaped_rewards, event_metrics
 
 def apply_agent_button_interactions(
     state: State,

@@ -286,7 +286,7 @@ class TestOvercookedV3PotMechanics:
             state.pot_active_mask,
             jnp.array(7, dtype=jnp.int32),
         )
-        _, _, _, _, _, first_timers = first_result
+        _, _, _, _, _, _, first_timers = first_result
         assert int(first_timers[0]) == 12
 
         second_grid = base_grid
@@ -303,7 +303,7 @@ class TestOvercookedV3PotMechanics:
             state.pot_active_mask,
             jnp.array(11, dtype=jnp.int32),
         )
-        _, _, _, _, _, second_timers = second_result
+        _, _, _, _, _, _, second_timers = second_result
         assert int(second_timers[0]) == 16
 
     def test_started_pot_tracks_sampled_cook_duration(self):
@@ -329,7 +329,7 @@ class TestOvercookedV3PotMechanics:
         state = state.replace(agents=agents, grid=grid)
         actions = jnp.full(env.num_agents, Actions.stay).at[0].set(Actions.interact)
 
-        new_state, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
+        new_state, _, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
 
         assert int(new_state.pot_cooking_timer[0]) == 11
         assert int(new_state.pot_cook_durations[0]) == 7
@@ -369,7 +369,7 @@ class TestOvercookedV3PotMechanics:
             state.pot_positions,
             state.pot_active_mask,
         )
-        _, _, _, _, _, timers = result
+        _, _, _, _, _, _, timers = result
         assert int(timers[0]) == 104
 
     def _setup_full_pot(self, env, state, timer_value):
@@ -520,7 +520,7 @@ class TestOvercookedV3PotMechanics:
         )
         actions = jnp.full(env.num_agents, Actions.stay).at[0].set(Actions.interact)
 
-        state, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
+        state, _, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
         assert int(state.pot_cooking_timer[0]) == 6
         assert int(state.pot_cook_durations[0]) == 4
 

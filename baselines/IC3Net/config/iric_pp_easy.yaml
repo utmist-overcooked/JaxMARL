@@ -1,0 +1,34 @@
+# IRIC (Independent Reward IC) training configuration for PredatorPrey (Easy)
+ENV_NAME: "predator_prey_grid"
+ENV_KWARGS:
+  num_agents: 3
+  dim: 5
+  vision: 0
+  max_steps: 20
+  mode: "mixed"
+
+BASELINE: "iric"
+HIDDEN_DIM: 128
+RECURRENT: true
+DETACH_GAP: 10
+
+TOTAL_TIMESTEPS: 6_400_000
+NUM_ENVS: 16
+NUM_STEPS: 20
+GAMMA: 1.0
+NORMALIZE_ADVANTAGES: false
+
+LR: 0.001
+RMSPROP_ALPHA: 0.97
+RMSPROP_EPS: 1e-6
+MAX_GRAD_NORM: 0.5
+VALUE_COEFF: 0.01
+ENTROPY_COEFF: 0.0
+
+WANDB_MODE: "disabled"
+WANDB_PROJECT: "jaxmarl-ic3net"
+WANDB_NAME: "iric_pp_easy"
+SAVE_PATH: "checkpoints/iric_pp_easy"
+LOG_EVERY: 100
+SEED: 42
+

@@ -1,14 +1,14 @@
 FROM nvcr.io/nvidia/jax:24.10-py3
 
 # Create user
-ARG UID
-ARG MYUSER
-RUN useradd -u $UID --create-home ${MYUSER}
+ARG UID=1000
+ARG MYUSER=jaxmarl
+RUN useradd -u ${UID} --create-home ${MYUSER}
 USER ${MYUSER}
 
 # default workdir
 WORKDIR /home/${MYUSER}/
-COPY --chown=${MYUSER} --chmod=765 . .
+COPY --chown=${MYUSER} . .
 
 USER root
 

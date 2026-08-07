@@ -129,7 +129,15 @@ def get_obs_default(state: State, config: OvercookedV3Config) -> chex.Array:
         return layers
 
     recipe_indicator_mask = static_objects == StaticObject.RECIPE_INDICATOR
-    recipe_ingredients = jnp.where(recipe_indicator_mask, state.recipe, 0)
+    has_recipe_indicator = jnp.any(recipe_indicator_mask)
+    # Order queues can change the target recipe mid-episode. Some older
+    # layouts, including around_the_island, have no R tile because they used
+    # a fixed recipe; broadcast the active order in the existing recipe
+    # channels so the policy can observe what should be delivered.
+    recipe_visible_mask = recipe_indicator_mask | (
+        config.enable_order_queue & ~has_recipe_indicator
+    )
+    recipe_ingredients = jnp.where(recipe_visible_mask, state.recipe, 0)
 
     pot_timer_layer = jnp.zeros((height, width), dtype=jnp.int32)
     for i in range(MAX_POTS):

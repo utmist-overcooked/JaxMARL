@@ -24,3 +24,6 @@
 "ENTITY": ""
 "PROJECT": ""
 "WANDB_MODE" : "disabled"
+
+# Optional: absolute path for saved gif. If null, saves to hydra run output dir.
+"SAVE_GIF_PATH": ~
