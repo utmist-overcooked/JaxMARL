@@ -35,7 +35,7 @@ from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 NUM_PLATES = 3
 CLEAN_PLATE = int(DynamicObject.PLATE)
 DIRTY_PLATE = int(DynamicObject.PLATE | DynamicObject.DIRTY)
-DEFAULT_DIR = "docs/imgs/overcooked_v3_dish_washing"
+DEFAULT_DIR = "layout_pictures/multi_step/overcooked_v3_dish_washing"
 
 
 def count_plates(state) -> int:
