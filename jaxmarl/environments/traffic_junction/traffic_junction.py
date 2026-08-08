@@ -130,56 +130,64 @@ class TrafficJunction(MultiAgentEnv):
         # movement targets
         targets = state.p_pos + self.move_vectors[new_dir] * gas_intent[:, None]
 
-        def move_body(i, carry):
-            final_pos, occupied_grid, collision_mask = carry
-            ty, tx = targets[i, 0], targets[i, 1]
-            
-            in_bounds = (ty >= 0) & (ty < self.grid_size) & (tx >= 0) & (tx < self.grid_size)
-            
-            # This prevents the XLA crash by ensuring the index is always valid
-            safe_ty = jnp.clip(ty, 0, self.grid_size - 1)
-            safe_tx = jnp.clip(tx, 0, self.grid_size - 1)
-            
-            # Check occupancy. 
-            # If target is off-grid, occupied_grid value is meaningless (always 0), so is_free=True.
-            # If target is on-grid, we check the grid.
-            is_free = (occupied_grid[safe_ty, safe_tx] == 0) | (~in_bounds)
-            
-            can_move = gas_intent[i] & is_free
-            
-            actual_pos = jnp.where(can_move, targets[i], state.p_pos[i])
-            
-            # We only mark the grid if the NEW position is actually on the grid.
-            # We divert off-grid updates to 0,0 with value 0 (no-op) to prevent wrapping.
-            pos_on_grid = (actual_pos[0] >= 0) & (actual_pos[0] < self.grid_size) & \
-                          (actual_pos[1] >= 0) & (actual_pos[1] < self.grid_size)
-            
-            safe_y = jnp.where(pos_on_grid, actual_pos[0], 0)
-            safe_x = jnp.where(pos_on_grid, actual_pos[1], 0)
-            val_to_add = jnp.where(pos_on_grid, 1, 0)
-            
-            new_occupied = occupied_grid.at[safe_y, safe_x].add(val_to_add)
-            
-            # Collision: You collided if you wanted to move, target was IN BOUNDS, but blocked.
-            had_collision = gas_intent[i] & ~can_move & in_bounds
-            
-            return final_pos.at[i].set(actual_pos), new_occupied, collision_mask.at[i].set(had_collision)
+        target_in_bounds = (targets[:, 0] >= 0) & (targets[:, 0] < self.grid_size) & \
+                           (targets[:, 1] >= 0) & (targets[:, 1] < self.grid_size)
+        safe_target_y = jnp.clip(targets[:, 0], 0, self.grid_size - 1)
+        safe_target_x = jnp.clip(targets[:, 1], 0, self.grid_size - 1)
 
-        # Initialize occupancy grid
-        # We must mask out off-grid start positions so they don't wrap around
-        init_occupied = jnp.zeros((self.grid_size, self.grid_size), dtype=jnp.int32)
-        
-        start_on_grid = (state.p_pos[:, 0] >= 0) & (state.p_pos[:, 0] < self.grid_size) & \
+        start_on_grid = state.active & \
+                        (state.p_pos[:, 0] >= 0) & (state.p_pos[:, 0] < self.grid_size) & \
                         (state.p_pos[:, 1] >= 0) & (state.p_pos[:, 1] < self.grid_size)
-        
-        safe_start_y = jnp.where(start_on_grid, state.p_pos[:, 0], 0)
-        safe_start_x = jnp.where(start_on_grid, state.p_pos[:, 1], 0)
-        start_vals = jnp.where(start_on_grid & state.active, 1, 0)
-        
-        init_occupied = init_occupied.at[safe_start_y, safe_start_x].add(start_vals)
-        
-        final_pos, _, collision_mask = jax.lax.fori_loop(0, self.num_agents, move_body, 
-                                                        (state.p_pos, init_occupied, jnp.zeros(self.num_agents, dtype=bool)))
+        safe_start_y = jnp.clip(state.p_pos[:, 0], 0, self.grid_size - 1)
+        safe_start_x = jnp.clip(state.p_pos[:, 1], 0, self.grid_size - 1)
+
+        # Map each occupied source cell to its car. A target occupied by another
+        # moving car becomes available once that car's own movement is resolved.
+        empty_cell = self.num_agents
+        source_occupants = jnp.full(
+            (self.grid_size, self.grid_size), empty_cell, dtype=jnp.int32
+        )
+        source_updates = jnp.where(start_on_grid, self.agent_range, empty_cell)
+        source_occupants = source_occupants.at[safe_start_y, safe_start_x].min(
+            source_updates
+        )
+
+        # Preserve the previous deterministic tie-break: the lowest-index car
+        # wins when multiple cars request the same destination.
+        target_winners = jnp.full(
+            (self.grid_size, self.grid_size), empty_cell, dtype=jnp.int32
+        )
+        target_updates = jnp.where(
+            gas_intent & target_in_bounds, self.agent_range, empty_cell
+        )
+        target_winners = target_winners.at[safe_target_y, safe_target_x].min(
+            target_updates
+        )
+        wins_target = (~target_in_bounds) | (
+            target_winners[safe_target_y, safe_target_x] == self.agent_range
+        )
+
+        target_occupants = source_occupants[safe_target_y, safe_target_x]
+        target_is_empty = target_occupants == empty_cell
+        safe_target_occupants = jnp.clip(target_occupants, 0, self.num_agents - 1)
+
+        # Propagate movement permission backward through a convoy. A chain ending
+        # at an empty cell advances together; a chain ending at a stopped car does
+        # not. Starting from False also prevents head-on swaps from passing through
+        # one another.
+        def resolve_movement(_, can_move):
+            occupant_will_move = (~target_is_empty) & can_move[safe_target_occupants]
+            target_available = (~target_in_bounds) | target_is_empty | occupant_will_move
+            return gas_intent & wins_target & target_available
+
+        can_move = jax.lax.fori_loop(
+            0,
+            self.num_agents,
+            resolve_movement,
+            jnp.zeros(self.num_agents, dtype=bool),
+        )
+        final_pos = jnp.where(can_move[:, None], targets, state.p_pos)
+        collision_mask = gas_intent & ~can_move & target_in_bounds
 
         # exit logic: determine if cars have exited the grid after passing junction
         target_oob = (targets[:, 0] < 0) | (targets[:, 0] >= self.grid_size) | \
