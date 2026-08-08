@@ -17,10 +17,15 @@ DEFAULT_MAX_ORDERS = 5
 
 # Shaped rewards for intermediate actions
 SHAPED_REWARDS = {
-    "PLACEMENT_IN_POT": 0.1,      # Adding correct ingredient to pot
-    "SOUP_IN_DISH": 0.3,          # Picking up cooked soup with plate
-    "PLATE_PICKUP": 0.1,          # Picking up a plate when useful
-    "POT_START_COOKING": 0.2,     # Starting to cook a correct recipe
+    "PLACEMENT_IN_POT": 1.0,      # Adding correct ingredient to pot
+    "SOUP_IN_DISH": 10.0,         # Picking up cooked soup with plate
+    "PLATE_PICKUP": 1.0,          # Picking up a plate when useful
+    "POT_START_COOKING": 5.0,     # Starting to cook a correct recipe
+    "HANDOFF_DROP": 0.25,         # Dropping useful item onto a middle handoff counter
+    "HANDOFF_PICKUP": 0.25,       # Picking useful item up from a middle handoff counter
+    "TASK_PROGRESS": 0.02,        # Moving closer to the current useful object
+    "TASK_FACING": 0.01,          # Facing a useful object after a movement action
+    "INVALID_MOVE": -0.002,       # Trying to move into a blocked cell
 }
 
 # Maximum number of pots to track (for fixed array sizes)

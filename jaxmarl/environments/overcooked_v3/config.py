@@ -31,6 +31,7 @@ class OvercookedV3Config:
     enable_pressure_plates: bool
     delivery_reward: float
     shaped_rewards_enabled: bool
+    dense_task_shaping: bool
     random_reset: bool
     random_agent_positions: bool
     possible_recipes: Any

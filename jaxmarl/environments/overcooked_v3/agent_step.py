@@ -16,6 +16,7 @@ from jaxmarl.environments.overcooked_v3.common import (
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.interactions import (
+    dense_task_shaping,
     process_interact,
     sample_pot_cook_time,
 )
@@ -75,9 +76,16 @@ def run_agent_action_phase(
     )
     moved_agents = prevent_agents_from_swapping_positions(state.agents, moved_agents)
 
+    dense_shaped_rewards = jnp.zeros((config.num_agents,), dtype=jnp.float32)
+    if config.shaped_rewards_enabled and config.dense_task_shaping:
+        dense_shaped_rewards = dense_task_shaping(
+            state.grid, state.recipe, state.agents, moved_agents, actions, config
+        )
+
     state, reward, shaped_rewards = apply_agent_interact_actions(
         key, state, moved_agents, actions, config
     )
+    shaped_rewards = shaped_rewards + dense_shaped_rewards
     state = apply_agent_button_interactions(state, actions, config)
 
     return state, reward, shaped_rewards
