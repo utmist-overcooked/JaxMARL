@@ -227,3 +227,6 @@ truncating a run.
 In the PR description, first describe the previous code path and behavior, then explain how the PR changes it. Follow with bullet points describing the concrete behavioral impact: what agents, gameplay, training, evaluation, or artifacts did before and what they do after the change.
 
 If the PR affects gameplay, make a gif with a scripted policy that you code up to show the functionality difference between the old gameplay and the new gameplay, and then put this at the VERY TOP of the PR description.
+
+Agents are also encouraged to create and add more GIFs whenever they are relevant
+and help reviewers understand the impact of the PR.
