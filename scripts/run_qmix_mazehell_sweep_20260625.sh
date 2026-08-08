@@ -40,7 +40,7 @@ for COEFF in 1.0 2.5 5.0; do
         alg.ENV_KWARGS.layout=maze_conveyor_hell alg.ENV_KWARGS.agent_view_size=null \
         alg.ENV_KWARGS.max_steps=1000 alg.ENV_KWARGS.pot_cook_time=20 alg.ENV_KWARGS.pot_burn_time=1000000 \
         alg.ENV_KWARGS.enable_order_queue=true alg.ENV_KWARGS.max_orders=5 alg.ENV_KWARGS.order_generation_rate=1.0 \
-        alg.ENV_KWARGS.order_expiration_time=0 alg.ENV_KWARGS.order_queue_mode=alternating \
+        alg.ENV_KWARGS.order_expiration_time=0 alg.ENV_KWARGS.recipe_mode=fixed \
         +alg.ENV_KWARGS.plate_pickup_guard=2 alg.ENV_KWARGS.enable_item_conveyors=true alg.ENV_KWARGS.enable_player_conveyors=false \
         +alg.ENV_KWARGS.dish_to_target_agent=1 +alg.ENV_KWARGS.dish_to_target_col=9 \
         +alg.ENV_KWARGS.dish_to_target_row=6 +alg.ENV_KWARGS.dish_to_target_progress_reward=0.1 \

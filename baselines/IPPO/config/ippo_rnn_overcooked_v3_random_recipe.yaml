@@ -2,7 +2,7 @@ ENV_NAME: "overcooked_v3"
 ENV_KWARGS:
   layout: "random_recipe_demo"
   agent_view_size: 2
-  enable_random_recipe: true
+  recipe_mode: "random"
   recipe_probs: [0.7, 0.3]
   enable_order_queue: false
   random_agent_positions: true

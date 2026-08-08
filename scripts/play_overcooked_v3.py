@@ -61,7 +61,7 @@ def build(layout_name):
     }
     if layout_name == "random_recipe_demo":
         env_kwargs.update(
-            enable_random_recipe=True,
+            recipe_mode="random",
             recipe_probs=[0.5, 0.5],
         )
     env = make("overcooked_v3", **env_kwargs)
@@ -153,7 +153,7 @@ def main():
         print(f"    enable_moving_walls={env.enable_moving_walls} "
               f"enable_buttons={env.enable_buttons} "
               f"enable_pressure_plates={env.enable_pressure_plates}")
-        if env.enable_random_recipe:
+        if env.recipe_mode == "random":
             print("    recipe target resamples between onion and tomato after delivery")
         return env, viz, state, screen, name
 

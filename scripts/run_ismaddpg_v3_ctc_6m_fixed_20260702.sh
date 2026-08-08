@@ -4,7 +4,7 @@
 # NOTE: unlike QMIX (Hydra, +alg.* keys), IS-MADDPG/run_overcooked_v3.py uses argparse.
 # Only --layout/--total_timesteps/--num_envs/--max_steps/--seed/--save_path/--wandb/
 # --wandb_entity are exposed; everything else (BUFFER_SIZE=200k, BATCH=512, ACTOR/CRITIC_LR,
-# GAMMA, etc.) is hardcoded in make_overcooked_config(). Env kwargs (order_queue_mode,
+# GAMMA, etc.) is hardcoded in make_overcooked_config(). Env kwargs (recipe_mode,
 # max_orders, conveyor flags) are NOT passable on the CLI — OvercookedV3(layout=CTC) only
 # auto-enables item conveyors from the layout; the order-queue/alternating config the QMIX
 # scripts pass is left at env defaults here. Edit make_overcooked_config to change those.
