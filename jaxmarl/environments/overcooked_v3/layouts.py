@@ -234,13 +234,13 @@ WWWWWWRWW
 
 pressure_gated_circuit = """
 WWWWWWWWW
-W       W
+W   #   W
 W PWWW0 W
-W W   W W
-W W A_W#W
-W W   W W
+W W _ W W
+W#W_A_W#W
+W W _ W W
 W XWWWB W
-W   W  AW
+W   #  AW
 WWWWWWRWW
 """
 
