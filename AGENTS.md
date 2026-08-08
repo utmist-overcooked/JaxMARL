@@ -19,7 +19,7 @@ often require understanding both packages.
 ## Tech Stack
 
 Python 3.10+ · JAX/JAXlib · Flax · Optax · Distrax · Chex · Hydra/OmegaConf ·
-Weights &amp; Biases · pytest · pygame · Pillow/Matplotlib
+Weights & Biases · pytest · pygame · Pillow/Matplotlib
 
 The code is designed around JAX transformations (`jit`, `vmap`, and `lax.scan`).
 Environment state uses fixed-shape arrays and JAX-compatible dataclasses.
