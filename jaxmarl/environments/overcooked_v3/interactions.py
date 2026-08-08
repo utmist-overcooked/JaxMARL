@@ -1,14 +1,33 @@
 """Agent interaction rules for Overcooked V3."""
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import chex
 import jax
 import jax.numpy as jnp
 
-from jaxmarl.environments.overcooked_v3.common import DynamicObject, StaticObject, Agent
+from jaxmarl.environments.overcooked_v3.common import (
+    Actions,
+    Agent,
+    ButtonAction,
+    Direction,
+    DynamicObject,
+    StaticObject,
+)
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
-from jaxmarl.environments.overcooked_v3.settings import MAX_POTS, SHAPED_REWARDS
+from jaxmarl.environments.overcooked_v3.settings import (
+    BURN_PENALTY,
+    EVENT_NAMES,
+    MAX_BARRIERS,
+    MAX_BUTTONS,
+    MAX_BUTTON_TARGETS,
+    MAX_MOVING_WALLS,
+    MAX_POTS,
+    SHAPED_REWARDS,
+)
+from jaxmarl.environments.overcooked_v3.state import State
+from jaxmarl.environments.overcooked_v3.systems.barriers import barriers_occupied
+from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
 
 
 def sample_pot_cook_time(
@@ -26,6 +45,398 @@ def sample_pot_cook_time(
         max_cook_time + 1,
         dtype=jnp.int32,
     )
+
+
+def apply_agent_button_interactions(
+    state: State,
+    actions: chex.Array,
+    config: OvercookedV3Config,
+) -> State:
+    """Apply button interactions that affect moving walls and barriers."""
+    if not config.enable_buttons:
+        return state
+
+    barrier_occupied = barriers_occupied(
+        state.agents.pos.y,
+        state.agents.pos.x,
+        state.barrier_positions,
+        state.barrier_active_mask,
+    )
+
+    def _process_agent_button(carry, x):
+        mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer = carry
+        agent, action = x
+        is_interact = action == Actions.interact
+        fwd_pos = agent.get_fwd_pos()
+        fwd_static = state.grid[fwd_pos.y, fwd_pos.x, 0]
+        is_button = fwd_static == StaticObject.BUTTON
+
+        def _scan_buttons(carry):
+            (
+                mw_dirs,
+                mw_paused,
+                mw_bounce,
+                btn_toggled,
+                bar_active,
+                bar_timer,
+            ) = carry
+
+            def _check_button(carry, button_idx):
+                (
+                    mw_dirs,
+                    mw_paused,
+                    mw_bounce,
+                    btn_toggled,
+                    bar_active,
+                    bar_timer,
+                ) = carry
+                btn_y = state.button_positions[button_idx, 0]
+                btn_x = state.button_positions[button_idx, 1]
+                is_active = state.button_active_mask[button_idx]
+                is_this = (btn_y == fwd_pos.y) & (btn_x == fwd_pos.x) & is_active
+
+                action_type = state.button_action_type[button_idx]
+
+                new_toggled = jax.lax.select(
+                    is_this, ~btn_toggled[button_idx], btn_toggled[button_idx]
+                )
+                btn_toggled = btn_toggled.at[button_idx].set(new_toggled)
+
+                def _apply_target(carry, target_slot):
+                    (
+                        mw_dirs,
+                        mw_paused,
+                        mw_bounce,
+                        bar_active,
+                        bar_timer,
+                    ) = carry
+                    target_idx = state.button_target_idxs[button_idx, target_slot]
+                    target_enabled = state.button_target_mask[button_idx, target_slot]
+                    should_apply = is_this & target_enabled
+                    mw_idx = jnp.clip(target_idx, 0, MAX_MOVING_WALLS - 1)
+                    barrier_idx = jnp.clip(target_idx, 0, MAX_BARRIERS - 1)
+
+                    mw_paused = jax.lax.select(
+                        should_apply & (action_type == ButtonAction.TOGGLE_PAUSE),
+                        mw_paused.at[mw_idx].set(~mw_paused[mw_idx]),
+                        mw_paused,
+                    )
+
+                    new_dir = Direction.opposite(mw_dirs[mw_idx])
+                    mw_dirs = jax.lax.select(
+                        should_apply & (action_type == ButtonAction.TOGGLE_DIRECTION),
+                        mw_dirs.at[mw_idx].set(new_dir),
+                        mw_dirs,
+                    )
+
+                    mw_bounce = jax.lax.select(
+                        should_apply & (action_type == ButtonAction.TOGGLE_BOUNCE),
+                        mw_bounce.at[mw_idx].set(~mw_bounce[mw_idx]),
+                        mw_bounce,
+                    )
+
+                    mw_paused = jax.lax.select(
+                        should_apply & (action_type == ButtonAction.TRIGGER_MOVE),
+                        mw_paused.at[mw_idx].set(False),
+                        mw_paused,
+                    )
+
+                    toggled_active = ~bar_active[barrier_idx]
+                    safe_active = jnp.where(
+                        toggled_active & barrier_occupied[barrier_idx],
+                        bar_active[barrier_idx],
+                        toggled_active,
+                    )
+                    bar_active = jax.lax.select(
+                        should_apply & (action_type == ButtonAction.TOGGLE_BARRIER),
+                        bar_active.at[barrier_idx].set(safe_active),
+                        bar_active,
+                    )
+
+                    bar_active = jax.lax.select(
+                        should_apply & (action_type == ButtonAction.TIMED_BARRIER),
+                        bar_active.at[barrier_idx].set(False),
+                        bar_active,
+                    )
+                    bar_timer = jax.lax.select(
+                        should_apply & (action_type == ButtonAction.TIMED_BARRIER),
+                        bar_timer.at[barrier_idx].set(
+                            state.barrier_duration[barrier_idx]
+                        ),
+                        bar_timer,
+                    )
+
+                    return (
+                        mw_dirs,
+                        mw_paused,
+                        mw_bounce,
+                        bar_active,
+                        bar_timer,
+                    ), None
+
+                (
+                    mw_dirs,
+                    mw_paused,
+                    mw_bounce,
+                    bar_active,
+                    bar_timer,
+                ), _ = jax.lax.scan(
+                    _apply_target,
+                    (
+                        mw_dirs,
+                        mw_paused,
+                        mw_bounce,
+                        bar_active,
+                        bar_timer,
+                    ),
+                    jnp.arange(MAX_BUTTON_TARGETS),
+                )
+
+                return (
+                    mw_dirs,
+                    mw_paused,
+                    mw_bounce,
+                    btn_toggled,
+                    bar_active,
+                    bar_timer,
+                ), None
+
+            (
+                (
+                    mw_dirs,
+                    mw_paused,
+                    mw_bounce,
+                    btn_toggled,
+                    bar_active,
+                    bar_timer,
+                ),
+                _,
+            ) = jax.lax.scan(
+                _check_button,
+                (
+                    mw_dirs,
+                    mw_paused,
+                    mw_bounce,
+                    btn_toggled,
+                    bar_active,
+                    bar_timer,
+                ),
+                jnp.arange(MAX_BUTTONS),
+            )
+            return (
+                mw_dirs,
+                mw_paused,
+                mw_bounce,
+                btn_toggled,
+                bar_active,
+                bar_timer,
+            )
+
+        should_process = is_interact & is_button
+        new_carry = jax.lax.cond(
+            should_process,
+            _scan_buttons,
+            lambda c: c,
+            (mw_dirs, mw_paused, mw_bounce, btn_toggled, bar_active, bar_timer),
+        )
+
+        return new_carry, None
+
+    (
+        (
+            new_mw_directions,
+            new_mw_paused,
+            new_mw_bounce,
+            new_btn_toggled,
+            new_barrier_active,
+            new_barrier_timer,
+        ),
+        _,
+    ) = jax.lax.scan(
+        _process_agent_button,
+        (
+            state.moving_wall_directions,
+            state.moving_wall_paused,
+            state.moving_wall_bounce,
+            state.button_toggled,
+            state.barrier_active,
+            state.barrier_timer,
+        ),
+        (state.agents, actions),
+    )
+
+    return state.replace(
+        moving_wall_directions=new_mw_directions,
+        moving_wall_paused=new_mw_paused,
+        moving_wall_bounce=new_mw_bounce,
+        button_toggled=new_btn_toggled,
+        barrier_active=new_barrier_active,
+        barrier_timer=new_barrier_timer,
+    )
+
+
+def apply_agent_interact_actions(
+    key: chex.PRNGKey,
+    state: State,
+    moved_agents: Agent,
+    actions: chex.Array,
+    config: OvercookedV3Config,
+) -> Tuple[State, float, chex.Array, chex.Array]:
+    """Apply interact actions, update carried items, and advance pot timers."""
+    num_events = len(EVENT_NAMES)
+
+    def _interact_wrapper(carry, x):
+        agent, action = x
+        is_interact = action == Actions.interact
+
+        def _interact(carry, agent):
+            (
+                grid,
+                correct_delivery,
+                reward,
+                pot_timers,
+                pot_cook_durations,
+                key,
+            ) = carry
+
+            key, subkey = jax.random.split(key)
+            pot_cook_time = sample_pot_cook_time(subkey, config)
+
+            (
+                new_grid,
+                new_agent,
+                new_correct_delivery,
+                interact_reward,
+                shaped_reward,
+                event_metrics,
+                new_pot_timers,
+            ) = process_interact(
+                grid,
+                agent,
+                moved_agents.inventory,
+                state.recipe,
+                pot_timers,
+                state.pot_positions,
+                state.pot_active_mask,
+                config,
+                pot_cook_time,
+            )
+
+            pot_started = (pot_timers == 0) & (new_pot_timers > 0)
+            new_pot_cook_durations = jnp.where(
+                pot_started, pot_cook_time, pot_cook_durations
+            )
+            new_pot_cook_durations = jnp.where(
+                new_pot_timers == 0, 0, new_pot_cook_durations
+            )
+
+            carry = (
+                new_grid,
+                correct_delivery | new_correct_delivery,
+                reward + interact_reward,
+                new_pot_timers,
+                new_pot_cook_durations,
+                key,
+            )
+            return carry, (new_agent, shaped_reward, event_metrics)
+
+        return jax.lax.cond(
+            is_interact,
+            _interact,
+            lambda c, a: (
+                c,
+                (a, 0.0, jnp.zeros((num_events,), dtype=jnp.float32)),
+            ),
+            carry,
+            agent,
+        )
+
+    carry = (
+        state.grid,
+        False,
+        0.0,
+        state.pot_cooking_timer,
+        state.pot_cook_durations,
+        key,
+    )
+    xs = (moved_agents, actions)
+    (
+        (
+            new_grid,
+            new_correct_delivery,
+            reward,
+            new_pot_timers,
+            new_pot_cook_durations,
+            _key,
+        ),
+        (new_agents, shaped_rewards, event_metrics),
+    ) = jax.lax.scan(_interact_wrapper, carry, xs)
+
+    shaped_rewards, event_metrics = add_dish_to_goal_progress_shaping(
+        state.agents, new_agents, shaped_rewards, event_metrics, config
+    )
+
+    new_grid, new_pot_timers, burn_count = update_pot_timers(
+        new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask, config
+    )
+    new_pot_cook_durations = jnp.where(
+        new_pot_timers == 0, 0, new_pot_cook_durations
+    )
+
+    reward = reward + burn_count * BURN_PENALTY
+    burn_events = (
+        jnp.zeros((config.num_agents,), dtype=jnp.float32).at[0].set(burn_count)
+    )
+    event_metrics = event_metrics.at[:, EVENT_NAMES.index("pot_burn")].set(burn_events)
+
+    return (
+        state.replace(
+            agents=new_agents,
+            grid=new_grid,
+            pot_cooking_timer=new_pot_timers,
+            pot_cook_durations=new_pot_cook_durations,
+            new_correct_delivery=new_correct_delivery,
+        ),
+        reward,
+        shaped_rewards,
+        event_metrics,
+    )
+
+
+def add_dish_to_goal_progress_shaping(
+    original_agents: Agent,
+    new_agents: Agent,
+    shaped_rewards: chex.Array,
+    event_metrics: chex.Array,
+    config: OvercookedV3Config,
+) -> Tuple[chex.Array, chex.Array]:
+    """Add signed distance-to-delivery shaping for agents carrying plated soup."""
+    goal_positions = jnp.asarray(config.goal_positions, dtype=jnp.float32)
+
+    if goal_positions.shape[0] == 0:
+        return shaped_rewards, event_metrics
+
+    def _nearest_goal_distance(pos):
+        dx = goal_positions[:, 1] - pos.x.astype(jnp.float32)
+        dy = goal_positions[:, 0] - pos.y.astype(jnp.float32)
+        return jnp.min(jnp.sqrt(dx * dx + dy * dy))
+
+    old_goal_distance = jax.vmap(_nearest_goal_distance)(original_agents.pos)
+    new_goal_distance = jax.vmap(_nearest_goal_distance)(new_agents.pos)
+    carrying_dish_before = (original_agents.inventory & DynamicObject.COOKED) != 0
+    carrying_dish_after = (new_agents.inventory & DynamicObject.COOKED) != 0
+    dish_to_goal_progress = (
+        carrying_dish_before & carrying_dish_after & config.shaped_rewards_enabled
+    ) * (old_goal_distance - new_goal_distance)
+
+    shaped_rewards = shaped_rewards + (
+        dish_to_goal_progress * SHAPED_REWARDS["DISH_TO_GOAL_PROGRESS"]
+    )
+    event_metrics = event_metrics.at[
+        :, EVENT_NAMES.index("dish_to_goal_progress")
+    ].set(dish_to_goal_progress)
+
+    return shaped_rewards, event_metrics
 
 
 def process_interact(

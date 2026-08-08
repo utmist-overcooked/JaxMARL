@@ -1,13 +1,25 @@
 """Barrier and pressure plate systems for Overcooked V3."""
 
+import chex
 import jax
 import jax.numpy as jnp
 
-from jaxmarl.environments.overcooked_v3.agent_step import barriers_occupied
 from jaxmarl.environments.overcooked_v3.common import ButtonAction
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.settings import MAX_BARRIERS
 from jaxmarl.environments.overcooked_v3.state import State
+
+
+def barriers_occupied(
+    agent_ys, agent_xs, barrier_positions, barrier_active_mask
+) -> chex.Array:
+    """Return a barrier mask showing which barrier tiles currently hold agents."""
+    on_barrier = (
+        (agent_ys[None, :] == barrier_positions[:, 0][:, None])
+        & (agent_xs[None, :] == barrier_positions[:, 1][:, None])
+    )
+    return jnp.any(on_barrier, axis=1) & barrier_active_mask
+
 
 def update_barrier_timers(state: State, config: OvercookedV3Config) -> State:
     """Decrement barrier timers and reactivate barriers when timers reach zero."""

@@ -10,11 +10,7 @@ import numpy as np
 
 from jaxmarl.environments import MultiAgentEnv
 from jaxmarl.environments import spaces
-from jaxmarl.environments.overcooked_v3.agent_step import (
-    barriers_occupied,
-    is_agent_walkable,
-    run_agent_action_phase,
-)
+from jaxmarl.environments.overcooked_v3.agent_step import run_agent_action_phase
 from jaxmarl.environments.overcooked_v3.common import (
     Actions,
     Agent,
@@ -33,6 +29,7 @@ from jaxmarl.environments.overcooked_v3.interactions import (
     sample_pot_cook_time,
 )
 from jaxmarl.environments.overcooked_v3.layouts import Layout, overcooked_v3_layouts
+from jaxmarl.environments.overcooked_v3.movement import is_agent_walkable
 from jaxmarl.environments.overcooked_v3.observations import (
     calculate_observation_shape,
     get_obs,
@@ -62,6 +59,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
 from jaxmarl.environments.overcooked_v3.state import ObservationType, State
 from jaxmarl.environments.overcooked_v3.step import is_terminal, step_overcooked_v3
 from jaxmarl.environments.overcooked_v3.systems.barriers import (
+    barriers_occupied,
     update_barrier_timers,
     update_pressure_plates,
 )

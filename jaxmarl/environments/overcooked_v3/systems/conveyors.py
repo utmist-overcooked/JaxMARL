@@ -3,9 +3,9 @@
 import jax
 import jax.numpy as jnp
 
-from jaxmarl.environments.overcooked_v3.agent_step import is_agent_walkable
 from jaxmarl.environments.overcooked_v3.common import DIR_TO_VEC, StaticObject
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
+from jaxmarl.environments.overcooked_v3.movement import is_agent_walkable
 from jaxmarl.environments.overcooked_v3.settings import (
     MAX_ITEM_CONVEYORS,
     MAX_PLAYER_CONVEYORS,
