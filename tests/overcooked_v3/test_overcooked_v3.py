@@ -20,6 +20,7 @@ from jaxmarl.environments.overcooked_v3.layouts import (
     moving_wall_demo,
     moving_wall_bounce_demo,
 )
+from jaxmarl.environments.overcooked_v3.step import partition_step_key
 from jaxmarl.environments.multi_agent_env import MultiAgentEnv
 
 
@@ -430,7 +431,7 @@ class TestOvercookedV3PotMechanics:
             state.pot_active_mask,
             jnp.array(7, dtype=jnp.int32),
         )
-        _, _, _, _, _, first_timers = first_result
+        _, _, _, _, _, _, first_timers = first_result
         assert int(first_timers[0]) == 12
 
         second_grid = base_grid
@@ -447,7 +448,7 @@ class TestOvercookedV3PotMechanics:
             state.pot_active_mask,
             jnp.array(11, dtype=jnp.int32),
         )
-        _, _, _, _, _, second_timers = second_result
+        _, _, _, _, _, _, second_timers = second_result
         assert int(second_timers[0]) == 16
 
     def test_started_pot_tracks_sampled_cook_duration(self):
@@ -473,7 +474,7 @@ class TestOvercookedV3PotMechanics:
         state = state.replace(agents=agents, grid=grid)
         actions = jnp.full(env.num_agents, Actions.stay).at[0].set(Actions.interact)
 
-        new_state, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
+        new_state, _, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
 
         assert int(new_state.pot_cooking_timer[0]) == 11
         assert int(new_state.pot_cook_durations[0]) == 7
@@ -513,7 +514,7 @@ class TestOvercookedV3PotMechanics:
             state.pot_positions,
             state.pot_active_mask,
         )
-        _, _, _, _, _, timers = result
+        _, _, _, _, _, _, timers = result
         assert int(timers[0]) == 104
 
     def _setup_full_pot(self, env, state, timer_value):
@@ -664,7 +665,7 @@ class TestOvercookedV3PotMechanics:
         )
         actions = jnp.full(env.num_agents, Actions.stay).at[0].set(Actions.interact)
 
-        state, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
+        state, _, _, _ = env.step_agents(jax.random.PRNGKey(1), state, actions)
         assert int(state.pot_cooking_timer[0]) == 6
         assert int(state.pot_cook_durations[0]) == 4
 
@@ -804,13 +805,59 @@ WWWWWW
         assert shaped_reward == pytest.approx(0.0)
 
 
-class TestOvercookedV3OrderQueueAPI:
-    """Test unsupported order queue API."""
+class TestOvercookedV3OrderQueue:
+    """Test order queue behavior and its recipe-sampling integration."""
 
-    def test_enable_order_queue_is_not_supported(self):
-        """Verify stale configs fail instead of becoming silent no-ops."""
-        with pytest.raises(TypeError, match="enable_order_queue"):
-            OvercookedV3(enable_order_queue=True)
+    def test_order_queue_disabled_by_default(self):
+        env = OvercookedV3()
+        assert env.enable_order_queue is False
+
+    def test_order_queue_can_be_enabled(self):
+        env = OvercookedV3(enable_order_queue=True)
+        assert env.enable_order_queue is True
+        _, state = env.reset(jax.random.PRNGKey(0))
+        assert state.order_types.shape == (env.max_orders,)
+
+    def test_order_queue_uses_key_independent_from_agent_and_pot_processing(self):
+        env = OvercookedV3(
+            enable_order_queue=True,
+            order_generation_rate=0.0,
+            pot_cook_time_range=[7, 9],
+        )
+        step_key = jax.random.PRNGKey(1)
+        expected_agent_key, expected_order_key = jax.random.split(step_key)
+        agent_key, order_key = partition_step_key(step_key, env.config)
+
+        assert jnp.array_equal(agent_key, expected_agent_key)
+        assert jnp.array_equal(order_key, expected_order_key)
+        assert not jnp.array_equal(agent_key, order_key)
+
+    def test_disabled_order_queue_preserves_original_agent_key(self):
+        env = OvercookedV3(enable_order_queue=False, pot_cook_time_range=[7, 9])
+        step_key = jax.random.PRNGKey(1)
+
+        agent_key, order_key = partition_step_key(step_key, env.config)
+
+        assert jnp.array_equal(agent_key, step_key)
+        assert order_key is None
+
+    def test_random_queue_uses_recipe_probabilities(self):
+        layout = TestOvercookedV3RecipeSampling._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            enable_order_queue=True,
+            order_generation_rate=1.0,
+            order_queue_mode="random",
+            recipe_probs=[0.0, 1.0],
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+
+        _, state, _, _, _ = env.step(jax.random.PRNGKey(1), state, actions)
+
+        tomato_recipe = TestOvercookedV3RecipeSampling._recipe_encoding([1, 1, 1])
+        assert int(state.order_types[0]) == 2
+        assert int(state.recipe) == tomato_recipe
 
 class TestOvercookedV3Conveyors:
     """Test conveyor belt mechanics."""

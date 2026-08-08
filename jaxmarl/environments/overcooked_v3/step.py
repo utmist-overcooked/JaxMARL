@@ -1,8 +1,9 @@
 """Functional timestep pipeline for Overcooked V3."""
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import chex
+import jax
 import jax.numpy as jnp
 from jax import lax
 
@@ -18,7 +19,13 @@ from jaxmarl.environments.overcooked_v3.systems.conveyors import (
     move_items_on_item_conveyors,
     push_players_on_player_conveyors,
 )
+from jaxmarl.environments.overcooked_v3.settings import EVENT_NAMES
 from jaxmarl.environments.overcooked_v3.systems.moving_walls import move_moving_walls
+from jaxmarl.environments.overcooked_v3.systems.orders import (
+    front_order_type,
+    process_order_queue,
+)
+
 def step_overcooked_v3(
     key: chex.PRNGKey,
     state: State,
@@ -27,14 +34,20 @@ def step_overcooked_v3(
 ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
     """Run one environment timestep as a sequence of explicit state transforms."""
     agent_actions = translate_action_dict_to_ordered_action_array(actions, config)
+    agent_key, order_key = partition_step_key(key, config)
 
-    state, reward, shaped_rewards = run_agent_action_phase(
-        key, state, agent_actions, config
+    state, reward, shaped_rewards, event_metrics = run_agent_action_phase(
+        agent_key, state, agent_actions, config
     )
     state = advance_dynamic_environment_systems(state, config)
+    state, reward, order_events = advance_order_queue_and_add_queue_reward(
+        order_key, state, reward, config
+    )
     state = advance_time_and_update_terminal_flag(state, config)
 
-    return build_step_env_return_values(state, reward, shaped_rewards, config)
+    return build_step_env_return_values(
+        state, reward, shaped_rewards, event_metrics, order_events, config
+    )
 
 def translate_action_dict_to_ordered_action_array(
     actions: Dict[str, chex.Array], config: OvercookedV3Config
@@ -43,6 +56,17 @@ def translate_action_dict_to_ordered_action_array(
     return config.action_set.take(
         indices=jnp.array([actions[f"agent_{i}"] for i in range(config.num_agents)])
     )
+
+
+def partition_step_key(
+    key: chex.PRNGKey, config: OvercookedV3Config
+) -> Tuple[chex.PRNGKey, Optional[chex.PRNGKey]]:
+    """Isolate agent/pot randomness from order-queue randomness."""
+    if config.enable_order_queue:
+        agent_key, order_key = jax.random.split(key)
+        return agent_key, order_key
+
+    return key, None
 
 
 def advance_dynamic_environment_systems(
@@ -63,6 +87,21 @@ def advance_dynamic_environment_systems(
 
     return update_barrier_timers(state, config)
 
+def advance_order_queue_and_add_queue_reward(
+    key: Optional[chex.PRNGKey],
+    state: State,
+    reward: float,
+    config: OvercookedV3Config,
+) -> Tuple[State, float, chex.Array]:
+    """Generate and expire queued orders, adding any queue reward to the step reward."""
+    order_events = jnp.zeros((2,), dtype=jnp.float32)
+
+    if config.enable_order_queue:
+        state, order_reward, order_events = process_order_queue(state, key, config)
+        reward = reward + order_reward
+
+    return state, reward, order_events
+
 def advance_time_and_update_terminal_flag(
     state: State, config: OvercookedV3Config
 ) -> State:
@@ -75,6 +114,8 @@ def build_step_env_return_values(
     state: State,
     reward: float,
     shaped_rewards: chex.Array,
+    event_metrics: chex.Array,
+    order_events: chex.Array,
     config: OvercookedV3Config,
 ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
     """Build stopped-gradient observations, state, rewards, dones, and info."""
@@ -88,13 +129,43 @@ def build_step_env_return_values(
     dones = {f"agent_{i}": done for i in range(config.num_agents)}
     dones["__all__"] = done
 
+    info = build_event_info(state, event_metrics, order_events, config)
+    info["shaped_reward"] = shaped_rewards_dict
+
     return (
         lax.stop_gradient(obs),
         lax.stop_gradient(state),
         rewards,
         dones,
-        {"shaped_reward": shaped_rewards_dict},
+        info,
     )
+
+
+def build_event_info(
+    state: State,
+    event_metrics: chex.Array,
+    order_events: chex.Array,
+    config: OvercookedV3Config,
+) -> Dict:
+    """Build the per-agent event and order-queue entries of the info dict."""
+    info = {}
+    for event_idx, event_name in enumerate(EVENT_NAMES):
+        info[f"event/{event_name}"] = event_metrics[:, event_idx]
+    info["delivery"] = event_metrics[:, EVENT_NAMES.index("delivery")]
+
+    zeros = jnp.zeros((config.num_agents,), dtype=jnp.float32)
+    info["event/order_expired"] = zeros.at[0].set(order_events[0])
+    info["event/order_added"] = zeros.at[0].set(order_events[1])
+    info["order/active_count"] = jnp.full(
+        (config.num_agents,), jnp.sum(state.order_active_mask).astype(jnp.float32)
+    )
+    info["order/front_type"] = jnp.full(
+        (config.num_agents,),
+        front_order_type(state.order_types, state.order_active_mask).astype(
+            jnp.float32
+        ),
+    )
+    return info
 
 def is_terminal(state: State, config: OvercookedV3Config) -> bool:
     """Return whether the state has reached the episode horizon or was terminal."""

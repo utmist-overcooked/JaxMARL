@@ -31,10 +31,10 @@ class State:
     pot_cook_durations: chex.Array  # [max_pots] - sampled steps until ready
     pot_active_mask: chex.Array  # [max_pots] - bool, which pot slots are valid
 
-    # Legacy order queue fields retained as inert fixed-size arrays.
-    order_types: chex.Array  # [DEFAULT_MAX_ORDERS] - unused
-    order_expirations: chex.Array  # [DEFAULT_MAX_ORDERS] - unused
-    order_active_mask: chex.Array  # [DEFAULT_MAX_ORDERS] - always false
+    # Fixed-size order queue arrays; inactive when enable_order_queue is false.
+    order_types: chex.Array  # [max_orders] - one-based recipe indices
+    order_expirations: chex.Array  # [max_orders] - remaining lifetimes
+    order_active_mask: chex.Array  # [max_orders] - occupied queue slots
 
     # Item conveyor state
     item_conveyor_positions: chex.Array  # [max_item_conveyors, 2] - (y, x)

@@ -1,6 +1,6 @@
 # Overcooked V3 Environment
 
-A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, random active recipes, and conveyor belts.
+A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, order queues, random active recipes, and conveyor belts.
 
 ## 🎨 Visual Level Editor
 
@@ -38,8 +38,8 @@ overcooked_v3/
 ├── reset.py             # Functional reset pipeline
 ├── settings.py          # Default constants and fixed array limits
 ├── state.py             # Environment state dataclass
-├── step.py              # Functional timestep pipeline
-├── systems/             # Pots, conveyors, walls, and barriers
+├── step.py              # Functional timestep pipeline and PRNG partitioning
+├── systems/             # Pots, orders, conveyors, walls, and barriers
 ├── utils.py             # Helper functions
 └── README.md            # This file
 ```
@@ -70,9 +70,9 @@ All tunable parameters with defaults:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `POT_COOK_TIME` | 90 | Steps until a full pot becomes cooked/ready |
+| `POT_COOK_TIME` | 20 | Steps until a full pot becomes cooked/ready |
 | `POT_COOK_TIME_RANGE` | `()` | Optional inclusive `[min, max]` range for random ready times |
-| `POT_BURN_TIME` | 60 | Steps in burning window before contents destroyed |
+| `POT_BURN_TIME` | 40 | Steps in burning window before contents destroyed. Set to `0` to disable burning |
 | `DELIVERY_REWARD` | 20.0 | Reward for correct soup delivery |
 | `BURN_PENALTY` | -5.0 | Penalty when pot burns |
 | `SHAPED_REWARDS` | dict | Intermediate rewards for useful actions |
@@ -176,6 +176,11 @@ env = OvercookedV3(
 stored in `state.recipe`, so recipe indicators update automatically when the
 sampled recipe changes.
 
+When `enable_order_queue=True`, the front order controls `state.recipe` and
+`enable_random_recipe` does not independently resample it after delivery.
+In random queue mode, `recipe_probs` also controls the distribution used to
+generate new queued orders. Alternating queue mode remains deterministic.
+
 For training runs, pass these values through YAML `ENV_KWARGS`:
 
 ```yaml
@@ -197,9 +202,9 @@ JAX-traceable implementation lives in `reset.py`, `step.py`, `agent_step.py`,
 | Method | Description |
 |--------|-------------|
 | `reset(key) -> Tuple[Dict[str, Array], State]` | Reset the environment and return initial observations and state |
-| `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, recipes, and check termination |
+| `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, recipes, orders, and check termination |
 | `step_agents(key, state, actions) -> Tuple[State, float, Array]` | Process agent movement (with collision resolution) and interact actions |
-| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask, pot_cook_time=None) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
+| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask, pot_cook_time=None) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, event_metrics, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
 | `is_terminal(state) -> bool` | Check whether the episode is done (max steps reached) |
 | `get_obs(state) -> Dict[str, Array]` | Get observations for all agents, dispatching by per-agent observation type |
 | `get_obs_for_type(state, obs_type) -> Dict[str, Array]` | Get observations for a specific observation type (default or featurized) |
@@ -219,9 +224,9 @@ class State:
     pot_cooking_timer: chex.Array    # [MAX_POTS] - cooking countdown
     pot_cook_durations: chex.Array   # [MAX_POTS] - sampled steps until ready
     pot_active_mask: chex.Array      # [MAX_POTS] - which pots are valid
-    order_types: chex.Array          # [MAX_ORDERS] - legacy inert field
-    order_expirations: chex.Array    # [MAX_ORDERS] - legacy inert field
-    order_active_mask: chex.Array    # [MAX_ORDERS] - always false
+    order_types: chex.Array          # [max_orders] - queued recipe indices
+    order_expirations: chex.Array    # [max_orders] - remaining lifetimes
+    order_active_mask: chex.Array    # [max_orders] - occupied queue slots
     item_conveyor_*: chex.Array      # Conveyor state arrays
     player_conveyor_*: chex.Array    # Player conveyor state arrays
     time: chex.Array                 # Current timestep
@@ -399,6 +404,7 @@ env = OvercookedV3(
     pot_cook_time_range=[65, 90],
     pot_burn_time=60,
     enable_random_recipe=False,
+    enable_order_queue=False,
     shaped_rewards=True,
 )
 

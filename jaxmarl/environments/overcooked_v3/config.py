@@ -22,6 +22,12 @@ class OvercookedV3Config:
     pot_burn_time: int
     enable_random_recipe: bool
     recipe_probs: Any
+    enable_order_queue: bool
+    max_orders: int
+    order_generation_rate: float
+    order_expiration_time: int
+    order_queue_mode: str
+    order_recipe_encodings: Any
     enable_item_conveyors: bool
     enable_player_conveyors: bool
     enable_moving_walls: bool
@@ -35,6 +41,7 @@ class OvercookedV3Config:
     enclosed_spaces: Any
     pot_positions: Any
     pot_active_mask: Any
+    goal_positions: Any
     item_conveyor_positions: Any
     item_conveyor_directions: Any
     item_conveyor_active_mask: Any

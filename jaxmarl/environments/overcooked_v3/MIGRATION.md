@@ -237,7 +237,7 @@ class Layout:
 | Pot burning (60 step window) | `pot_burn_time=60` | Configurable |
 | Delivery reward (20.0) | `delivery_reward=20.0` | Same default |
 | Shaped rewards | `SHAPED_REWARDS` dict | Same values |
-| Order queue | Not supported | Active target recipes use `state.recipe` |
+| Order queue | `enable_order_queue=True` | Optional feature |
 | Item conveyors | `enable_item_conveyors=True` | Move items |
 | Player conveyors | `enable_player_conveyors=True` | Push agents |
 | Recipe indicator | `R` in layout | Shows target recipe |

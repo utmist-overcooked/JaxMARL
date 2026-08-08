@@ -1,37 +1,62 @@
-"ENV_NAME": "overcooked_v3"
-"ENV_KWARGS":
-  "layout": "random_recipe_demo"
-  "agent_view_size": 2
-  "enable_random_recipe": True
-  "recipe_probs": [0.7, 0.3]
-  "random_agent_positions": True
+# IPPO RNN training configuration for Overcooked V3
+# Based on ic3net_overcooked_v3_cramped_room + ippo_rnn_overcooked_v2 defaults
+ENV_NAME: "overcooked_v3"
+ENV_KWARGS:
+  layout: "cramped_room"
+  max_steps: 400
+  pot_cook_time: 20
+  pot_burn_time: 40
+  enable_random_recipe: false
+  recipe_probs: null
+  enable_order_queue: false
+  max_orders: 5
+  order_generation_rate: 0.0
+  order_expiration_time: 200
+  order_queue_mode: "random"
+  enable_item_conveyors: false
+  enable_player_conveyors: false
 
-"LR": 0.00025
-"ANNEAL_LR": True
-"LR_WARMUP": 0.05
+# Network
+GRU_HIDDEN_DIM: 128
+FC_DIM_SIZE: 128
+ACTIVATION: "relu"
 
-"NUM_ENVS": 256
-"NUM_STEPS": 256
-"UPDATE_EPOCHS": 4
-"NUM_MINIBATCHES": 64
+# Training
+TOTAL_TIMESTEPS: 80_000_000
+NUM_ENVS: 128
+NUM_STEPS: 200
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 8
+ANNEAL_LR: true
 
-"TOTAL_TIMESTEPS": 3e7
-"REW_SHAPING_HORIZON": 1.5e7
+# Reward shaping (linear anneal from 1.0 → 0.0 over this many timesteps)
+# Set to 50% of TOTAL_TIMESTEPS (matching v1 baseline ratio).
+REW_SHAPING_HORIZON: 60_000_000
+REW_SHAPING_MIN_COEFF: 0.0
+# v3 shaped rewards are 0.1–0.3; v1 uses 3.0–5.0.
+# SHAPED_REWARD_COEFF=30 makes v3 values (30×0.1=3.0) match v1 magnitudes.
+SHAPED_REWARD_COEFF: 30.0
 
-"FC_DIM_SIZE": 128
-"GRU_HIDDEN_DIM": 128
+# PPO hyperparameters (matching v1 IPPO baseline)
+LR: 0.0005
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+ENT_COEF_MIN: 0.0
+ENTROPY_FLOOR: 0.0
+ENTROPY_FLOOR_COEF: 0.0
+VF_COEF: 0.5
+MAX_GRAD_NORM: 0.5
 
-"CLIP_EPS": 0.2
-"ENT_COEF": 0.01
-"GAMMA": 0.99
-"GAE_LAMBDA": 0.95
-"SCALE_CLIP_EPS": False
-"VF_COEF": 0.5
-"MAX_GRAD_NORM": 0.25
-"ACTIVATION": "relu"
-"SEED": 0
-"NUM_SEEDS": 1
+# Logging
+WANDB_MODE: "disabled"
+ENTITY: "dannyb3334-university-of-toronto"
+WANDB_PROJECT: "jaxmarl-ippo"
+WANDB_NAME: "ippo_rnn_overcooked_v3_cramped_room"
+SAVE_PATH: "checkpoints/ippo_overcooked_v3_cramped_room"
+SAVE_GIF_PATH: null
+LOG_EVERY: 100
+CHECKPOINT_EVERY: 5000
 
-"ENTITY": ""
-"PROJECT": ""
-"WANDB_MODE": "disabled"
+SEED: 42

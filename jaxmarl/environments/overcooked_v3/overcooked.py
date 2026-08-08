@@ -19,6 +19,7 @@ from jaxmarl.environments.overcooked_v3.common import (
     Actions,
     Agent,
     ButtonAction,
+    DynamicObject,
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
@@ -41,7 +42,11 @@ from jaxmarl.environments.overcooked_v3.observations import (
 from jaxmarl.environments.overcooked_v3.reset import reset_overcooked_v3
 from jaxmarl.environments.overcooked_v3.settings import (
     DEFAULT_BARRIER_DURATION,
+    DEFAULT_MAX_ORDERS,
+    DEFAULT_ORDER_EXPIRATION_TIME,
+    DEFAULT_ORDER_GENERATION_RATE,
     DELIVERY_REWARD,
+    EVENT_NAMES,
     MAX_BARRIERS,
     MAX_BUTTONS,
     MAX_BUTTON_TARGETS,
@@ -65,11 +70,14 @@ from jaxmarl.environments.overcooked_v3.systems.conveyors import (
     push_players_on_player_conveyors,
 )
 from jaxmarl.environments.overcooked_v3.systems.moving_walls import move_moving_walls
+from jaxmarl.environments.overcooked_v3.systems.orders import process_order_queue
 from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
 from jaxmarl.environments.overcooked_v3.utils import compute_enclosed_spaces
 
 class OvercookedV3(MultiAgentEnv):
     """Overcooked V3 environment backed by explicit functional JAX logic."""
+
+    EVENT_NAMES = EVENT_NAMES
 
     def __init__(
         self,
@@ -86,6 +94,12 @@ class OvercookedV3(MultiAgentEnv):
         # Recipe sampling settings
         enable_random_recipe: bool = False,
         recipe_probs: Optional[Union[List[float], np.ndarray, chex.Array]] = None,
+        # Order queue settings
+        enable_order_queue: bool = False,
+        max_orders: int = DEFAULT_MAX_ORDERS,
+        order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
+        order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
+        order_queue_mode: str = "random",
         # Conveyor belt settings
         enable_item_conveyors: Optional[bool] = None,
         enable_player_conveyors: Optional[bool] = None,
@@ -114,9 +128,15 @@ class OvercookedV3(MultiAgentEnv):
                 Omit or pass an empty sequence to use pot_cook_time.
             pot_burn_time: Steps in burning window before pot burns (default 60)
             enable_random_recipe: Whether to sample a new active recipe after
-                a correct delivery
+                a correct delivery when the order queue is disabled
             recipe_probs: Probability distribution over layout.possible_recipes.
-                If None, recipes are sampled uniformly.
+                If None, recipes and random queue orders are sampled uniformly.
+            enable_order_queue: Whether to use order queue system
+            max_orders: Maximum orders in queue
+            order_generation_rate: Probability of new order each step
+            order_expiration_time: Steps before order expires
+            order_queue_mode: "random" or "alternating"; alternating produces
+                onion, tomato, onion, tomato orders
             enable_item_conveyors: Whether item conveyors move items. If None,
                 inferred from whether the layout contains item conveyors.
             enable_player_conveyors: Whether player conveyors push agents. If
@@ -189,6 +209,16 @@ class OvercookedV3(MultiAgentEnv):
         self.pot_burn_time = pot_burn_time
 
         self.enable_random_recipe = enable_random_recipe
+        # Order queue settings
+        self.enable_order_queue = enable_order_queue
+        self.max_orders = max_orders
+        self.order_generation_rate = order_generation_rate
+        self.order_expiration_time = order_expiration_time
+        if order_queue_mode not in ("random", "alternating"):
+            raise ValueError("order_queue_mode must be 'random' or 'alternating'")
+        if order_queue_mode == "alternating" and layout.num_ingredients < 2:
+            raise ValueError("alternating order queue requires onion and tomato piles")
+        self.order_queue_mode = order_queue_mode
 
         # Conveyor settings
         layout_has_item_conveyors = len(layout.item_conveyor_info) > 0
@@ -276,6 +306,12 @@ class OvercookedV3(MultiAgentEnv):
             if recipe_probs is None
             else jnp.array(recipe_probs, dtype=jnp.float32)
         )
+        self._order_recipe_encodings = jnp.concatenate(
+            (
+                jnp.zeros((1,), dtype=jnp.int32),
+                jax.vmap(DynamicObject.get_recipe_encoding)(self.possible_recipes),
+            )
+        )
 
         # Pre-compute enclosed spaces for random agent placement
         self.enclosed_spaces = compute_enclosed_spaces(
@@ -300,6 +336,12 @@ class OvercookedV3(MultiAgentEnv):
         for i, (y, x) in enumerate(pot_indices[:MAX_POTS]):
             self._pot_positions[i] = [y, x]
             self._pot_active_mask[i] = True
+
+        # Goal positions are fixed by layout and used for post-plating distance
+        # shaping. Keep them as a static array so JIT-compiled steps can compute
+        # nearest-goal Euclidean distance without scanning the grid dynamically.
+        goal_indices = np.argwhere(layout.static_objects == StaticObject.GOAL)
+        self._goal_positions = goal_indices.astype(np.int32)
 
         # Extract conveyor info from layout
         self._item_conveyor_positions = np.zeros(
@@ -439,6 +481,12 @@ class OvercookedV3(MultiAgentEnv):
             pot_burn_time=self.pot_burn_time,
             enable_random_recipe=self.enable_random_recipe,
             recipe_probs=self.recipe_probs,
+            enable_order_queue=self.enable_order_queue,
+            max_orders=self.max_orders,
+            order_generation_rate=self.order_generation_rate,
+            order_expiration_time=self.order_expiration_time,
+            order_queue_mode=self.order_queue_mode,
+            order_recipe_encodings=self._order_recipe_encodings,
             enable_item_conveyors=self.enable_item_conveyors,
             enable_player_conveyors=self.enable_player_conveyors,
             enable_moving_walls=self.enable_moving_walls,
@@ -452,6 +500,7 @@ class OvercookedV3(MultiAgentEnv):
             enclosed_spaces=self.enclosed_spaces,
             pot_positions=self._pot_positions,
             pot_active_mask=self._pot_active_mask,
+            goal_positions=self._goal_positions,
             item_conveyor_positions=self._item_conveyor_positions,
             item_conveyor_directions=self._item_conveyor_directions,
             item_conveyor_active_mask=self._item_conveyor_active_mask,
@@ -536,7 +585,7 @@ class OvercookedV3(MultiAgentEnv):
         key: chex.PRNGKey,
         state: State,
         actions: chex.Array,
-    ) -> Tuple[State, float, chex.Array]:
+    ) -> Tuple[State, float, chex.Array, chex.Array]:
         """Compatibility wrapper for the functional agent action phase."""
         return run_agent_action_phase(key, state, actions, self.config)
 
@@ -608,7 +657,7 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
-    ) -> Tuple[chex.Array, chex.Array]:
+    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
         """Compatibility wrapper for functional pot timer updates."""
         return update_pot_timers(
             grid, pot_timers, pot_positions, pot_active_mask, self.config
@@ -633,6 +682,12 @@ class OvercookedV3(MultiAgentEnv):
     def _process_moving_walls(self, state: State) -> State:
         """Compatibility wrapper for functional moving wall updates."""
         return move_moving_walls(state, self.config)
+
+    def _process_order_queue(
+        self, state: State, key: chex.PRNGKey
+    ) -> Tuple[State, float, chex.Array]:
+        """Compatibility wrapper for functional order queue updates."""
+        return process_order_queue(state, key, self.config)
 
     def is_terminal(self, state: State) -> bool:
         """Compatibility wrapper for the functional terminal check."""
