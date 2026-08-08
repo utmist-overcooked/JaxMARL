@@ -7,6 +7,11 @@ from jaxmarl.environments.traffic_junction.tj_visualizer import TrafficVisualize
 MAX_AGENTS = 10
 
 
+def step_for_demo(env, key, state, actions):
+    """Advance without the base wrapper replacing a terminal state with a reset."""
+    return env.step_env(key, state, actions)
+
+
 def run_test():
     # 1. Setup the Environment
     
@@ -43,7 +48,9 @@ def run_test():
         actions = {agent: actions_list[i] for i, agent in enumerate(env.agents)}
         
         # 4. Step the Environment
-        obs, state, rewards, dones, info = env.step(key_step, state, actions)
+        obs, state, rewards, dones, info = step_for_demo(
+            env, key_step, state, actions
+        )
         
         state_seq.append(state)
 

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from jaxmarl.environments.traffic_junction.traffic_junction import State, TrafficJunction
+from jaxmarl.environments.traffic_junction.demo_tj import step_for_demo
 
 
 def make_state(position):
@@ -98,3 +99,17 @@ def test_convoy_stays_put_when_leader_is_blocked():
     assert int(info["car_0"]) == 1
     assert int(info["car_1"]) == 1
     assert int(info["car_2"]) == 0
+
+
+def test_demo_step_preserves_terminal_state():
+    env = TrafficJunction(max_agents=1, spawn_prob=0.0, max_steps=1, grid_size=8)
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+    actions = {"car_0": jnp.int32(0)}
+
+    _, terminal_state, _, dones, _ = step_for_demo(env, key, state, actions)
+    _, autoreset_state, _, _, _ = env.step(key, state, actions)
+
+    assert bool(dones["__all__"])
+    assert int(terminal_state.step) == 1
+    assert int(autoreset_state.step) == 0
