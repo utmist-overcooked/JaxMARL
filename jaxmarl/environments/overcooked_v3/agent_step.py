@@ -33,12 +33,13 @@ __all__ = [
     "run_agent_action_phase",
 ]
 
+
 def run_agent_action_phase(
     key: chex.PRNGKey,
     state: State,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> Tuple[State, float, chex.Array]:
+) -> Tuple[State, float, chex.Array, chex.Array]:
     """Run movement, collision handling, interactions, and button effects."""
     barrier_walkable_by_pressure_plate = (
         find_barriers_opened_by_current_pressure_plate_occupants(state, config)
@@ -51,9 +52,9 @@ def run_agent_action_phase(
     )
     moved_agents = prevent_agents_from_swapping_positions(state.agents, moved_agents)
 
-    state, reward, shaped_rewards = apply_agent_interact_actions(
+    state, reward, shaped_rewards, event_metrics = apply_agent_interact_actions(
         key, state, moved_agents, actions, config
     )
     state = apply_agent_button_interactions(state, actions, config)
 
-    return state, reward, shaped_rewards
+    return state, reward, shaped_rewards, event_metrics

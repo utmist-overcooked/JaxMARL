@@ -1,0 +1,38 @@
+# IC3Net training configuration for Overcooked V3 - cramped_room
+ENV_NAME: "overcooked_v3"
+ENV_KWARGS:
+  layout: "cramped_room"
+  max_steps: 200
+
+BASELINE: "ic3net"
+HIDDEN_DIM: 256
+RECURRENT: true
+DETACH_GAP: 10
+COMM_PASSES: 2
+COMM_MODE: "avg"
+SHARE_WEIGHTS: false
+COMM_ACTION_ONE: false
+
+TOTAL_TIMESTEPS: 80_000_000
+NUM_ENVS: 128
+NUM_STEPS: 200
+GAMMA: 0.99
+USE_SHAPED_REWARD: true
+SHAPED_REWARD_COEFF: 1.0
+NORMALIZE_ADVANTAGES: true
+
+LR: 0.003
+RMSPROP_ALPHA: 0.97
+RMSPROP_EPS: 1e-6
+MAX_GRAD_NORM: 1.0
+VALUE_COEFF: 0.75
+ENTROPY_COEFF: 0.01
+
+WANDB_MODE: "disabled"
+WANDB_PROJECT: "jaxmarl-ic3net"
+WANDB_NAME: "ic3net_overcooked_v3_cramped_room"
+SAVE_PATH: "checkpoints/ic3net_overcooked_v3_cramped_room"
+LOG_EVERY: 100
+CHECKPOINT_EVERY: 5000
+
+SEED: 42

@@ -194,12 +194,12 @@ WWWWWWWW
 
 around_the_island = """
 WW0W1WWWWW
-B        W
+W        W
 W  A     W
 WWWWWWW  X
 W  A     W
 W        W
-WWWPWWWWWW
+WWWPBWWWWW
 """
 
 single_file = """
@@ -208,6 +208,81 @@ W A A W
 W WWW W
 X     W
 WW1W0WW
+"""
+
+# Hard cooperation layouts. These intentionally use only ingredient 0 with the
+# fixed recipe [[0, 0, 0]] so the challenge comes from routing and cooperation,
+# not from recipe ambiguity.
+split_kitchen = """
+WWWWWWWWWWW
+W0  A W  XW
+W     W   W
+WWW WWW WWW
+W   P W B W
+W     W   W
+W     W A W
+WWWWWWWWWWW
+"""
+
+two_room_bottleneck = """
+WWWWWWWWWWWWW
+W0 A   W   XW
+W      W    W
+WWW WW W WW W
+W   WW   WW W
+W P    B    W
+W   WW   WW W
+W0 A   W    W
+WWWWWWWWWWWWW
+"""
+
+long_hall_delivery = """
+WWWWWWWWWWWWWWW
+W0 A     W   XW
+W WWWWW WWWWW W
+W     W     W W
+WWW W WWW W W W
+W P W     W B W
+W   WWWWWWW   W
+W0 A          W
+WWWWWWWWWWWWWWW
+"""
+
+counter_pass_relay = """
+WWWWWWWWWWWWW
+W0 A  WWW  XW
+W     W W   W
+W WWW W W WWW
+W P   W B   W
+WWW W W WWW W
+W   W W     W
+W0  WWW  A  W
+WWWWWWWWWWWWW
+"""
+
+double_pot_coordination = """
+WWWWWWWWWWWW
+W0 A   P  XW
+W WWW WWW WW
+W          W
+WW WWWW WWWW
+W B      P W
+W WWW WWW WW
+W0 A       W
+WWWWWWWWWWWW
+"""
+
+island_plus_choke = """
+WWWWWWWWWWWWWW
+W0 A        0W
+W WWWWWWWW   W
+W W      W   W
+W W WWWW W  XW
+W W W  W W   W
+W   W  W     W
+WWW W  WWWWWWW
+W P B       AW
+WWWWWWWWWWWWWW
 """
 
 # List of All Pressure Plate & Button Levels:
@@ -1750,6 +1825,26 @@ overcooked_v3_layouts = {
 
     "single_file": Layout.from_string(
         single_file, possible_recipes=[[0, 0, 0]],
+    ),
+
+    # Hard cooperation layouts
+    "split_kitchen": Layout.from_string(
+        split_kitchen, possible_recipes=[[0, 0, 0]],
+    ),
+    "two_room_bottleneck": Layout.from_string(
+        two_room_bottleneck, possible_recipes=[[0, 0, 0]],
+    ),
+    "long_hall_delivery": Layout.from_string(
+        long_hall_delivery, possible_recipes=[[0, 0, 0]],
+    ),
+    "counter_pass_relay": Layout.from_string(
+        counter_pass_relay, possible_recipes=[[0, 0, 0]],
+    ),
+    "double_pot_coordination": Layout.from_string(
+        double_pot_coordination, possible_recipes=[[0, 0, 0]],
+    ),
+    "island_plus_choke": Layout.from_string(
+        island_plus_choke, possible_recipes=[[0, 0, 0]],
     ),
 
 }

@@ -70,9 +70,9 @@ All tunable parameters with defaults:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `POT_COOK_TIME` | 90 | Steps until a full pot becomes cooked/ready |
+| `POT_COOK_TIME` | 20 | Steps until a full pot becomes cooked/ready |
 | `POT_COOK_TIME_RANGE` | `()` | Optional inclusive `[min, max]` range for random ready times |
-| `POT_BURN_TIME` | 60 | Steps in burning window before contents destroyed |
+| `POT_BURN_TIME` | 40 | Steps in burning window before contents destroyed. Set to `0` to disable burning |
 | `DELIVERY_REWARD` | 20.0 | Reward for correct soup delivery |
 | `BURN_PENALTY` | -5.0 | Penalty when pot burns |
 | `SHAPED_REWARDS` | dict | Intermediate rewards for useful actions |
@@ -169,7 +169,7 @@ JAX-traceable implementation lives in `reset.py`, `step.py`, `agent_step.py`,
 | `reset(key) -> Tuple[Dict[str, Array], State]` | Reset the environment and return initial observations and state |
 | `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, orders, and check termination |
 | `step_agents(key, state, actions) -> Tuple[State, float, Array]` | Process agent movement (with collision resolution) and interact actions |
-| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask, pot_cook_time=None) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
+| `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask, pot_cook_time=None) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, event_metrics, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
 | `is_terminal(state) -> bool` | Check whether the episode is done (max steps reached) |
 | `get_obs(state) -> Dict[str, Array]` | Get observations for all agents, dispatching by per-agent observation type |
 | `get_obs_for_type(state, obs_type) -> Dict[str, Array]` | Get observations for a specific observation type (default or featurized) |
