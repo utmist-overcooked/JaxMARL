@@ -18,12 +18,16 @@ from .smax import SMAX, HeuristicEnemySMAX, LearnedPolicyEnemySMAX
 from .switch_riddle import SwitchRiddle
 from .overcooked import Overcooked, overcooked_layouts
 from .overcooked_v2 import OvercookedV2, overcooked_v2_layouts
+from .overcooked_v3 import OvercookedV3, overcooked_v3_layouts
+from .overcooked_v3_macro import OvercookedV3Macro, OvercookedV3MacroInterruptible
 from .mabrax import Ant, Humanoid, Hopper, Walker2d, HalfCheetah
 from .hanabi import Hanabi
 from .storm import InTheGrid, InTheGrid_2p, InTheMatrix
 from .coin_game import CoinGame
 from .jaxnav import JaxNav
 from .traffic_junction import TrafficJunction
+from .predator_prey_grid import PredatorPreyGrid
+from .traffic_junction_grid import TrafficJunctionGrid
 
 # Submoduled environments
 try:
