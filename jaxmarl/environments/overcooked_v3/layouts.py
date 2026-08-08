@@ -1401,15 +1401,15 @@ overcooked_v3_layouts = {
         possible_recipes=[[0, 0, 0]],
         pressure_plate_config=[
             (0, ButtonAction.TOGGLE_BARRIER),
-            # (1, ButtonAction.TOGGLE_BARRIER),
-            # (2, ButtonAction.TOGGLE_BARRIER),
-            # (3, ButtonAction.TOGGLE_BARRIER),
+            (1, ButtonAction.TOGGLE_BARRIER),
+            (2, ButtonAction.TOGGLE_BARRIER),
+            (3, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
             True,
-            # True,
-            # True,
-            # True,
+            True,
+            True,
+            True,
         ],
     ),
 
