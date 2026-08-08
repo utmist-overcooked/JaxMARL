@@ -36,8 +36,16 @@
 "WANDB_NAME": ""
 "SAVE_PATH": "checkpoints/mappo_overcooked_v3"
 
+# This trainer saves one final checkpoint for each training seed.
+"NUM_CHECKPOINTS": 1
+
 "ROLLOUT_GIF_ENABLED": True
-"ROLLOUT_GIF_COUNT": 10
+"ROLLOUT_GIF_COUNT": 1
 "ROLLOUT_GIF_MAX_STEPS": 400
+# Training seed to visualize when NUM_SEEDS is greater than one.
 "ROLLOUT_GIF_SEED_INDEX": 0
+# Fixed environment seed keeps milestone GIFs directly comparable.
+"ROLLOUT_GIF_ENV_SEED": 0
 "ROLLOUT_GIF_DIR": "rollouts"
+"ROLLOUT_GIF_WANDB_KEY": "rollouts/policy"
+"ROLLOUT_GIF_STRICT": False

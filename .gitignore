@@ -18,6 +18,9 @@ tmp/
 wandb/
 outputs/
 models/
+!baselines/overcooked_v3/models/
+!baselines/overcooked_v3/models/**
+baselines/overcooked_v3/**/__pycache__/
 
 venv/
 .venv/
