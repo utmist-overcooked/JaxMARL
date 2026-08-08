@@ -25,6 +25,7 @@ from .hanabi import Hanabi
 from .storm import InTheGrid, InTheGrid_2p, InTheMatrix
 from .coin_game import CoinGame
 from .jaxnav import JaxNav
+from .traffic_junction import TrafficJunction
 from .predator_prey_grid import PredatorPreyGrid
 from .traffic_junction_grid import TrafficJunctionGrid
 
