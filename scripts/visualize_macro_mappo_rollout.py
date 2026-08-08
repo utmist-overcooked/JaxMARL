@@ -205,7 +205,7 @@ def main():
         if args.variant == "replan"
         else Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
     )
-    params = load_params(args.run_dir / "final_actor.safetensors")
+    params = load_params(args.run_dir / "actors" / "actor_00002500.safetensors")
 
     episode_returns = []
     episode_lengths = []
