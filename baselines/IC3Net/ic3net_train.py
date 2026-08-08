@@ -36,6 +36,9 @@ import wandb
 
 from baselines.IC3Net.models import IndependentMLP, IndependentLSTM, CommNetDiscrete, CommNetLSTM
 from baselines.IC3Net.monitor import TrainingMonitorInterface
+from baselines.overcooked_v3.models.ic3net import IC3NetRolloutPolicy
+from baselines.overcooked_v3.training import OvercookedV3Training
+from baselines.overcooked_v3.gif_logging import saved_checkpoint_updates
 
 
 class Transition(NamedTuple):
@@ -381,14 +384,12 @@ def make_train(config):
 
     num_updates = config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     config["NUM_UPDATES"] = num_updates
-
     baseline = config.get("BASELINE", "ic3net")
     recurrent = config.get("RECURRENT", True)
     hidden_dim = config.get("HIDDEN_DIM", 64)
 
     # -- Build network & optimizer ---------------------------------------
     network, has_talk = _build_network(config, num_agents, action_dim)
-
     rng = jax.random.PRNGKey(config.get("SEED", 42))
     rng, init_rng = jax.random.split(rng)
     network_params = _init_params(init_rng, network, config, num_agents, obs_dim, has_talk)
@@ -428,7 +429,27 @@ def make_train(config):
 
     # -- Checkpoint setup ------------------------------------------------
     save_path = config.get("SAVE_PATH", None)
-    checkpoint_every = config.get("CHECKPOINT_EVERY", max(1, num_updates // 10))
+    checkpoint_every = int(
+        config.get("CHECKPOINT_EVERY", max(1, num_updates // 10))
+    )
+    checkpoint_updates = saved_checkpoint_updates(num_updates, checkpoint_every)
+    checkpoint_index_by_update = {
+        update: index
+        for index, update in enumerate(checkpoint_updates, start=1)
+    }
+    config["NUM_CHECKPOINTS"] = len(checkpoint_updates)
+    checkpoint_logging = None
+    if config["ENV_NAME"] == "overcooked_v3":
+        config.setdefault("ROLLOUT_GIF_ENABLED", True)
+        config.setdefault("ROLLOUT_GIF_COUNT", 1)
+        checkpoint_logging = OvercookedV3Training(
+            config,
+            lambda rollout_env: IC3NetRolloutPolicy(
+                rollout_env,
+                config,
+                _build_network,
+            ),
+        )
     log_every = config.get("LOG_EVERY", max(1, num_updates // 100))
 
     if save_path:
@@ -510,7 +531,7 @@ def make_train(config):
                 wandb.log({"update": step, **step_metrics})
 
             # Checkpoint
-            if save_path and (step % checkpoint_every == 0 or step == num_updates):
+            if save_path and step in checkpoint_index_by_update:
                 ts = runner_state[0]  # train_state
                 ckpt_file = os.path.join(save_path, f"model_update_{step}.msgpack")
                 with open(ckpt_file, "wb") as f:
@@ -520,6 +541,21 @@ def make_train(config):
                 with open(latest_file, "wb") as f:
                     f.write(serialization.to_bytes(ts.params))
                 monitor.log(f"Checkpoint saved: {ckpt_file}")
+                if checkpoint_logging is not None:
+                    checkpoint_logging.checkpoint_saved(
+                        ts.params,
+                        checkpoint_index=checkpoint_index_by_update[step],
+                        update_step=step,
+                        env_step=(
+                            step * config["NUM_STEPS"] * config["NUM_ENVS"]
+                        ),
+                        training_seed=int(config.get("SEED", 42)),
+                        run_name=(
+                            wandb.run.name
+                            if wandb.run is not None
+                            else config.get("WANDB_NAME")
+                        ),
+                    )
 
         monitor.log("Training complete!")
 
