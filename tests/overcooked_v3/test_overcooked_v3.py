@@ -217,6 +217,19 @@ WWWWWWWW
         )
 
     @staticmethod
+    def _two_recipe_layout_without_indicator():
+        layout_str = """
+WWWWWWWW
+W0A1P  W
+WB X A W
+WWWWWWWW
+"""
+        return Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0], [1, 1, 1]],
+        )
+
+    @staticmethod
     def _recipe_encoding(recipe):
         return int(DynamicObject.get_recipe_encoding(jnp.array(recipe)))
 
@@ -258,6 +271,15 @@ WWWWWWWW
             + 11
             + num_ingredients
             + (2 + num_ingredients)
+        )
+
+    @staticmethod
+    def _set_two_active_orders(state):
+        return state.replace(
+            order_types=state.order_types.at[0].set(1).at[1].set(2),
+            order_active_mask=(
+                state.order_active_mask.at[0].set(True).at[1].set(True)
+            ),
         )
 
     def test_recipe_probs_reject_wrong_length(self):
@@ -342,6 +364,86 @@ WWWWWWWW
         agent_obs = obs["agent_0"]
         assert int(agent_obs[recipe_y, recipe_x, recipe_layer_start + 2]) == 0
         assert int(agent_obs[recipe_y, recipe_x, recipe_layer_start + 3]) == 3
+
+    def test_recipe_is_global_without_indicator_or_queue(self):
+        layout = self._two_recipe_layout_without_indicator()
+        env = OvercookedV3(layout=layout, enable_order_queue=False)
+        _, state = env.reset(jax.random.PRNGKey(0))
+        tomato_recipe = self._recipe_encoding([1, 1, 1])
+        state = state.replace(recipe=jnp.array(tomato_recipe, dtype=jnp.int32))
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+
+        assert int(obs[0, 0, recipe_start + 3]) == 3
+        assert int(obs[-1, -1, recipe_start + 3]) == 3
+
+    def test_recipe_is_encoded_only_at_indicator_when_queue_is_off(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(layout=layout, enable_order_queue=False)
+        _, state = env.reset(jax.random.PRNGKey(0))
+        tomato_recipe = self._recipe_encoding([1, 1, 1])
+        state = state.replace(recipe=jnp.array(tomato_recipe, dtype=jnp.int32))
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+        recipe_y, recipe_x = np.argwhere(
+            np.asarray(state.grid[:, :, 0]) == int(StaticObject.RECIPE_INDICATOR)
+        )[0]
+
+        assert int(obs[recipe_y, recipe_x, recipe_start + 3]) == 3
+        assert int(obs[0, 0, recipe_start + 3]) == 0
+
+    def test_full_order_queue_is_global_without_indicator(self):
+        layout = self._two_recipe_layout_without_indicator()
+        env = OvercookedV3(layout=layout, enable_order_queue=True)
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = self._set_two_active_orders(state)
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+        slot_width = 2 + layout.num_ingredients
+
+        assert env.obs_shape[-1] == 56
+        assert int(obs[0, 0, recipe_start + 2]) == 3
+        assert int(obs[0, 0, recipe_start + slot_width + 3]) == 3
+        assert int(obs[-1, -1, recipe_start + 2]) == 3
+        assert int(obs[-1, -1, recipe_start + slot_width + 3]) == 3
+
+    def test_full_order_queue_is_encoded_only_at_indicator(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(layout=layout, enable_order_queue=True)
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = self._set_two_active_orders(state)
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+        slot_width = 2 + layout.num_ingredients
+        recipe_y, recipe_x = np.argwhere(
+            np.asarray(state.grid[:, :, 0]) == int(StaticObject.RECIPE_INDICATOR)
+        )[0]
+
+        assert int(obs[recipe_y, recipe_x, recipe_start + 2]) == 3
+        assert int(obs[recipe_y, recipe_x, recipe_start + slot_width + 3]) == 3
+        assert int(obs[0, 0, recipe_start + 2]) == 0
+        assert int(obs[0, 0, recipe_start + slot_width + 3]) == 0
+
+    def test_indicator_controls_partial_observation_of_full_queue(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            enable_order_queue=True,
+            agent_view_size=1,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = self._set_two_active_orders(state)
+
+        obs = env.get_obs(state)
+        recipe_start = self._recipe_layer_start(env)
+        recipe_stop = recipe_start + env.max_orders * (2 + layout.num_ingredients)
+
+        assert int(jnp.sum(obs["agent_0"][..., recipe_start:recipe_stop])) == 0
+        assert int(jnp.sum(obs["agent_1"][..., recipe_start:recipe_stop])) > 0
 
 
 class TestOvercookedV3PotMechanics:

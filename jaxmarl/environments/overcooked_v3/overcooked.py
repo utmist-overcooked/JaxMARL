@@ -325,6 +325,8 @@ class OvercookedV3(MultiAgentEnv):
             self.layout,
             self.observation_type,
             self.agent_view_size,
+            self.enable_order_queue,
+            self.max_orders,
         )
 
         # Extract pot positions from layout
@@ -621,6 +623,8 @@ class OvercookedV3(MultiAgentEnv):
             self.layout,
             self.observation_type,
             self.agent_view_size,
+            self.enable_order_queue,
+            self.max_orders,
         )
 
     def _sample_recipe(self, key: chex.PRNGKey) -> int:

@@ -181,6 +181,22 @@ When `enable_order_queue=True`, the front order controls `state.recipe` and
 In random queue mode, `recipe_probs` also controls the distribution used to
 generate new queued orders. Alternating queue mode remains deterministic.
 
+The default grid observation exposes recipe information as ordered blocks of
+`[plate, cooked, ingredient_0_count, ...]` channels. Queue-off environments
+have one block for `state.recipe`. Queue-enabled environments have
+`max_orders` blocks, ordered front-to-back, with inactive slots filled with
+zeros. Consequently, queue-enabled observation depth is
+`28 + 4 * num_ingredients + max_orders * (2 + num_ingredients)`.
+
+Recipe visibility follows the layout:
+
+- With an `R` tile, recipe or queue blocks are nonzero only at that tile, so
+  partially observable agents must have the tile in view.
+- Without an `R` tile, recipe or queue blocks are repeated at every grid cell,
+  making them available in every agent's visible crop.
+
+Order expiration timers are not part of these recipe blocks.
+
 For training runs, pass these values through YAML `ENV_KWARGS`:
 
 ```yaml
