@@ -32,6 +32,7 @@ from .environments import (
     OvercookedV3MacroInterruptible,
     CoinGame,
     JaxNav,
+    TrafficJunction,
     PredatorPreyGrid,
     TrafficJunctionGrid,
     SUBMODULE_ENVIRONMENTS
@@ -141,6 +142,9 @@ def make(env_id: str, **env_kwargs):
     elif env_id == "jaxnav":
         env = JaxNav(**env_kwargs)
 
+    elif env_id == "traffic_junction":
+        env = TrafficJunction(**env_kwargs)
+
     # 10. Predator-Prey Grid (IC3Net reference)
     elif env_id == "predator_prey_grid":
         env = PredatorPreyGrid(**env_kwargs)
@@ -204,6 +208,7 @@ registered_envs = [
     "overcooked_v3_macro_interruptible",
     "coin_game",
     "jaxnav",
+    "traffic_junction",
     "predator_prey_grid",
     "traffic_junction_grid",
     "JaxRobotarium_navigation",
@@ -213,5 +218,5 @@ registered_envs = [
     "JaxRobotarium_arctic_transport",
     "JaxRobotarium_foraging",
     "JaxRobotarium_rware",
-    "JaxRobotarium_predator_prey"
+    "JaxRobotarium_predator_prey",
 ]
