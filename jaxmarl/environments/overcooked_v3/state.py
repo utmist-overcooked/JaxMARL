@@ -6,11 +6,13 @@ import chex
 
 from jaxmarl.environments.overcooked_v3.common import Agent
 
+
 class ObservationType(str, Enum):
     """Available observation encodings for Overcooked V3 agents."""
 
     DEFAULT = "default"
     FEATURIZED = "featurized"
+
 
 @chex.dataclass
 class State:
@@ -80,6 +82,8 @@ class State:
     time: chex.Array
     terminal: bool
     recipe: int  # Current target recipe (bit-encoded)
+    next_recipe_idx: chex.Array  # Next layout recipe used by alternating mode
 
     # Delivery tracking
-    new_correct_delivery: bool = False
+    new_correct_delivery: bool
+    new_correct_delivery_types: chex.Array  # [num_agents], 0 means none

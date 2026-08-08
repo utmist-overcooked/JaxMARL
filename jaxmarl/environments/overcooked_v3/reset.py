@@ -11,13 +11,12 @@ from jaxmarl.environments.overcooked_v3.common import (
     Agent,
     Direction,
     Position,
-    SoupType,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.initialization import (
     randomize_agent_positions,
     randomize_state,
-    sample_recipe,
+    select_recipe_type,
 )
 from jaxmarl.environments.overcooked_v3.observations import get_obs
 from jaxmarl.environments.overcooked_v3.settings import (
@@ -61,20 +60,23 @@ def reset_overcooked_v3(
         inventory=jnp.zeros((config.num_agents,), dtype=jnp.int32),
     )
 
-    # Sample recipe. When the alternating order queue is enabled, seed the
-    # queue with onion first and expose that order through the recipe
-    # indicator immediately.
+    # Start one recipe stream for both queue-off and queue-on environments.
+    # Queue mode seeds one active order so agents never begin with an empty
+    # queue and an unfulfillable state.recipe target.
     key, subkey = jax.random.split(key)
-    recipe = sample_recipe(subkey, config)
+    first_order_type, next_recipe_idx = select_recipe_type(
+        subkey,
+        jnp.array(0, dtype=jnp.int32),
+        config,
+    )
+    recipe = order_type_to_recipe(first_order_type, config)
     order_types = jnp.zeros(config.max_orders, dtype=jnp.int32)
     order_expirations = jnp.zeros(config.max_orders, dtype=jnp.int32)
     order_active_mask = jnp.zeros(config.max_orders, dtype=jnp.bool_)
-    if config.enable_order_queue and config.order_queue_mode == "alternating":
-        first_order_type = jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32)
+    if config.enable_order_queue:
         order_types = order_types.at[0].set(first_order_type)
         order_expirations = order_expirations.at[0].set(config.order_expiration_time)
         order_active_mask = order_active_mask.at[0].set(True)
-        recipe = order_type_to_recipe(first_order_type, config)
 
     state = State(
         agents=agents,
@@ -116,7 +118,9 @@ def reset_overcooked_v3(
         time=jnp.array(0),
         terminal=False,
         recipe=recipe,
+        next_recipe_idx=next_recipe_idx,
         new_correct_delivery=False,
+        new_correct_delivery_types=jnp.zeros(config.num_agents, dtype=jnp.int32),
     )
 
     key, key_randomize = jax.random.split(key)

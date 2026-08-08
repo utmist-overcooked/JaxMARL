@@ -117,7 +117,9 @@ class State:
     time: chex.Array
     terminal: bool
     recipe: int
+    next_recipe_idx: chex.Array
     new_correct_delivery: bool
+    new_correct_delivery_types: chex.Array
 
     current_macro_actions: chex.Array
     macro_action_done: chex.Array
@@ -312,7 +314,9 @@ class OvercookedV3Macro(OvercookedV3):
             time=state.time,
             terminal=state.terminal,
             recipe=state.recipe,
+            next_recipe_idx=state.next_recipe_idx,
             new_correct_delivery=state.new_correct_delivery,
+            new_correct_delivery_types=state.new_correct_delivery_types,
             current_macro_actions=jnp.full(
                 (self.num_agents,), MacroActions.wait, dtype=jnp.int32
             ),

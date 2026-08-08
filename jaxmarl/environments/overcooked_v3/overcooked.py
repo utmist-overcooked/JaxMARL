@@ -1,5 +1,6 @@
 """Public Overcooked V3 environment wrapper."""
 
+from numbers import Integral, Real
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 import warnings
 
@@ -89,15 +90,14 @@ class OvercookedV3(MultiAgentEnv):
         pot_cook_time: int = POT_COOK_TIME,
         pot_cook_time_range: Optional[Sequence[int]] = None,
         pot_burn_time: int = POT_BURN_TIME,
-        # Recipe sampling settings
-        enable_random_recipe: bool = False,
+        # Recipe generation settings
+        recipe_mode: str = "fixed",
         recipe_probs: Optional[Union[List[float], np.ndarray, chex.Array]] = None,
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
         order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
         order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
-        order_queue_mode: str = "random",
         # Conveyor belt settings
         enable_item_conveyors: Optional[bool] = None,
         enable_player_conveyors: Optional[bool] = None,
@@ -125,16 +125,15 @@ class OvercookedV3(MultiAgentEnv):
             pot_cook_time_range: Optional inclusive [min, max] ready-time range.
                 Omit or pass an empty sequence to use pot_cook_time.
             pot_burn_time: Steps in burning window before pot burns (default 60)
-            enable_random_recipe: Whether to sample a new active recipe after
-                a correct delivery when the order queue is disabled
-            recipe_probs: Probability distribution over layout.possible_recipes.
-                If None, recipes and random queue orders are sampled uniformly.
+            recipe_mode: Recipe generation strategy: "fixed", "random", or
+                "alternating". Alternating cycles through possible_recipes in
+                their declared order.
+            recipe_probs: Required probability distribution over
+                layout.possible_recipes in random mode; forbidden otherwise.
             enable_order_queue: Whether to use order queue system
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
             order_expiration_time: Steps before order expires
-            order_queue_mode: "random" or "alternating"; alternating produces
-                onion, tomato, onion, tomato orders
             enable_item_conveyors: Whether item conveyors move items. If None,
                 inferred from whether the layout contains item conveyors.
             enable_player_conveyors: Whether player conveyors push agents. If
@@ -206,17 +205,42 @@ class OvercookedV3(MultiAgentEnv):
         self.pot_cook_time_range = jnp.array(cook_time_range, dtype=jnp.int32)
         self.pot_burn_time = pot_burn_time
 
-        self.enable_random_recipe = enable_random_recipe
-        # Order queue settings
+        # Recipe and order queue settings
+        if recipe_mode not in ("fixed", "random", "alternating"):
+            raise ValueError(
+                "recipe_mode must be 'fixed', 'random', or 'alternating'"
+            )
+        self.recipe_mode = recipe_mode
+
+        if not isinstance(enable_order_queue, (bool, np.bool_)):
+            raise ValueError("enable_order_queue must be a boolean")
         self.enable_order_queue = enable_order_queue
+
+        if isinstance(max_orders, (bool, np.bool_)) or not isinstance(
+            max_orders, Integral
+        ):
+            raise ValueError("max_orders must be an integer")
+        if max_orders < 1:
+            raise ValueError("max_orders must be at least 1")
         self.max_orders = max_orders
+
+        if isinstance(order_generation_rate, (bool, np.bool_)) or not isinstance(
+            order_generation_rate, Real
+        ):
+            raise ValueError("order_generation_rate must be numeric")
+        if not np.isfinite(order_generation_rate) or not (
+            0.0 <= order_generation_rate <= 1.0
+        ):
+            raise ValueError("order_generation_rate must be between 0.0 and 1.0")
         self.order_generation_rate = order_generation_rate
+
+        if isinstance(order_expiration_time, (bool, np.bool_)) or not isinstance(
+            order_expiration_time, Integral
+        ):
+            raise ValueError("order_expiration_time must be an integer")
+        if order_expiration_time < 0:
+            raise ValueError("order_expiration_time must be at least 0")
         self.order_expiration_time = order_expiration_time
-        if order_queue_mode not in ("random", "alternating"):
-            raise ValueError("order_queue_mode must be 'random' or 'alternating'")
-        if order_queue_mode == "alternating" and layout.num_ingredients < 2:
-            raise ValueError("alternating order queue requires onion and tomato piles")
-        self.order_queue_mode = order_queue_mode
 
         # Conveyor settings
         layout_has_item_conveyors = len(layout.item_conveyor_info) > 0
@@ -298,7 +322,7 @@ class OvercookedV3(MultiAgentEnv):
 
         # Pre-compute possible recipes
         self.possible_recipes = jnp.array(layout.possible_recipes, dtype=jnp.int32)
-        self._validate_recipe_probs(recipe_probs)
+        self._validate_recipe_configuration(recipe_mode, recipe_probs)
         self.recipe_probs = (
             None
             if recipe_probs is None
@@ -479,13 +503,12 @@ class OvercookedV3(MultiAgentEnv):
                 int(value) for value in self.pot_cook_time_range
             ),
             pot_burn_time=self.pot_burn_time,
-            enable_random_recipe=self.enable_random_recipe,
+            recipe_mode=self.recipe_mode,
             recipe_probs=self.recipe_probs,
             enable_order_queue=self.enable_order_queue,
             max_orders=self.max_orders,
             order_generation_rate=self.order_generation_rate,
             order_expiration_time=self.order_expiration_time,
-            order_queue_mode=self.order_queue_mode,
             order_recipe_encodings=self._order_recipe_encodings,
             enable_item_conveyors=self.enable_item_conveyors,
             enable_player_conveyors=self.enable_player_conveyors,
@@ -526,6 +549,44 @@ class OvercookedV3(MultiAgentEnv):
             pressure_plate_action_type=self._pressure_plate_action_type,
             pressure_plate_active_mask=self._pressure_plate_active_mask,
         )
+
+    def _validate_recipe_configuration(
+        self,
+        recipe_mode: str,
+        recipe_probs: Optional[Union[List[float], np.ndarray, chex.Array]],
+    ) -> None:
+        """Validate mode-specific recipe counts, uniqueness, and probabilities."""
+        recipes = [
+            tuple(int(value) for value in recipe)
+            for recipe in self.layout.possible_recipes
+        ]
+        if len(set(recipes)) != len(recipes):
+            raise ValueError("possible_recipes must not contain duplicate recipes")
+
+        num_recipes = len(recipes)
+        if recipe_mode == "fixed":
+            if num_recipes != 1:
+                raise ValueError(
+                    "fixed recipe_mode requires exactly one possible recipe"
+                )
+            if recipe_probs is not None:
+                raise ValueError("recipe_probs must be omitted in fixed recipe_mode")
+            return
+
+        if recipe_mode == "alternating":
+            if num_recipes < 2:
+                raise ValueError(
+                    "alternating recipe_mode requires at least two possible recipes"
+                )
+            if recipe_probs is not None:
+                raise ValueError(
+                    "recipe_probs must be omitted in alternating recipe_mode"
+                )
+            return
+
+        if recipe_probs is None:
+            raise ValueError("random recipe_mode requires recipe_probs")
+        self._validate_recipe_probs(recipe_probs)
 
     def _validate_recipe_probs(
         self, recipe_probs: Optional[Union[List[float], np.ndarray, chex.Array]]
@@ -599,8 +660,14 @@ class OvercookedV3(MultiAgentEnv):
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
         pot_cook_time: Optional[chex.Array] = None,
+        order_types: Optional[chex.Array] = None,
+        order_active_mask: Optional[chex.Array] = None,
     ):
         """Compatibility wrapper for functional interact processing."""
+        if order_types is None:
+            order_types = jnp.zeros(self.max_orders, dtype=jnp.int32)
+        if order_active_mask is None:
+            order_active_mask = jnp.zeros(self.max_orders, dtype=jnp.bool_)
         return process_interact(
             grid,
             agent,
@@ -611,6 +678,8 @@ class OvercookedV3(MultiAgentEnv):
             pot_active_mask,
             self.config,
             pot_cook_time,
+            order_types,
+            order_active_mask,
         )
 
     def _get_obs_shape(self) -> Tuple[int, ...]:

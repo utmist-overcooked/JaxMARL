@@ -15,7 +15,7 @@ from jaxmarl.environments.overcooked_v3.common import (
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
-from jaxmarl.environments.overcooked_v3.initialization import sample_recipe
+from jaxmarl.environments.overcooked_v3.initialization import select_recipe_type
 from jaxmarl.environments.overcooked_v3.settings import (
     BURN_PENALTY,
     EVENT_NAMES,
@@ -298,6 +298,7 @@ def apply_agent_interact_actions(
                 pot_timers,
                 pot_cook_durations,
                 key,
+                available_order_mask,
             ) = carry
 
             key, subkey = jax.random.split(key)
@@ -321,7 +322,34 @@ def apply_agent_interact_actions(
                 state.pot_active_mask,
                 config,
                 pot_cook_time,
+                state.order_types,
+                available_order_mask,
             )
+
+            plated_recipe_encodings = (
+                config.order_recipe_encodings
+                | DynamicObject.PLATE
+                | DynamicObject.COOKED
+            )
+            delivered_recipe_type = jnp.where(
+                new_correct_delivery,
+                jnp.argmax(agent.inventory == plated_recipe_encodings),
+                0,
+            ).astype(jnp.int32)
+
+            # Reserve the oldest matching slot immediately so a later agent in
+            # this scan cannot fulfill the same order during the same timestep.
+            if config.enable_order_queue:
+                matching_slots = available_order_mask & (
+                    state.order_types == delivered_recipe_type
+                )
+                matching_slot_idx = jnp.argmax(matching_slots)
+                should_reserve_slot = new_correct_delivery & jnp.any(matching_slots)
+                available_order_mask = jax.lax.select(
+                    should_reserve_slot,
+                    available_order_mask.at[matching_slot_idx].set(False),
+                    available_order_mask,
+                )
 
             pot_started = (pot_timers == 0) & (new_pot_timers > 0)
             new_pot_cook_durations = jnp.where(
@@ -338,15 +366,26 @@ def apply_agent_interact_actions(
                 new_pot_timers,
                 new_pot_cook_durations,
                 key,
+                available_order_mask,
             )
-            return carry, (new_agent, shaped_reward, event_metrics)
+            return carry, (
+                new_agent,
+                shaped_reward,
+                event_metrics,
+                delivered_recipe_type,
+            )
 
         return jax.lax.cond(
             is_interact,
             _interact,
             lambda c, a: (
                 c,
-                (a, 0.0, jnp.zeros((num_events,), dtype=jnp.float32)),
+                (
+                    a,
+                    0.0,
+                    jnp.zeros((num_events,), dtype=jnp.float32),
+                    jnp.array(0, dtype=jnp.int32),
+                ),
             ),
             carry,
             agent,
@@ -359,6 +398,7 @@ def apply_agent_interact_actions(
         state.pot_cooking_timer,
         state.pot_cook_durations,
         key,
+        state.order_active_mask,
     )
     xs = (moved_agents, actions)
     (
@@ -369,8 +409,14 @@ def apply_agent_interact_actions(
             new_pot_timers,
             new_pot_cook_durations,
             recipe_key,
+            _available_order_mask,
         ),
-        (new_agents, shaped_rewards, event_metrics),
+        (
+            new_agents,
+            shaped_rewards,
+            event_metrics,
+            new_correct_delivery_types,
+        ),
     ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
     shaped_rewards, event_metrics = add_dish_to_goal_progress_shaping(
@@ -384,17 +430,23 @@ def apply_agent_interact_actions(
         new_pot_timers == 0, 0, new_pot_cook_durations
     )
 
-    # Queue mode owns state.recipe: it is updated from the front order after
-    # this phase. Direct per-delivery sampling is only for queue-off mode.
-    sample_new_recipe = (
-        new_correct_delivery
-        & config.enable_random_recipe
-        & ~config.enable_order_queue
-    )
-    new_recipe = jax.lax.cond(
-        sample_new_recipe,
-        lambda key: sample_recipe(key, config),
-        lambda _: state.recipe,
+    # Queue mode advances recipes when orders are generated. Without a queue,
+    # each successful delivery advances the same fixed/random/alternating stream.
+    advance_recipe = new_correct_delivery & (not config.enable_order_queue)
+
+    def _select_next_recipe(key):
+        """Select and encode the next queue-off recipe."""
+        recipe_type, next_recipe_idx = select_recipe_type(
+            key,
+            state.next_recipe_idx,
+            config,
+        )
+        return config.order_recipe_encodings[recipe_type], next_recipe_idx
+
+    new_recipe, new_next_recipe_idx = jax.lax.cond(
+        advance_recipe,
+        _select_next_recipe,
+        lambda _: (state.recipe, state.next_recipe_idx),
         recipe_key,
     )
 
@@ -411,7 +463,9 @@ def apply_agent_interact_actions(
             pot_cooking_timer=new_pot_timers,
             pot_cook_durations=new_pot_cook_durations,
             recipe=new_recipe,
+            next_recipe_idx=new_next_recipe_idx,
             new_correct_delivery=new_correct_delivery,
+            new_correct_delivery_types=new_correct_delivery_types,
         ),
         reward,
         shaped_rewards,
@@ -465,10 +519,16 @@ def process_interact(
     pot_active_mask: chex.Array,
     config: OvercookedV3Config,
     pot_cook_time: Optional[chex.Array] = None,
+    order_types: Optional[chex.Array] = None,
+    order_active_mask: Optional[chex.Array] = None,
 ):
     """Process an interact action for an agent."""
     if pot_cook_time is None:
         pot_cook_time = jnp.array(config.pot_cook_time, dtype=jnp.int32)
+    if order_types is None:
+        order_types = jnp.zeros(config.max_orders, dtype=jnp.int32)
+    if order_active_mask is None:
+        order_active_mask = jnp.zeros(config.max_orders, dtype=jnp.bool_)
 
     inventory = agent.inventory
     fwd_pos, fwd_pos_in_bounds = agent.pos.checked_move(
@@ -667,8 +727,26 @@ def process_interact(
     )
     new_agent = agent.replace(inventory=new_inventory)
 
+    # Queue deliveries may fulfill any active recipe. Queue-off environments
+    # continue to compare against their single current recipe.
+    if config.enable_order_queue:
+        safe_order_types = jnp.clip(
+            order_types,
+            0,
+            config.order_recipe_encodings.shape[0] - 1,
+        )
+        queued_plated_recipes = (
+            config.order_recipe_encodings[safe_order_types]
+            | DynamicObject.PLATE
+            | DynamicObject.COOKED
+        )
+        is_correct_recipe = jnp.any(
+            order_active_mask & (inventory == queued_plated_recipes)
+        )
+    else:
+        is_correct_recipe = inventory == plated_recipe
+
     # Reward calculation
-    is_correct_recipe = inventory == plated_recipe
 
     reward = jnp.array(0.0, dtype=float)
     reward += (

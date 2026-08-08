@@ -156,30 +156,36 @@ overcooked_v3_layouts["my_layout"] = Layout.from_string(
 )
 ```
 
-**Random active recipes:**
+**Recipe generation modes:**
 
 Layouts define the available recipe set through `possible_recipes`. The
-environment can sample the next active `state.recipe` from a configured
-probability distribution after each correct delivery:
+environment uses one `recipe_mode` with or without an order queue:
+
+- `fixed` requires exactly one possible recipe and no `recipe_probs`.
+- `random` requires one or more possible recipes and an explicit probability
+  for each recipe.
+- `alternating` requires at least two possible recipes and cycles through all
+  of them in their declared order.
 
 ```python
 env = OvercookedV3(
     layout="random_recipe_demo",
-    enable_random_recipe=True,
+    recipe_mode="random",
     recipe_probs=[0.7, 0.3],
 )
 ```
 
 `recipe_probs` must be the same length and order as
-`layout.possible_recipes`, must be non-negative, and must sum to `1.0`. If
-`recipe_probs` is omitted, recipes are sampled uniformly. The active recipe is
-stored in `state.recipe`, so recipe indicators update automatically when the
-sampled recipe changes.
+`layout.possible_recipes`, must be finite and non-negative, and must sum to
+`1.0`. The active recipe is stored in `state.recipe`, so recipe indicators
+update automatically when the selected recipe changes.
 
-When `enable_order_queue=True`, the front order controls `state.recipe` and
-`enable_random_recipe` does not independently resample it after delivery.
-In random queue mode, `recipe_probs` also controls the distribution used to
-generate new queued orders. Alternating queue mode remains deterministic.
+Without a queue, a successful delivery selects the next recipe from the chosen
+mode. With `enable_order_queue=True`, reset seeds one order and each later order
+generation event uses the same mode. Any active queued recipe may be delivered
+out of order; when duplicate recipes are queued, a delivery fulfills only the
+oldest matching slot. The front order still controls `state.recipe` for shaping
+and display compatibility.
 
 The default grid observation exposes recipe information as ordered blocks of
 `[plate, cooked, ingredient_0_count, ...]` channels. Queue-off environments
@@ -195,7 +201,9 @@ Recipe visibility follows the layout:
 - Without an `R` tile, recipe or queue blocks are repeated at every grid cell,
   making them available in every agent's visible crop.
 
-Order expiration timers are not part of these recipe blocks.
+Order expiration timers are not part of these recipe blocks. An expired order
+is removed, records `event/order_expired`, and applies the existing `-10` team
+penalty.
 
 For training runs, pass these values through YAML `ENV_KWARGS`:
 
@@ -203,7 +211,7 @@ For training runs, pass these values through YAML `ENV_KWARGS`:
 "ENV_NAME": "overcooked_v3"
 "ENV_KWARGS":
   "layout": "random_recipe_demo"
-  "enable_random_recipe": True
+  "recipe_mode": "random"
   "recipe_probs": [0.7, 0.3]
 ```
 
@@ -248,6 +256,8 @@ class State:
     time: chex.Array                 # Current timestep
     terminal: bool                   # Episode done flag
     recipe: int                      # Current target recipe (bit-encoded)
+    next_recipe_idx: chex.Array      # Alternating stream position
+    new_correct_delivery_types: chex.Array  # Per-agent fulfilled recipe IDs
 ```
 
 ### `utils.py` - Helper Functions
@@ -419,7 +429,7 @@ env = OvercookedV3(
     # Optional ready-time range. Omit or pass [] to keep fixed pot_cook_time behavior.
     pot_cook_time_range=[65, 90],
     pot_burn_time=60,
-    enable_random_recipe=False,
+    recipe_mode="fixed",
     enable_order_queue=False,
     shaped_rewards=True,
 )
