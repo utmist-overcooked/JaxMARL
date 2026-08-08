@@ -5,8 +5,8 @@ This file provides guidance to AI agents working in this repository.
 ## Project Overview
 
 JaxMARL is a JAX-native multi-agent reinforcement learning library. Work in this
-fork focuses primarily on Overcooked V3 and, in particular, its macro-action
-interface and macro-action MAPPO baselines.
+fork focuses primarily on Overcooked V3, its primitive- and macro-action
+environments, and the baselines that train against them.
 
 The macro environment is a layer on top of Overcooked V3, not a separate game.
 `overcooked_v3` owns the grid state, observations, primitive movement,
@@ -90,21 +90,43 @@ uv run python -m jaxmarl.tools.layout_editor_v3
 
 ```bash
 # Select a new macro only at macro boundaries; uses SMDP/event-time returns
-uv run python baselines/MAPPO/mappo_macro_boundary.py \
+uv run python -m baselines.MAPPO.mappo_macro_boundary \
   ENV_KWARGS.layout=cramped_room
 
 # Select a desired macro every primitive step; a new choice interrupts the old one
-uv run python baselines/MAPPO/mappo_macro_every_step.py \
+uv run python -m baselines.MAPPO.mappo_macro_every_step \
   ENV_KWARGS.layout=cramped_room
 
 # Learn separate macro-selection and CONTINUE/REPLAN decisions
-uv run python baselines/MAPPO/mappo_macro_replan.py \
+uv run python -m baselines.MAPPO.mappo_macro_replan \
   ENV_KWARGS.layout=cramped_room
 ```
 
 The default configs disable W&B and save local outputs below
 `models/mappo_macro/<trainer>/seed_0/`. Override values such as
 `TOTAL_TIMESTEPS`, `NUM_ENVS`, `WANDB_MODE`, or `SAVE_PATH` through Hydra.
+
+### Train primitive-action Overcooked V3 baselines
+
+```bash
+# Primitive MAPPO RNN
+uv run python -m baselines.overcooked_v3.trainers.mappo
+
+# Primitive IPPO CNN, IPPO RNN, and IC3Net-family trainers
+uv run python -m baselines.IPPO.ippo_cnn_overcooked_v3
+uv run python -m baselines.IPPO.ippo_rnn_overcooked_v3
+uv run python -m baselines.IC3Net.ic3net_train \
+  --config-name ic3net_overcooked_v3_cramped_room
+```
+
+All of these trainers use `OvercookedV3Training` for the same checkpoint/GIF
+interface, regardless of which directory contains their launch file. They save
+rollout GIFs after selected checkpoint writes. Set
+`NUM_CHECKPOINTS` to the number of checkpoints the run will save and
+`ROLLOUT_GIF_COUNT` to the number that should receive GIFs. The checkpoint count
+must divide evenly by the GIF count. For example, 20 checkpoints and 10 GIFs
+select checkpoints 2, 4, ..., 20. A non-divisible configuration fails before
+training starts.
 
 ### Roll out a trained policy to GIF
 
@@ -165,6 +187,18 @@ must continue to call the base transition so the two environments do not drift.
 
 ### Baselines
 
+- `baselines/overcooked_v3/` — the common interface for Overcooked V3 training
+and rollout artifacts. `policy.py` defines the small policy contract;
+`rollout.py` owns environment reset, stepping, and terminal-frame collection;
+`gif_logging.py`, `hooks.py`, and `training.py` schedule and save checkpoint
+GIFs; `models/` contains model-specific adapters; and `trainers/` contains V3
+trainer implementations.
+- A model adapter implements `initial_state()` and `act()`. When `act()` returns
+direct agent actions, the rollout runner uses them unchanged. When it returns a
+distribution, the runner uses `mode()` to select the highest-probability action.
+- Trainers must call the shared checkpoint hook immediately after a checkpoint
+is successfully written. Do not schedule GIFs from arbitrary training updates:
+the GIF index refers to the one-based sequence of actual checkpoint saves.
 - `baselines/MAPPO/mappo_macro_boundary.py` — asynchronous boundary-only macro
 decisions with discounted intra-macro rewards and SMDP GAE.
 - `baselines/MAPPO/mappo_macro_every_step.py` — interruptible macro choice on each
@@ -173,18 +207,24 @@ primitive step.
 macro and learned CONTINUE/REPLAN heads.
 - `baselines/MAPPO/mappo_macro_common.py` — shared actor/critic definitions,
 observation augmentation, action masking, PPO updates, evaluation, logging,
-checkpointing, and resume support. Keep variant-specific rollout semantics in
-the three trainer files rather than hiding them here.
+checkpointing, and resume support. Keep behavior specific to each macro variant
+in the three trainer files rather than hiding it here.
 - `baselines/MAPPO/config/mappo_macro_*.yaml` — Hydra configs for those trainers.
 - `baselines/IPPO/`, `baselines/QLearning/`, and `baselines/IC3Net/` — other
-baseline families, including primitive-action Overcooked V3 experiments.
+baseline families. Existing Overcooked V3 entrypoints in these directories may
+remain as compatibility entrypoints while their V3 model adapters and shared
+artifact behavior live in `baselines/overcooked_v3/`. There is no requirement to
+port historical Overcooked or Overcooked V2 baselines to the V3 interface.
 
 ## Repository Structure
 
 - `jaxmarl/environments/` — registered multi-agent environments; the current
 focus is `overcooked_v3/` and `overcooked_v3_macro/`.
-- `baselines/` — mostly single-file training implementations grouped by algorithm
-family, with adjacent Hydra configs.
+- `baselines/overcooked_v3/` — common V3 policy adapters, rollout/GIF support,
+configs, and trainers.
+- `baselines/MAPPO/`, `baselines/IPPO/`, and `baselines/IC3Net/` — algorithm
+implementations and compatibility entrypoints used by current V3 experiments,
+with adjacent Hydra configs.
 - `scripts/` — play tools, layout utilities, experiment launchers, evaluations,
 and checkpoint-to-GIF renderers.
 - `tests/overcooked_v3/` and `tests/overcooked_v3_macro/` — base and macro
@@ -218,6 +258,12 @@ when changing them.
 public environment boundary.
 - Add focused tests to the matching Overcooked V3, macro, or baseline test
 directory. Include JIT coverage for environment transition changes.
+- Keep checkpoint counts explicit. Validate `NUM_CHECKPOINTS` against
+`ROLLOUT_GIF_COUNT` before training, and include the final checkpoint in the GIF
+selection.
+- Keep rollout adapters small. Model-specific observation shaping, recurrent
+state, communication state, and action masks belong in the adapter; environment
+reset, stepping, rendering, naming, and W&B upload belong in the shared V3 code.
 - Macro training budgets are measured in primitive environment steps. Respect
 each trainer's divisibility and rollout-boundary checks rather than silently
 truncating a run.
