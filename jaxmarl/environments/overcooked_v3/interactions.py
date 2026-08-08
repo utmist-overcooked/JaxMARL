@@ -154,6 +154,69 @@ def process_interact(
         object_is_wall | object_is_conveyor
     ) * object_has_no_ingredients * ~inventory_is_empty + successful_pot_placement
 
+    # Drop on counter/conveyor
+    successful_drop = (
+        (object_is_wall | object_is_conveyor) * object_has_no_ingredients * ~inventory_is_empty
+        + successful_pot_placement
+    )
+    successful_counter_drop = (
+        (object_is_wall | object_is_conveyor)
+        & object_has_no_ingredients
+        & ~inventory_is_empty
+        & ~inventory_is_dish
+    )
+    successful_counter_pickup = (
+        (object_is_wall | object_is_conveyor)
+        & ~object_has_no_ingredients
+        & inventory_is_empty
+    )
+    above_y = jnp.maximum(fwd_pos.y - 1, 0)
+    below_y = jnp.minimum(fwd_pos.y + 1, config.height - 1)
+    above_walkable = config._is_agent_walkable(grid[above_y, fwd_pos.x, 0])
+    below_walkable = config._is_agent_walkable(grid[below_y, fwd_pos.x, 0])
+    is_handoff_counter = (
+        (object_is_wall | object_is_conveyor)
+        & above_walkable
+        & below_walkable
+    )
+    min_pot_y = jnp.min(jnp.where(pot_active_mask, pot_positions[:, 0], config.height))
+    agent_side = agent.pos.y - fwd_pos.y
+    pot_side = min_pot_y - fwd_pos.y
+    drop_toward_pot_side = (agent_side * pot_side) < 0
+    pickup_on_pot_side = (agent_side * pot_side) > 0
+    pot_ingredient_counts = jax.vmap(jax.vmap(DynamicObject.ingredient_count))(
+        grid[:, :, 1]
+    )
+    full_unburned_pots = (
+        (grid[:, :, 0] == StaticObject.POT)
+        & (pot_ingredient_counts == 3)
+        & ((grid[:, :, 1] & DynamicObject.BURNED) == 0)
+    )
+    has_plate_target = jnp.any(full_unburned_pots)
+    counter_item_is_ingredient = DynamicObject.is_ingredient(interact_ingredients)
+    counter_item_is_plate = interact_ingredients == DynamicObject.PLATE
+    useful_drop_inventory = (
+        (inventory_is_ingredient & ((recipe & inventory) != 0))
+        | (inventory_is_plate & has_plate_target)
+    )
+    useful_pickup_item = (
+        (counter_item_is_ingredient & ((recipe & interact_ingredients) != 0))
+        | (counter_item_is_plate & has_plate_target)
+    )
+    if config.shaped_rewards_enabled:
+        shaped_reward += (
+            is_handoff_counter
+            & drop_toward_pot_side
+            & successful_counter_drop
+            & useful_drop_inventory
+        ) * SHAPED_REWARDS["HANDOFF_DROP"]
+        shaped_reward += (
+            is_handoff_counter
+            & pickup_on_pot_side
+            & successful_counter_pickup
+            & useful_pickup_item
+        ) * SHAPED_REWARDS["HANDOFF_PICKUP"]    
+
     # Delivery
     successful_delivery = object_is_goal * inventory_is_dish
     no_effect = ~successful_pickup * ~successful_drop * ~successful_delivery
@@ -171,6 +234,8 @@ def process_interact(
     # Start cooking when pot becomes full
     pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
     auto_cook = pot_is_idle & pot_full_after_drop
+    if config.shaped_rewards_enabled:
+        shaped_reward += auto_cook * SHAPED_REWARDS["POT_START_COOKING"]    
     initial_pot_timer = pot_cook_time + config.pot_burn_time
 
     # Update pot timer
