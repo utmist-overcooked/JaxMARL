@@ -2,6 +2,7 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jaxmarl import make
 from jaxmarl.environments.overcooked_v3 import OvercookedV3, overcooked_v3_layouts
@@ -154,7 +155,11 @@ class TestOvercookedV3Layouts:
     def test_all_registered_layouts(self):
         """Test that all registered layouts can be loaded."""
         for layout_name in overcooked_v3_layouts.keys():
-            env = OvercookedV3(layout=layout_name)
+            layout = overcooked_v3_layouts[layout_name]
+            recipe_mode = (
+                "fixed" if len(layout.possible_recipes) == 1 else "alternating"
+            )
+            env = OvercookedV3(layout=layout_name, recipe_mode=recipe_mode)
             key = jax.random.PRNGKey(0)
             obs, state = env.reset(key)
             assert obs is not None
@@ -197,6 +202,399 @@ WWWWWW
         )
 
         assert new_state.agents.inventory[0] == 0
+
+
+class TestOvercookedV3RecipeSampling:
+    """Test active recipe sampling."""
+
+    @staticmethod
+    def _two_recipe_layout():
+        layout_str = """
+WWWWWWWW
+W0A1P RW
+WB X A W
+WWWWWWWW
+"""
+        return Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0], [1, 1, 1]],
+        )
+
+    @staticmethod
+    def _two_recipe_layout_without_indicator():
+        layout_str = """
+WWWWWWWW
+W0A1P  W
+WB X A W
+WWWWWWWW
+"""
+        return Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0], [1, 1, 1]],
+        )
+
+    @staticmethod
+    def _three_recipe_layout():
+        """Build a kitchen whose recipe stream contains three recipes."""
+        layout_str = """
+WWWWWWWWW
+W0A1P2 RW
+WB X  A W
+WWWWWWWWW
+"""
+        return Layout.from_string(
+            layout_str,
+            possible_recipes=[[0, 0, 0], [1, 1, 1], [2, 2, 2]],
+        )
+
+    @staticmethod
+    def _recipe_encoding(recipe):
+        return int(DynamicObject.get_recipe_encoding(jnp.array(recipe)))
+
+    @staticmethod
+    def _put_agent_next_to_goal_with_inventory(state, inventory):
+        static = np.asarray(state.grid[:, :, 0])
+        goal_y, goal_x = np.argwhere(static == int(StaticObject.GOAL))[0]
+        candidates = (
+            (goal_y, goal_x - 1, Direction.RIGHT),
+            (goal_y, goal_x + 1, Direction.LEFT),
+            (goal_y - 1, goal_x, Direction.DOWN),
+            (goal_y + 1, goal_x, Direction.UP),
+        )
+
+        for stand_y, stand_x, direction in candidates:
+            if (
+                0 <= stand_y < static.shape[0]
+                and 0 <= stand_x < static.shape[1]
+                and static[stand_y, stand_x] == int(StaticObject.EMPTY)
+            ):
+                new_pos = Position(
+                    x=state.agents.pos.x.at[0].set(int(stand_x)),
+                    y=state.agents.pos.y.at[0].set(int(stand_y)),
+                )
+                new_agents = state.agents.replace(
+                    pos=new_pos,
+                    dir=state.agents.dir.at[0].set(int(direction)),
+                    inventory=state.agents.inventory.at[0].set(inventory),
+                )
+                return state.replace(agents=new_agents)
+
+        raise AssertionError("No empty tile adjacent to goal")
+
+    @staticmethod
+    def _recipe_layer_start(env):
+        num_ingredients = env.layout.num_ingredients
+        return (
+            2 * (7 + num_ingredients)
+            + 11
+            + num_ingredients
+            + (2 + num_ingredients)
+        )
+
+    @staticmethod
+    def _set_two_active_orders(state):
+        return state.replace(
+            order_types=state.order_types.at[0].set(1).at[1].set(2),
+            order_active_mask=(
+                state.order_active_mask.at[0].set(True).at[1].set(True)
+            ),
+        )
+
+    def test_recipe_probs_reject_wrong_length(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="recipe_probs length"):
+            OvercookedV3(
+                layout=layout,
+                recipe_mode="random",
+                recipe_probs=[1.0],
+            )
+
+    def test_recipe_probs_reject_non_distribution(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="sum to 1.0"):
+            OvercookedV3(
+                layout=layout,
+                recipe_mode="random",
+                recipe_probs=[0.25, 0.25],
+            )
+
+    def test_recipe_probs_reject_negative_values(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="non-negative"):
+            OvercookedV3(
+                layout=layout,
+                recipe_mode="random",
+                recipe_probs=[1.1, -0.1],
+            )
+
+    @pytest.mark.parametrize("recipe_probs", ([np.nan, 1.0], [np.inf, 0.0]))
+    def test_recipe_probs_reject_non_finite_values(self, recipe_probs):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="finite"):
+            OvercookedV3(
+                layout=layout,
+                recipe_mode="random",
+                recipe_probs=recipe_probs,
+            )
+
+    def test_recipe_probs_reject_non_numeric_values(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="numeric"):
+            OvercookedV3(
+                layout=layout,
+                recipe_mode="random",
+                recipe_probs=["onion", "tomato"],
+            )
+
+    def test_recipe_probs_reject_wrong_rank(self):
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="one-dimensional"):
+            OvercookedV3(
+                layout=layout,
+                recipe_mode="random",
+                recipe_probs=[[0.5], [0.5]],
+            )
+
+    def test_recipe_mode_rejects_invalid_configuration(self):
+        """Reject recipe mode, recipe count, and probability mismatches."""
+        layout = self._two_recipe_layout()
+
+        with pytest.raises(ValueError, match="recipe_mode must be"):
+            OvercookedV3(layout=layout, recipe_mode="shuffle")
+        with pytest.raises(ValueError, match="exactly one"):
+            OvercookedV3(layout=layout, recipe_mode="fixed")
+        with pytest.raises(ValueError, match="requires recipe_probs"):
+            OvercookedV3(layout=layout, recipe_mode="random")
+        with pytest.raises(ValueError, match="omitted in alternating"):
+            OvercookedV3(
+                layout=layout,
+                recipe_mode="alternating",
+                recipe_probs=[0.5, 0.5],
+            )
+
+    def test_recipe_mode_rejects_duplicate_recipes(self):
+        """Reject duplicate recipes because order IDs would be ambiguous."""
+        layout = self._two_recipe_layout()
+        layout.possible_recipes = [[0, 0, 0], [0, 0, 0]]
+
+        with pytest.raises(ValueError, match="duplicate"):
+            OvercookedV3(layout=layout, recipe_mode="alternating")
+
+    def test_reset_samples_from_recipe_probs(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="random",
+            recipe_probs=[0.0, 1.0],
+        )
+
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        assert int(state.recipe) == self._recipe_encoding([1, 1, 1])
+
+    def test_random_mode_allows_one_recipe_with_explicit_probability(self):
+        """Allow degenerate random mode when its sole probability is explicit."""
+        env = OvercookedV3(recipe_mode="random", recipe_probs=[1.0])
+
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        assert int(state.recipe) == self._recipe_encoding([0, 0, 0])
+
+    def test_alternating_mode_requires_multiple_recipes(self):
+        """Reject alternating mode when there is nothing to alternate."""
+        with pytest.raises(ValueError, match="at least two"):
+            OvercookedV3(recipe_mode="alternating")
+
+    def test_correct_delivery_resamples_active_recipe_and_observation(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="random",
+            recipe_probs=[0.0, 1.0],
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+
+        first_recipe = self._recipe_encoding([0, 0, 0])
+        second_recipe = self._recipe_encoding([1, 1, 1])
+        plated_first_recipe = (
+            first_recipe | int(DynamicObject.PLATE) | int(DynamicObject.COOKED)
+        )
+        state = state.replace(recipe=first_recipe)
+        state = self._put_agent_next_to_goal_with_inventory(
+            state, plated_first_recipe
+        )
+
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+        actions["agent_0"] = int(Actions.interact)
+        obs, new_state, rewards, _, _ = env.step(
+            jax.random.PRNGKey(1), state, actions
+        )
+
+        assert bool(new_state.new_correct_delivery)
+        assert float(rewards["agent_0"]) == pytest.approx(env.delivery_reward)
+        assert int(new_state.recipe) == second_recipe
+
+        static = np.asarray(new_state.grid[:, :, 0])
+        recipe_y, recipe_x = np.argwhere(
+            static == int(StaticObject.RECIPE_INDICATOR)
+        )[0]
+        recipe_layer_start = self._recipe_layer_start(env)
+        agent_obs = obs["agent_0"]
+        assert int(agent_obs[recipe_y, recipe_x, recipe_layer_start + 2]) == 0
+        assert int(agent_obs[recipe_y, recipe_x, recipe_layer_start + 3]) == 3
+
+    def test_queue_off_alternating_cycles_through_all_recipes(self):
+        """Advance all alternating recipes after queue-off deliveries."""
+        layout = self._three_recipe_layout()
+        env = OvercookedV3(layout=layout, recipe_mode="alternating")
+        _, state = env.reset(jax.random.PRNGKey(0))
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+        actions["agent_0"] = int(Actions.interact)
+
+        expected_recipes = ([1, 1, 1], [2, 2, 2], [0, 0, 0])
+        for step_idx, expected_recipe in enumerate(expected_recipes, start=1):
+            plated_recipe = (
+                int(state.recipe)
+                | int(DynamicObject.PLATE)
+                | int(DynamicObject.COOKED)
+            )
+            state = self._put_agent_next_to_goal_with_inventory(
+                state,
+                plated_recipe,
+            )
+            _, state, _, _, _ = env.step(
+                jax.random.PRNGKey(step_idx),
+                state,
+                actions,
+            )
+
+            assert int(state.recipe) == self._recipe_encoding(expected_recipe)
+
+    def test_queue_alternating_cycles_through_all_recipes(self):
+        """Fill queued orders by cycling through every declared recipe."""
+        layout = self._three_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=True,
+            max_orders=4,
+            order_generation_rate=1.0,
+            order_expiration_time=0,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+
+        for step_idx in range(1, 4):
+            _, state, _, _, _ = env.step(
+                jax.random.PRNGKey(step_idx),
+                state,
+                actions,
+            )
+
+        assert state.order_types.tolist() == [1, 2, 3, 1]
+
+    def test_recipe_is_global_without_indicator_or_queue(self):
+        layout = self._two_recipe_layout_without_indicator()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=False,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        tomato_recipe = self._recipe_encoding([1, 1, 1])
+        state = state.replace(recipe=jnp.array(tomato_recipe, dtype=jnp.int32))
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+
+        assert int(obs[0, 0, recipe_start + 3]) == 3
+        assert int(obs[-1, -1, recipe_start + 3]) == 3
+
+    def test_recipe_is_encoded_only_at_indicator_when_queue_is_off(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=False,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        tomato_recipe = self._recipe_encoding([1, 1, 1])
+        state = state.replace(recipe=jnp.array(tomato_recipe, dtype=jnp.int32))
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+        recipe_y, recipe_x = np.argwhere(
+            np.asarray(state.grid[:, :, 0]) == int(StaticObject.RECIPE_INDICATOR)
+        )[0]
+
+        assert int(obs[recipe_y, recipe_x, recipe_start + 3]) == 3
+        assert int(obs[0, 0, recipe_start + 3]) == 0
+
+    def test_full_order_queue_is_global_without_indicator(self):
+        layout = self._two_recipe_layout_without_indicator()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=True,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = self._set_two_active_orders(state)
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+        slot_width = 2 + layout.num_ingredients
+
+        assert env.obs_shape[-1] == 56
+        assert int(obs[0, 0, recipe_start + 2]) == 3
+        assert int(obs[0, 0, recipe_start + slot_width + 3]) == 3
+        assert int(obs[-1, -1, recipe_start + 2]) == 3
+        assert int(obs[-1, -1, recipe_start + slot_width + 3]) == 3
+
+    def test_full_order_queue_is_encoded_only_at_indicator(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=True,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = self._set_two_active_orders(state)
+
+        obs = env.get_obs(state)["agent_0"]
+        recipe_start = self._recipe_layer_start(env)
+        slot_width = 2 + layout.num_ingredients
+        recipe_y, recipe_x = np.argwhere(
+            np.asarray(state.grid[:, :, 0]) == int(StaticObject.RECIPE_INDICATOR)
+        )[0]
+
+        assert int(obs[recipe_y, recipe_x, recipe_start + 2]) == 3
+        assert int(obs[recipe_y, recipe_x, recipe_start + slot_width + 3]) == 3
+        assert int(obs[0, 0, recipe_start + 2]) == 0
+        assert int(obs[0, 0, recipe_start + slot_width + 3]) == 0
+
+    def test_indicator_controls_partial_observation_of_full_queue(self):
+        layout = self._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=True,
+            agent_view_size=1,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = self._set_two_active_orders(state)
+
+        obs = env.get_obs(state)
+        recipe_start = self._recipe_layer_start(env)
+        recipe_stop = recipe_start + env.max_orders * (2 + layout.num_ingredients)
+
+        assert int(jnp.sum(obs["agent_0"][..., recipe_start:recipe_stop])) == 0
+        assert int(jnp.sum(obs["agent_1"][..., recipe_start:recipe_stop])) > 0
 
 
 class TestOvercookedV3PotMechanics:
@@ -661,20 +1059,32 @@ WWWWWW
 
 
 class TestOvercookedV3OrderQueue:
-    """Test order queue system."""
+    """Test order queue behavior and its recipe-sampling integration."""
 
     def test_order_queue_disabled_by_default(self):
-        """Verify order queue is disabled by default."""
         env = OvercookedV3()
-        assert env.enable_order_queue == False
+        assert env.enable_order_queue is False
 
     def test_order_queue_can_be_enabled(self):
-        """Verify order queue can be enabled."""
         env = OvercookedV3(enable_order_queue=True)
-        assert env.enable_order_queue == True
-        key = jax.random.PRNGKey(0)
-        obs, state = env.reset(key)
-        assert state.order_types is not None
+        assert env.enable_order_queue is True
+        _, state = env.reset(jax.random.PRNGKey(0))
+        assert state.order_types.shape == (env.max_orders,)
+        assert bool(state.order_active_mask[0])
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        (
+            ({"max_orders": 0}, "max_orders must be at least 1"),
+            ({"order_generation_rate": -0.1}, "between 0.0 and 1.0"),
+            ({"order_generation_rate": 1.1}, "between 0.0 and 1.0"),
+            ({"order_expiration_time": -1}, "at least 0"),
+        ),
+    )
+    def test_order_queue_rejects_invalid_configuration(self, kwargs, message):
+        """Reject queue sizes, generation rates, and expirations out of range."""
+        with pytest.raises(ValueError, match=message):
+            OvercookedV3(**kwargs)
 
     def test_order_queue_uses_key_independent_from_agent_and_pot_processing(self):
         env = OvercookedV3(
@@ -699,6 +1109,108 @@ class TestOvercookedV3OrderQueue:
         assert jnp.array_equal(agent_key, step_key)
         assert order_key is None
 
+    def test_random_queue_uses_recipe_probabilities(self):
+        layout = TestOvercookedV3RecipeSampling._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="random",
+            enable_order_queue=True,
+            order_generation_rate=1.0,
+            recipe_probs=[0.0, 1.0],
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+
+        _, state, _, _, _ = env.step(jax.random.PRNGKey(1), state, actions)
+
+        tomato_recipe = TestOvercookedV3RecipeSampling._recipe_encoding([1, 1, 1])
+        assert int(state.order_types[0]) == 2
+        assert int(state.recipe) == tomato_recipe
+
+    def test_delivery_fulfills_oldest_matching_order_out_of_order(self):
+        """Fulfill an old matching order even when another recipe is in front."""
+        layout = TestOvercookedV3RecipeSampling._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=True,
+            max_orders=4,
+            order_generation_rate=0.0,
+            order_expiration_time=100,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        onion_recipe = TestOvercookedV3RecipeSampling._recipe_encoding([0, 0, 0])
+        tomato_recipe = TestOvercookedV3RecipeSampling._recipe_encoding([1, 1, 1])
+        plated_tomato = (
+            tomato_recipe | int(DynamicObject.PLATE) | int(DynamicObject.COOKED)
+        )
+        state = state.replace(
+            recipe=jnp.array(onion_recipe, dtype=jnp.int32),
+            order_types=jnp.array([1, 2, 2, 0], dtype=jnp.int32),
+            order_expirations=jnp.array([10, 20, 80, 0], dtype=jnp.int32),
+            order_active_mask=jnp.array([True, True, True, False]),
+        )
+        state = TestOvercookedV3RecipeSampling._put_agent_next_to_goal_with_inventory(
+            state,
+            plated_tomato,
+        )
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+        actions["agent_0"] = int(Actions.interact)
+
+        _, state, rewards, _, _ = env.step(
+            jax.random.PRNGKey(1),
+            state,
+            actions,
+        )
+
+        assert float(rewards["agent_0"]) == pytest.approx(env.delivery_reward)
+        assert state.order_types.tolist() == [1, 2, 0, 0]
+        assert state.order_expirations.tolist() == [9, 79, 0, 0]
+        assert int(state.recipe) == onion_recipe
+        assert int(state.new_correct_delivery_types[0]) == 2
+
+    def test_multiple_deliveries_consume_distinct_matching_slots(self):
+        """Consume one distinct duplicate queue slot per simultaneous delivery."""
+        layout = TestOvercookedV3RecipeSampling._two_recipe_layout()
+        env = OvercookedV3(
+            layout=layout,
+            recipe_mode="alternating",
+            enable_order_queue=True,
+            max_orders=4,
+            order_generation_rate=0.0,
+            order_expiration_time=0,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = state.replace(
+            order_types=jnp.array([1, 2, 2, 1], dtype=jnp.int32),
+            order_active_mask=jnp.ones((4,), dtype=jnp.bool_),
+            new_correct_delivery=True,
+            new_correct_delivery_types=jnp.array([2, 2], dtype=jnp.int32),
+        )
+
+        state, _, _ = env._process_order_queue(state, jax.random.PRNGKey(1))
+
+        assert state.order_types.tolist() == [1, 1, 0, 0]
+
+    def test_order_expiration_keeps_existing_penalty_and_event(self):
+        """Preserve the existing expiration event and negative team reward."""
+        env = OvercookedV3(
+            enable_order_queue=True,
+            order_generation_rate=0.0,
+            order_expiration_time=1,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        actions = {agent: int(Actions.stay) for agent in env.agents}
+
+        _, state, rewards, _, info = env.step(
+            jax.random.PRNGKey(1),
+            state,
+            actions,
+        )
+
+        assert float(rewards["agent_0"]) == pytest.approx(-10.0)
+        assert float(info["event/order_expired"][0]) == pytest.approx(1.0)
+        assert int(jnp.sum(state.order_active_mask)) == 0
 
 class TestOvercookedV3Conveyors:
     """Test conveyor belt mechanics."""

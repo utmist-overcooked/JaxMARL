@@ -6,11 +6,12 @@ ENV_KWARGS:
   max_steps: 400
   pot_cook_time: 20
   pot_burn_time: 40
+  recipe_mode: "fixed"
+  recipe_probs: null
   enable_order_queue: false
   max_orders: 5
   order_generation_rate: 0.0
   order_expiration_time: 200
-  order_queue_mode: "random"
   enable_item_conveyors: false
   enable_player_conveyors: false
 

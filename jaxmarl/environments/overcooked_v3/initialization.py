@@ -12,11 +12,43 @@ from jaxmarl.environments.overcooked_v3.common import (
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.state import State
 
+
+def select_recipe_type(
+    key: chex.PRNGKey,
+    next_recipe_idx: chex.Array,
+    config: OvercookedV3Config,
+) -> tuple[chex.Array, chex.Array]:
+    """Select a one-based recipe type and advance alternating-mode state."""
+    num_recipes = config.possible_recipes.shape[0]
+
+    if config.recipe_mode == "fixed":
+        recipe_idx = jnp.array(0, dtype=jnp.int32)
+        new_next_recipe_idx = next_recipe_idx
+    elif config.recipe_mode == "random":
+        recipe_idx = jax.random.choice(
+            key,
+            num_recipes,
+            p=config.recipe_probs,
+        )
+        new_next_recipe_idx = next_recipe_idx
+    else:
+        recipe_idx = next_recipe_idx
+        new_next_recipe_idx = (next_recipe_idx + 1) % num_recipes
+
+    # Queue slot zero is reserved for "no order", so recipe types are one-based.
+    return recipe_idx.astype(jnp.int32) + 1, new_next_recipe_idx.astype(jnp.int32)
+
+
 def sample_recipe(key: chex.PRNGKey, config: OvercookedV3Config) -> int:
-    """Sample a recipe from the configured possible recipes."""
-    recipe_idx = jax.random.randint(key, (), 0, config.possible_recipes.shape[0])
-    recipe = config.possible_recipes[recipe_idx]
+    """Select the first recipe for a fresh fixed, random, or alternating stream."""
+    recipe_type, _ = select_recipe_type(
+        key,
+        jnp.array(0, dtype=jnp.int32),
+        config,
+    )
+    recipe = config.possible_recipes[recipe_type - 1]
     return DynamicObject.get_recipe_encoding(recipe)
+
 
 def randomize_agent_positions(
     state: State, key: chex.PRNGKey, config: OvercookedV3Config
