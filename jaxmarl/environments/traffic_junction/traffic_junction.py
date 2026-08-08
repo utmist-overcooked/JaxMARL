@@ -243,8 +243,8 @@ class TrafficJunction(MultiAgentEnv):
         @jax.vmap
         def _observation(i):
             y, x = state.p_pos[i, 0], state.p_pos[i, 1]
-            start_y = jnp.clip(y + pad, 0, max_start)
-            start_x = jnp.clip(x + pad, 0, max_start)
+            start_y = jnp.clip(y, 0, max_start)
+            start_x = jnp.clip(x, 0, max_start)
             crop = jax.lax.dynamic_slice(padded_grid, (start_y, start_x), (self.view_size, self.view_size))
             return jnp.where(state.active[i], crop.flatten(), jnp.zeros(self.view_size * self.view_size, dtype=jnp.int32))
         
