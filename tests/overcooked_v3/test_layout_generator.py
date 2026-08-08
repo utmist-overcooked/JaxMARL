@@ -85,6 +85,32 @@ def _accessible_symbols(rows, component):
     return symbols
 
 
+def _shared_tiles(grid):
+    rows, components = _floor_components(grid)
+    component_by_position = {
+        position: component_idx
+        for component_idx, component in enumerate(components)
+        for position in component
+    }
+    return {
+        (row, col)
+        for row in range(1, len(rows) - 1)
+        for col in range(1, len(rows[0]) - 1)
+        if rows[row][col] == "W"
+        and {
+            component_by_position[position]
+            for position in (
+                (row - 1, col),
+                (row + 1, col),
+                (row, col - 1),
+                (row, col + 1),
+            )
+            if position in component_by_position
+        }
+        == {0, 1}
+    }
+
+
 def test_generator_is_deterministic_and_produces_valid_exact_size_layouts():
     first = generate_document(_config())
     second = generate_document(_config())
@@ -233,6 +259,70 @@ def test_shared_workflow_constructs_two_regions_with_counter_handoff():
 
     assert handoff_counters
     assert validate_generated_layout(layout) == (True, [])
+
+
+def test_two_region_generation_enforces_exact_shared_tile_count():
+    config = validate_config(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            counter_density=0.4,
+            num_regions=2,
+            num_shared_tiles=3,
+            workflow_mode="complete_each",
+            ingredient_piles=[2, 2],
+            pots=2,
+            plate_piles=2,
+            depots=2,
+        )["generator"]
+    )
+
+    grid, layout, _ = generate_layout(
+        config,
+        random.Random(config["seed"]),
+    )
+
+    assert len(_shared_tiles(grid)) == 3
+    assert validate_generated_layout(layout) == (True, [])
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True, "2"])
+def test_generator_rejects_invalid_shared_tile_count(value):
+    with pytest.raises(ValueError, match="num_shared_tiles"):
+        generate_document(_config(num_regions=2, num_shared_tiles=value))
+
+
+def test_two_regions_require_enough_tiles_to_separate_the_interior_grid():
+    with pytest.raises(
+        ValueError,
+        match="requires at least 2 interior counters",
+    ):
+        generate_document(
+            _config(
+                width=5,
+                height=5,
+                num_regions=2,
+                object_placement="boundary",
+                counter_density=0.1,
+            )
+        )
+
+
+def test_shared_tile_count_requires_two_regions():
+    with pytest.raises(ValueError, match="requires generator.num_regions = 2"):
+        generate_document(_config(num_shared_tiles=1))
+
+
+def test_shared_workflow_rejects_zero_shared_tiles():
+    with pytest.raises(ValueError, match="requires at least one shared tile"):
+        generate_document(
+            _config(
+                num_regions=2,
+                workflow_mode="shared",
+                num_shared_tiles=0,
+            )
+        )
 
 
 def test_complete_each_rejects_insufficient_workstation_copies():
