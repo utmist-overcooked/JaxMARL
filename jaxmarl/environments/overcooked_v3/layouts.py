@@ -234,13 +234,13 @@ WWWWWWRWW
 
 pressure_gated_circuit = """
 WWWWWWWWW
-W   #   W
+W       W
 W PWWW0 W
-W W _ W W
+W W   W W
 W#W_A_W#W
-W W _ W W
+W W   W W
 W XWWWB W
-W   #  AW
+W      AW
 WWWWWWRWW
 """
 
@@ -1402,14 +1402,14 @@ overcooked_v3_layouts = {
         pressure_plate_config=[
             (0, ButtonAction.TOGGLE_BARRIER),
             (1, ButtonAction.TOGGLE_BARRIER),
-            (2, ButtonAction.TOGGLE_BARRIER),
-            (3, ButtonAction.TOGGLE_BARRIER),
+            # (2, ButtonAction.TOGGLE_BARRIER),
+            # (3, ButtonAction.TOGGLE_BARRIER),
         ],
         barrier_config=[
             True,
             True,
-            True,
-            True,
+            # True,
+            # True,
         ],
     ),
 
