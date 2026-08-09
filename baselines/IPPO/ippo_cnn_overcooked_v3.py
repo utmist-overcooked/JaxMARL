@@ -68,6 +68,13 @@ EVENT_METRIC_NAMES = (
     "pot_burn",
     "order_expired",
     "order_added",
+    # Multi-stage prep chains. Only emitted by layouts that contain a cutting
+    # board, grill or blender; the logging loop skips keys the env never puts in
+    # info, so plain kitchens keep exactly the metric set they had before.
+    "prep_placement",
+    "prep_action",
+    "prep_pickup",
+    "prep_burn",
 )
 _ACTIVE_MONITOR = None
 _ACTIVE_SHAPED_REWARD_KEYS = (
@@ -77,6 +84,10 @@ _ACTIVE_SHAPED_REWARD_KEYS = (
     "PLATE_PICKUP",
     "PLATE_PICKUP_DURING_COOKING",
     "DISH_TO_GOAL_PROGRESS",
+    # Applied by interactions.py whenever the layout has prep stations.
+    "PREP_PLACEMENT",
+    "PREP_ACTION",
+    "PREP_PICKUP",
 )
 
 
