@@ -123,29 +123,26 @@ def process_order_queue(
     first_empty_idx = jnp.argmax(empty_slots)
     has_empty_slot = jnp.any(empty_slots)
 
-    # Generate either a random order or a deterministic onion/tomato
-    # alternation. For the alternating mode, alternate from the current
-    # newest visible order so the queue reads onion, tomato, onion, tomato
-    # even after deliveries or expirations compact the front.
+    # Generate either a random order or a deterministic rotation through every
+    # orderable dish. For the alternating mode, step on from the current newest
+    # visible order so the queue keeps its cycle even after deliveries or
+    # expirations compact the front.
     key, subkey = jax.random.split(key)
     if config.order_queue_mode == "alternating":
         num_active_orders = jnp.sum(new_active_mask)
         newest_order_idx = jnp.maximum(num_active_orders - 1, 0)
         newest_order_type = new_order_types[newest_order_idx]
         has_active_order = num_active_orders > 0
-        next_after_newest = jnp.where(
-            newest_order_type == SoupType.ONION_SOUP,
-            jnp.array(SoupType.TOMATO_SOUP, dtype=jnp.int32),
-            jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
-        )
+        # Step to the next dish in the rotation, wrapping back to the first.
+        next_after_newest = (newest_order_type % config.num_order_types) + 1
         new_order_type = jnp.where(
             has_active_order,
             next_after_newest,
-            jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
+            jnp.array(1, dtype=jnp.int32),
         )
     else:
         new_order_type = jax.random.randint(
-            subkey, (), 1, min(config.layout.num_ingredients + 1, 3)
+            subkey, (), 1, config.num_order_types + 1
         )
 
     should_add = should_generate & has_empty_slot
