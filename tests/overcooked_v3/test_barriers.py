@@ -5,7 +5,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jaxmarl import make
-from jaxmarl.environments.overcooked_v3.common import Actions
+from jaxmarl.environments.overcooked_v3.common import (
+    Actions,
+    ButtonAction,
+    Direction,
+)
+from jaxmarl.environments.overcooked_v3.layouts import Layout
 
 
 class TestBarriers:
@@ -172,6 +177,52 @@ class TestTimedBarriers:
         assert state.barrier_timer[0] == expected_timer, (
             f"Timer should be barrier_duration - 1 = {expected_timer} "
             f"(decremented on same step), got {state.barrier_timer[0]}"
+        )
+
+    def test_timed_button_opens_barrier_also_linked_to_unpressed_plate(self):
+        """An unpressed plate must not overwrite a timed button opening."""
+        layout = Layout.from_string(
+            """
+WWWPWWW
+0A #  X
+W !_  W
+W    AW
+WWWBWWW
+""",
+            possible_recipes=[[0, 0, 0]],
+            button_config=[(0, ButtonAction.TIMED_BARRIER)],
+            pressure_plate_config=[(0, ButtonAction.TOGGLE_BARRIER)],
+            barrier_config=[True],
+        )
+        env = make(
+            "overcooked_v3",
+            layout=layout,
+            barrier_duration=self.BARRIER_DURATION,
+        )
+        _, state = env.reset(jax.random.PRNGKey(0))
+        state = state.replace(
+            agents=state.agents.replace(
+                pos=state.agents.pos.replace(
+                    x=state.agents.pos.x.at[0].set(2),
+                    y=state.agents.pos.y.at[0].set(1),
+                ),
+                dir=state.agents.dir.at[0].set(Direction.DOWN),
+            )
+        )
+
+        _, state, _, _, _ = env.step_env(
+            jax.random.PRNGKey(1),
+            state,
+            {
+                "agent_0": int(Actions.interact),
+                "agent_1": int(Actions.stay),
+            },
+        )
+
+        assert not bool(state.pressure_plate_toggled[0])
+        assert int(state.barrier_timer[0]) == self.BARRIER_DURATION - 1
+        assert not bool(state.barrier_active[0]), (
+            "the timed button should keep the shared barrier open"
         )
 
     def test_deactivated_barrier_allows_movement(self):
@@ -399,3 +450,36 @@ class TestPressurePlates:
         done = env._process_barrier_timers(cleared)
         assert bool(done.barrier_active[bidx]), "reactivates once the tile is clear"
         assert int(done.barrier_timer[bidx]) == 0, "timer reaches 0 after reactivation"
+
+    def test_timed_barrier_stays_open_at_expiry_while_plate_is_pressed(self):
+        """A held plate remains an independent reason for a timed gate to open."""
+        env, state = self._make("pressure_plate_demo")
+        plate_idx = 0
+        py, px = (
+            int(v) for v in np.array(state.pressure_plate_positions[plate_idx])
+        )
+        bidx = int(
+            np.flatnonzero(
+                np.array(state.pressure_plate_linked_barrier[plate_idx])
+            )[0]
+        )
+        home = (int(state.agents.pos.y[0]), int(state.agents.pos.x[0]))
+        state = self._place(state, 0, py, px).replace(
+            barrier_active=state.barrier_active.at[bidx].set(False),
+            barrier_timer=state.barrier_timer.at[bidx].set(1),
+        )
+
+        pressed = env._process_pressure_plates(state)
+        expired = env._process_barrier_timers(pressed)
+
+        assert int(expired.barrier_timer[bidx]) == 0
+        assert not bool(expired.barrier_active[bidx]), (
+            "the held plate should keep the barrier open after timer expiry"
+        )
+
+        released = env._process_pressure_plates(
+            self._place(expired, 0, *home)
+        )
+        assert bool(released.barrier_active[bidx]), (
+            "the barrier should close after both controls have expired"
+        )

@@ -990,12 +990,30 @@ class Layout:
             (y, x): target_idxs
             for y, x, target_idxs, _ in self.pressure_plate_info
         }
+        button_positions = {
+            (y, x): target_idxs
+            for y, x, target_idxs, action_type in self.button_info
+            if action_type
+            in (
+                int(ButtonAction.TOGGLE_BARRIER),
+                int(ButtonAction.TIMED_BARRIER),
+            )
+        }
         controllable_barriers = {
             int(target_idx)
             for position, target_idxs in pressure_plate_positions.items()
             if position in component_by_position
             for target_idx in target_idxs
         }
+        controllable_barriers.update(
+            int(target_idx)
+            for position, target_idxs in button_positions.items()
+            if any(
+                adjacent in component_by_position
+                for adjacent in neighbours(*position)
+            )
+            for target_idx in target_idxs
+        )
         barrier_index_by_position = {
             (y, x): index
             for index, (y, x, _) in enumerate(self.barrier_info)
@@ -1065,15 +1083,12 @@ class Layout:
             for x in range(self.width):
                 obj = self.static_objects[y, x]
                 is_handoff_counter = obj == StaticObject.WALL
-                is_pressure_controlled_barrier = (
+                is_controlled_barrier = (
                     obj == StaticObject.BARRIER
                     and barrier_index_by_position.get((y, x))
                     in controllable_barriers
                 )
-                if not (
-                    is_handoff_counter
-                    or is_pressure_controlled_barrier
-                ):
+                if not (is_handoff_counter or is_controlled_barrier):
                     continue
                 adjacent_components = sorted(
                     {
@@ -1506,8 +1521,9 @@ def load_layouts_from_json(
 
     Each value in the top-level ``layouts`` object must contain an ``ascii``
     string (or the legacy ``grid`` key). A ``possible_recipes`` field is required unless the grid contains an ``R`` recipe indicator.
-    Optional ``barrier_config`` and ``pressure_plate_config`` fields preserve
-    barrier activation and plate links. This is the format written by
+    Optional ``button_config``, ``barrier_config``, and
+    ``pressure_plate_config`` fields preserve control links and barrier
+    activation. This is the format written by
     ``scripts/generate_overcooked_v3_layouts.py``.
     """
     json_path = Path(path)
@@ -1529,6 +1545,7 @@ def load_layouts_from_json(
 
         grid = entry.get("ascii", entry.get("grid"))
         possible_recipes = entry.get("possible_recipes")
+        button_config = entry.get("button_config")
         barrier_config = entry.get("barrier_config")
         pressure_plate_config = entry.get("pressure_plate_config")
         if not isinstance(grid, str):
@@ -1545,6 +1562,7 @@ def load_layouts_from_json(
             layout = Layout.from_string(
                 grid,
                 possible_recipes=possible_recipes,
+                button_config=button_config,
                 barrier_config=barrier_config,
                 pressure_plate_config=pressure_plate_config,
             )

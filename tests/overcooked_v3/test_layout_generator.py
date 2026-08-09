@@ -120,6 +120,15 @@ def _barrier_positions(grid):
     }
 
 
+def _button_positions(grid):
+    return {
+        (row, col)
+        for row, line in enumerate(grid.splitlines())
+        for col, symbol in enumerate(line)
+        if symbol == "!"
+    }
+
+
 def _assert_pressure_plates_are_agent_accessible(grid):
     rows, components = _floor_components(grid)
     assert grid.count("_") > 0
@@ -332,10 +341,35 @@ def test_generator_rejects_invalid_barrier_count(value):
         generate_document(_config(barriers=value))
 
 
-@pytest.mark.parametrize("value", [0, 3, 1.5, True, "2"])
+@pytest.mark.parametrize("value", [-1, 3, 1.5, True, "2"])
 def test_generator_rejects_invalid_pressure_plate_multiplicity(value):
     with pytest.raises(ValueError, match="pressure_plates_per_barrier"):
         generate_document(_config(pressure_plates_per_barrier=value))
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True, "2"])
+def test_generator_rejects_invalid_button_multiplicity(value):
+    with pytest.raises(ValueError, match="buttons_per_barrier"):
+        generate_document(_config(buttons_per_barrier=value))
+
+
+def test_generator_requires_at_least_one_control_per_barrier():
+    with pytest.raises(ValueError, match="at least one pressure plate or button"):
+        generate_document(
+            _config(
+                barriers=1,
+                pressure_plates_per_barrier=0,
+                buttons_per_barrier=0,
+            )
+        )
+
+
+def test_generator_rejects_button_count_above_environment_capacity():
+    with pytest.raises(ValueError, match="MAX_BUTTONS"):
+        generate_document(_config(barriers=16, buttons_per_barrier=2))
+
+    with pytest.raises(ValueError, match="buttons_per_barrier"):
+        generate_document(_config(buttons_per_barrier=17))
 
 
 def test_shared_barrier_placement_requires_two_regions():
@@ -374,6 +408,59 @@ def test_generator_spawns_exact_barriers_with_single_or_paired_reachable_plates(
         target_counts[targets[0]] += 1
     assert target_counts == [plates_per_barrier] * 3
     _assert_pressure_plates_are_agent_accessible(entry["ascii"])
+
+
+@pytest.mark.parametrize("buttons_per_barrier", [0, 1, 2])
+def test_generator_spawns_and_wires_exact_timed_buttons_per_barrier(
+    buttons_per_barrier,
+):
+    document = generate_document(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            counter_density=0.2,
+            barriers=3,
+            pressure_plates_per_barrier=0 if buttons_per_barrier else 1,
+            buttons_per_barrier=buttons_per_barrier,
+            max_attempts=5000,
+        )
+    )
+    entry = next(iter(document["layouts"].values()))
+
+    assert entry["ascii"].count("!") == 3 * buttons_per_barrier
+    assert entry["ascii"].count("_") == (0 if buttons_per_barrier else 3)
+    target_counts = [0, 0, 0]
+    for targets, action_type in entry["button_config"]:
+        assert len(targets) == 1
+        assert action_type == int(layout_generator.ButtonAction.TIMED_BARRIER)
+        target_counts[targets[0]] += 1
+    assert target_counts == [buttons_per_barrier] * 3
+
+
+@pytest.mark.parametrize("placement", ["boundary", "interior"])
+def test_generated_buttons_follow_workstation_placement(placement):
+    document = generate_document(
+        _config(
+            count=1,
+            width=10,
+            height=10,
+            object_placement=placement,
+            barriers=2,
+            buttons_per_barrier=1,
+            max_attempts=5000,
+        )
+    )
+    grid = next(iter(document["layouts"].values()))["ascii"]
+    rows = grid.splitlines()
+
+    assert len(_button_positions(grid)) == 2
+    for row, col in _button_positions(grid):
+        is_boundary = row in {0, len(rows) - 1} or col in {
+            0,
+            len(rows[0]) - 1,
+        }
+        assert is_boundary == (placement == "boundary")
 
 
 def test_shared_barrier_placement_uses_only_two_region_interface_tiles():
@@ -469,6 +556,7 @@ def test_json_loader_preserves_generated_barrier_controls(tmp_path):
         _config(
             count=1,
             barriers=2,
+            buttons_per_barrier=2,
             pressure_plates_per_barrier=2,
             max_attempts=5000,
         )
@@ -479,6 +567,17 @@ def test_json_loader_preserves_generated_barrier_controls(tmp_path):
     layout = load_layouts_from_json(path)["test_kitchen_0"]
 
     assert [active for _, _, active in layout.barrier_info] == [True, True]
+    button_targets = [
+        target
+        for _, _, target_idxs, _ in layout.button_info
+        for target in target_idxs
+    ]
+    assert button_targets.count(0) == 2
+    assert button_targets.count(1) == 2
+    assert all(
+        action_type == int(layout_generator.ButtonAction.TIMED_BARRIER)
+        for _, _, _, action_type in layout.button_info
+    )
     targets = [
         target
         for _, _, target_idxs, _ in layout.pressure_plate_info

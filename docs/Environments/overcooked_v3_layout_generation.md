@@ -41,6 +41,7 @@ the results to the top-level `layouts` object.
     "barriers": 0,
     "barrier_placement": "anywhere",
     "pressure_plates_per_barrier": 1,
+    "buttons_per_barrier": 0,
     "max_attempts": 1000
   },
   "layouts": {}
@@ -65,9 +66,10 @@ the results to the top-level `layouts` object.
 | `num_regions` | Number of disconnected walkable regions: `1` or `2`. Two regions place one agent in each. |
 | `num_shared_tiles` | Exact number of ordinary counters accessible from both regions, or `null` to leave the count unconstrained. Requires two regions. |
 | `workflow_mode` | Distribution of the cooking workflow: `single_region`, `complete_each`, or `shared`. |
-| `barriers` | Exact number of active, pressure-plate-controlled barriers. At most 16. |
+| `barriers` | Exact number of active, pressure-plate/button-controlled barriers. At most 16. |
 | `barrier_placement` | Barrier placement mode: `anywhere`, `shared`, `action_adjacent`, or `shared_or_action_adjacent`. |
-| `pressure_plates_per_barrier` | `1` for one pressure plate per barrier or `2` for a pair. |
+| `pressure_plates_per_barrier` | `0` for none, `1` for one pressure plate per barrier, or `2` for a pair. |
+| `buttons_per_barrier` | Number of interactive buttons linked to each barrier. Defaults to `0`. |
 | `max_attempts` | Maximum constructive retries for recoverable frontier or placement dead ends. |
 
 `possible_recipes` may be omitted. In that case, the generator creates one
@@ -81,7 +83,7 @@ same-ingredient soups. Mixed recipes such as `[0, 0, 1]` are rejected by the
 generator because the current pot logic cannot complete them.
 
 `object_placement` controls all ingredient piles, pots, plate piles, delivery
-depots, and any required recipe indicator:
+depots, barrier buttons, and any required recipe indicator:
 
 - `boundary` preserves the original behavior and uses only non-corner border
   cells.
@@ -93,13 +95,17 @@ Interior workstations occupy otherwise walkable floor positions, like internal
 counters. The capacity checks reserve room for the configured interior
 counters and both agents.
 
-### Barriers and pressure plates
+### Barriers, pressure plates, and buttons
 
 Set `barriers` to the exact number of barriers required in each generated
 layout. Generated barriers start active. Each pressure plate controls one
 barrier with `TOGGLE_BARRIER`; standing on either plate in a configured pair
-opens its barrier. The generator never places a pressure plate in a component
-without an agent spawn.
+opens its barrier. Each generated button also controls one barrier with
+`TIMED_BARRIER` and is activated with the interact action, opening the barrier
+for the environment's configured `barrier_duration` (five steps by default).
+The generator never places a pressure plate in a component without an agent
+spawn, and buttons use the same accessible workstation placement as pots and
+plate piles.
 
 `barrier_placement` controls the eligible barrier tiles:
 
@@ -117,9 +123,15 @@ counters are converted to barriers. A pressure-controlled barrier can connect
 the two workflow regions when opened, so the accessibility validator treats it
 as a valid dynamic connection.
 
-`pressure_plates_per_barrier` must be `1` (single) or `2` (paired). The total
-number of generated pressure plates cannot exceed the V3
+`pressure_plates_per_barrier` must be `0` (none), `1` (single), or `2` (paired).
+When barriers are requested, `pressure_plates_per_barrier` and
+`buttons_per_barrier` cannot both be `0`, so every barrier has at least one
+control. The total number of generated pressure plates cannot exceed the V3
 `MAX_PRESSURE_PLATES` capacity of 16.
+
+`buttons_per_barrier` must be a non-negative integer. The total number of
+generated buttons cannot exceed the V3 `MAX_BUTTONS` capacity of 16. A value of
+`0` preserves pressure-plate-only layouts.
 
 ### Regions and workflow modes
 
@@ -174,8 +186,9 @@ from an agent.
 | `P` | Pot |
 | `B` | Plate pile |
 | `X` | Delivery depot |
-| `#` | Active pressure-plate-controlled barrier |
+| `#` | Active pressure-plate/button-controlled barrier |
 | `_` | Pressure plate |
+| `!` | Interactive barrier button |
 | Space | Walkable floor |
 
 Each generated layout contains exactly two `A` spawn positions.
@@ -195,8 +208,8 @@ For every requested layout, the generator:
 6. For two regions, checks the requested exact shared-tile count; in `shared`
    mode, also verifies that at least one counter is accessible from both
    regions.
-7. Places the requested barriers and one or two reachable pressure plates for
-   each barrier.
+7. Places the requested barriers, wires the configured buttons, and places zero,
+   one, or two reachable pressure plates for each barrier.
 8. Places both agents on carved floor, one per region when `num_regions` is two.
 9. Parses the ASCII through `Layout.from_string` and runs the structural,
    playability, accessibility, handoff, and recipe-solvability checks once.
@@ -264,6 +277,7 @@ The output contains entries similar to:
         [0, 0, 0],
         [1, 1, 1]
       ],
+      "button_config": [],
       "barrier_config": [],
       "pressure_plate_config": [],
       "validation": {

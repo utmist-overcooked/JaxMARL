@@ -24,6 +24,7 @@ from jaxmarl.environments.overcooked_v3.layouts import (
 )
 from jaxmarl.environments.overcooked_v3.settings import (
     MAX_BARRIERS,
+    MAX_BUTTONS,
     MAX_POTS,
     MAX_PRESSURE_PLATES,
 )
@@ -47,10 +48,11 @@ DEFAULTS = {
     # number unconstrained (except that shared workflows still require one).
     "num_shared_tiles": None,
     "workflow_mode": "single_region",
-    # Barriers start active and are opened by generated pressure plates.
+    # Barriers start active and are opened by generated plates or buttons.
     "barriers": 0,
     "barrier_placement": "anywhere",
     "pressure_plates_per_barrier": 1,
+    "buttons_per_barrier": 0,
     "max_attempts": 1000,
 }
 
@@ -139,8 +141,9 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     pressure_plates_per_barrier = _integer(
         config,
         "pressure_plates_per_barrier",
-        1,
+        0,
     )
+    buttons_per_barrier = _integer(config, "buttons_per_barrier", 0)
     _integer(config, "max_attempts", 1)
     num_shared_tiles = config["num_shared_tiles"]
     if num_shared_tiles is not None and (
@@ -161,10 +164,21 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
         raise ValueError(
             f"generator.barriers cannot exceed MAX_BARRIERS ({MAX_BARRIERS})"
         )
-    if pressure_plates_per_barrier not in {1, 2}:
+    if pressure_plates_per_barrier not in {0, 1, 2}:
         raise ValueError(
-            "generator.pressure_plates_per_barrier must be 1 (single) or "
-            "2 (paired)"
+            "generator.pressure_plates_per_barrier must be 0 (none), "
+            "1 (single), or 2 (paired)"
+        )
+    if buttons_per_barrier > MAX_BUTTONS:
+        raise ValueError(
+            "generator.buttons_per_barrier cannot exceed "
+            f"MAX_BUTTONS ({MAX_BUTTONS})"
+        )
+    if barriers > 0 and pressure_plates_per_barrier + buttons_per_barrier < 1:
+        raise ValueError(
+            "each barrier requires at least one pressure plate or button; "
+            "set generator.pressure_plates_per_barrier or "
+            "generator.buttons_per_barrier to at least 1"
         )
     pressure_plate_count = barriers * pressure_plates_per_barrier
     if pressure_plate_count > MAX_PRESSURE_PLATES:
@@ -172,6 +186,12 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
             f"{barriers} barriers with {pressure_plates_per_barrier} pressure "
             f"plate(s) each require {pressure_plate_count} pressure plates, "
             f"but MAX_PRESSURE_PLATES is {MAX_PRESSURE_PLATES}"
+        )
+    button_count = barriers * buttons_per_barrier
+    if button_count > MAX_BUTTONS:
+        raise ValueError(
+            f"{barriers} barriers with {buttons_per_barrier} button(s) each "
+            f"require {button_count} buttons, but MAX_BUTTONS is {MAX_BUTTONS}"
         )
     if (
         not isinstance(config["barrier_placement"], str)
@@ -308,6 +328,7 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
         + config["plate_piles"]
         + config["depots"]
         + (len(config["possible_recipes"]) > 1)
+        + button_count
     )
     boundary_slots = 2 * (width - 2) + 2 * (height - 2)
     max_interior_workstations = interior_tiles - counter_count - 2
@@ -382,6 +403,9 @@ def _station_symbols(config: dict[str, Any]) -> list[str]:
     stations.extend(["X"] * config["depots"])
     if len(config["possible_recipes"]) > 1:
         stations.append("R")
+    stations.extend(
+        ["!"] * (config["barriers"] * config["buttons_per_barrier"])
+    )
     return stations
 
 
@@ -424,6 +448,8 @@ def _allocate_stations_to_regions(
             allocations[target].extend(stage)
         if len(config["possible_recipes"]) > 1:
             allocations[rng.randrange(num_regions)].append("R")
+        for _ in range(config["barriers"] * config["buttons_per_barrier"]):
+            allocations[rng.randrange(num_regions)].append("!")
         return allocations
 
     # complete_each: reserve one complete workflow in every region, then
@@ -588,21 +614,26 @@ def _connected_floor_components(
     return components
 
 
-def _place_barriers_and_pressure_plates(
+def _place_barriers_and_controls(
     grid: list[list[str]],
     config: dict[str, Any],
     regions: list[set[tuple[int, int]]],
     shared_tiles: list[tuple[int, int]],
     rng: random.Random,
-) -> tuple[list[bool], list[tuple[int, int]]]:
-    """Place active barriers and reachable single/paired pressure plates.
+) -> tuple[
+    list[bool],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+]:
+    """Place active barriers and wire generated buttons and pressure plates.
 
-    Pressure-plate targets are returned in row-major plate order, matching
-    ``Layout.from_string`` parsing.
+    Control targets are returned in row-major tile order, matching
+    ``Layout.from_string`` parsing for ``button_config`` and
+    ``pressure_plate_config``.
     """
     barrier_count = config["barriers"]
     if barrier_count == 0:
-        return [], []
+        return [], [], []
 
     height, width = config["height"], config["width"]
     all_positions = {
@@ -691,7 +722,31 @@ def _place_barriers_and_pressure_plates(
         (target_by_plate_position[position], int(ButtonAction.TOGGLE_BARRIER))
         for position in sorted(plate_positions)
     ]
-    return [True] * barrier_count, pressure_plate_targets
+
+    buttons_per_barrier = config["buttons_per_barrier"]
+    button_positions = sorted(
+        (row, col)
+        for row, line in enumerate(grid)
+        for col, symbol in enumerate(line)
+        if symbol == "!"
+    )
+    expected_button_count = barrier_count * buttons_per_barrier
+    if len(button_positions) != expected_button_count:
+        raise CandidateGenerationError(
+            f"layout has {len(button_positions)} buttons; expected "
+            f"{expected_button_count}"
+        )
+    button_target_assignments = [
+        barrier_idx
+        for barrier_idx in range(barrier_count)
+        for _ in range(buttons_per_barrier)
+    ]
+    rng.shuffle(button_target_assignments)
+    button_targets = [
+        (target_idx, int(ButtonAction.TIMED_BARRIER))
+        for target_idx in button_target_assignments
+    ]
+    return [True] * barrier_count, button_targets, pressure_plate_targets
 
 
 def _place_region_stations(
@@ -780,7 +835,12 @@ def _place_region_stations(
 def _generate_candidate(
     config: dict[str, Any],
     rng: random.Random,
-) -> tuple[str, list[bool], list[tuple[int, int]]]:
+) -> tuple[
+    str,
+    list[bool],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+]:
     width, height = config["width"], config["height"]
     grid = [["W"] * width for _ in range(height)]
     interior = {
@@ -847,7 +907,6 @@ def _generate_candidate(
                 f"layout has {len(shared_tiles)} shared tiles; "
                 f"requested exactly {requested_shared_tiles}"
             )
-        if config["workflow_mode"] == "shared" and not shared_tiles:
     if config["workflow_mode"] == "shared":
         all_positions = {
             (row, col)
@@ -865,12 +924,14 @@ def _generate_candidate(
                 "shared workflow has no counter accessible from both regions"
             )
 
-    barrier_config, pressure_plate_config = _place_barriers_and_pressure_plates(
-        grid,
-        config,
-        regions,
-        shared_tiles,
-        rng,
+    barrier_config, button_config, pressure_plate_config = (
+        _place_barriers_and_controls(
+            grid,
+            config,
+            regions,
+            shared_tiles,
+            rng,
+        )
     )
 
     final_regions = _connected_floor_components(grid)
@@ -902,6 +963,7 @@ def _generate_candidate(
     return (
         "\n".join("".join(row) for row in grid),
         barrier_config,
+        button_config,
         pressure_plate_config,
     )
 
@@ -914,16 +976,19 @@ def generate_layout(
     last_errors = []
     for attempt in range(1, config["max_attempts"] + 1):
         try:
-            grid, barrier_config, pressure_plate_config = _generate_candidate(
-                config,
-                rng,
-            )
+            (
+                grid,
+                barrier_config,
+                button_config,
+                pressure_plate_config,
+            ) = _generate_candidate(config, rng)
         except CandidateGenerationError as exc:
             last_errors = [str(exc)]
             continue
         layout = Layout.from_string(
             grid,
             possible_recipes=config["possible_recipes"],
+            button_config=button_config,
             barrier_config=barrier_config,
             pressure_plate_config=pressure_plate_config,
         )
@@ -941,6 +1006,10 @@ def _layout_entry(grid: str, layout: Layout, config: dict[str, Any]) -> dict[str
     return {
         "ascii": grid,
         "possible_recipes": config["possible_recipes"],
+        "button_config": [
+            [list(target_idxs), int(action_type)]
+            for _, _, target_idxs, action_type in layout.button_info
+        ],
         "barrier_config": [
             bool(active) for _, _, active in layout.barrier_info
         ],
@@ -964,11 +1033,7 @@ def generate_document(document: Any) -> dict[str, Any]:
     for index in range(config["count"]):
         name = f"{config['name_prefix']}_{index:0{digits}d}"
         grid, layout, _ = generate_layout(config, rng)
-        generated[name] = {
-            "ascii": grid,
-            "possible_recipes": config["possible_recipes"],
-            "validation": {"valid": True, "errors": []},
-        }
+        generated[name] = _layout_entry(grid, layout, config)
 
     result = dict(document)
     result["generator"] = config
@@ -1036,11 +1101,7 @@ def generate_to_file(
                 )
             continue
 
-        result["layouts"][name] = {
-            "ascii": grid,
-            "possible_recipes": config["possible_recipes"],
-            "validation": {"valid": True, "errors": []},
-        }
+        result["layouts"][name] = _layout_entry(grid, layout, config)
         result["generation_progress"]["completed"] += 1
         _write_json_checkpoint(result, output_path)
         if emit is not None:
