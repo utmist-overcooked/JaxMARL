@@ -31,6 +31,8 @@ DISH_LAYOUTS = [
     "dish_washing_kitchen",
     "dish_washing_handoff",
     "prep_dish_kitchen",
+    "prep_kitchen_wash",
+    "prep_kitchen_handoff_wash",
 ]
 
 # dish_washing_room geometry (x, y):
@@ -138,6 +140,91 @@ class TestDishWashingToggle:
         obs, state = env.reset(jax.random.PRNGKey(0))
         assert state.plate_stack_count == env.num_plates
         assert state.dirty_pile_count == 0
+
+    def test_prep_kitchen_wash_is_prep_kitchen_plus_sink_and_dirty_pile(self):
+        """The wash variant must only add S/D, keeping the prep chains intact."""
+        base = overcooked_v3_layouts["prep_kitchen"]
+        wash = overcooked_v3_layouts["prep_kitchen_wash"]
+
+        base_grid = jnp.array(base.static_objects)
+        wash_grid = jnp.array(wash.static_objects)
+        assert base_grid.shape == wash_grid.shape
+        assert base.agent_positions == wash.agent_positions
+        assert base.possible_recipes == wash.possible_recipes
+
+        # Exactly two cells change, and only from wall to the two wash tiles.
+        changed = [(int(y), int(x)) for y, x in jnp.argwhere(base_grid != wash_grid)]
+        assert len(changed) == 2, changed
+        for y, x in changed:
+            assert base_grid[y, x] == StaticObject.WALL
+        assert {int(wash_grid[y, x]) for y, x in changed} == {
+            int(StaticObject.SINK),
+            int(StaticObject.DIRTY_PLATE_PILE),
+        }
+
+    def test_initial_dirty_plates_seeds_the_pile_and_conserves_plates(self):
+        """Seeding the dirty pile must move plates, never create them."""
+        env = _make(layout="prep_kitchen_handoff_wash", num_plates=3,
+                    initial_dirty_plates=2)
+        obs, state = env.reset(jax.random.PRNGKey(0))
+        assert int(state.dirty_pile_count) == 2
+        assert int(state.plate_stack_count) == 1
+        assert _total_plates(state) == 3
+
+    def test_initial_dirty_plates_defaults_to_zero(self):
+        env = _make(layout="prep_kitchen_handoff_wash", num_plates=3)
+        obs, state = env.reset(jax.random.PRNGKey(0))
+        assert int(state.dirty_pile_count) == 0
+        assert int(state.plate_stack_count) == 3
+
+    def test_initial_dirty_plates_rejects_more_than_num_plates(self):
+        with pytest.raises(ValueError, match="initial_dirty_plates"):
+            _make(layout="prep_kitchen_handoff_wash", num_plates=3,
+                  initial_dirty_plates=4)
+
+    def test_seeded_dirty_plate_can_be_washed_without_a_delivery(self):
+        """The wash loop must be reachable from step 0, not only after a delivery."""
+        env = _make(layout="prep_kitchen_handoff_wash", num_plates=3,
+                    initial_dirty_plates=2)
+        obs, state = env.reset(jax.random.PRNGKey(0))
+        # A dirty plate is available immediately, so the pile can be drawn from.
+        assert int(state.dirty_pile_count) > 0
+
+    def test_prep_kitchen_handoff_wash_is_handoff_plus_sink_and_dirty_pile(self):
+        """The handoff wash variant must only add S/D, keeping the split intact."""
+        base = overcooked_v3_layouts["prep_kitchen_handoff"]
+        wash = overcooked_v3_layouts["prep_kitchen_handoff_wash"]
+
+        base_grid = jnp.array(base.static_objects)
+        wash_grid = jnp.array(wash.static_objects)
+        assert base_grid.shape == wash_grid.shape
+        assert base.agent_positions == wash.agent_positions
+        assert base.possible_recipes == wash.possible_recipes
+
+        changed = [(int(y), int(x)) for y, x in jnp.argwhere(base_grid != wash_grid)]
+        assert len(changed) == 2, changed
+        for y, x in changed:
+            assert base_grid[y, x] == StaticObject.WALL
+        assert {int(wash_grid[y, x]) for y, x in changed} == {
+            int(StaticObject.SINK),
+            int(StaticObject.DIRTY_PLATE_PILE),
+        }
+
+    def test_prep_kitchen_handoff_wash_keeps_the_counter_split(self):
+        """The counter wall that forces handoffs must be untouched."""
+        wash = overcooked_v3_layouts["prep_kitchen_handoff_wash"]
+        grid = jnp.array(wash.static_objects)
+        # Column 4 is the dividing counter for every interior row.
+        for y in range(1, grid.shape[0] - 1):
+            assert grid[y, 4] == StaticObject.WALL, (y, int(grid[y, 4]))
+
+    def test_prep_kitchen_wash_keeps_all_three_prep_chains(self):
+        """All three orderable dishes survive the sink/dirty-pile edit."""
+        env = _make(layout="prep_kitchen_wash", enable_order_queue=True,
+                    order_queue_mode="alternating")
+        assert env.order_recipes == [[5, 5, 5], [6, 6, 6], [7, 7, 7]]
+        assert env.num_order_types == 3
+        assert env.enable_dish_washing
 
 
 class TestDishWashingCycle:

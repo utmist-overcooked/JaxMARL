@@ -57,8 +57,12 @@ SHAPED_REWARDS = {
     "PREP_PLACEMENT": 0.2,
     "PREP_ACTION": 0.1,
     "PREP_PICKUP": 0.2,
-    "DIRTY_PLATE_PICKUP": 0.1,
-    "PLATE_WASH": 0.3,
+    # The wash loop is bounded by deliveries (a plate only becomes dirty by
+    # being delivered), so these cannot be farmed the way a repeatable
+    # pickup/drop loop can - they can be worth a little more than a
+    # single prep step without distorting the objective.
+    "DIRTY_PLATE_PICKUP": 0.2,
+    "PLATE_WASH": 0.5,
 }
 
 # Maximum number of pots to track (for fixed array sizes)

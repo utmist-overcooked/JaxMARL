@@ -75,6 +75,12 @@ EVENT_METRIC_NAMES = (
     "prep_action",
     "prep_pickup",
     "prep_burn",
+    # Dish washing. Only emitted when the env enables it. These must be listed
+    # here or the logging loop leaves them as the batch *mean* while every other
+    # event is a *sum*, under-reporting them by NUM_STEPS * NUM_ACTORS.
+    "dirty_pickup",
+    "plate_wash",
+    "plate_return",
 )
 _ACTIVE_MONITOR = None
 _ACTIVE_SHAPED_REWARD_KEYS = (

@@ -97,6 +97,10 @@ def _monitor_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         ("event/prep_action", "prep_act"),
         ("event/prep_pickup", "prep_pick"),
         ("event/prep_burn", "prep_burn"),
+        # Dish-washing layouts only; absent keys are dropped by the filter below.
+        ("event/dirty_pickup", "dirty_pick"),
+        ("event/plate_wash", "plate_wash"),
+        ("event/plate_return", "plate_ret"),
         ("event/order_expired", "order_expired"),
         ("event/order_added", "order_added"),
         ("order/front_type", "order_front"),

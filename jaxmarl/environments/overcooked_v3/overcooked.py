@@ -103,6 +103,7 @@ class OvercookedV3(MultiAgentEnv):
         # Dish washing settings
         enable_dish_washing: bool = False,
         num_plates: int = DEFAULT_NUM_PLATES,
+        initial_dirty_plates: int = 0,
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
@@ -250,9 +251,15 @@ class OvercookedV3(MultiAgentEnv):
         # schema it had before the feature existed.
         self.enable_dish_washing = enable_dish_washing
         self.num_plates = num_plates
+        self.initial_dirty_plates = initial_dirty_plates
         if enable_dish_washing:
             if num_plates < 1:
                 raise ValueError("num_plates must be at least 1 for dish washing")
+            if not 0 <= initial_dirty_plates <= num_plates:
+                raise ValueError(
+                    "initial_dirty_plates must be between 0 and num_plates, got "
+                    f"{initial_dirty_plates} with num_plates={num_plates}"
+                )
             has_sink = bool((layout.static_objects == StaticObject.SINK).any())
             has_dirty_pile = bool(
                 (layout.static_objects == StaticObject.DIRTY_PLATE_PILE).any()
@@ -608,6 +615,7 @@ class OvercookedV3(MultiAgentEnv):
             blend_time=self.blend_time,
             enable_dish_washing=self.enable_dish_washing,
             num_plates=self.num_plates,
+            initial_dirty_plates=self.initial_dirty_plates,
         )
 
     def reset(

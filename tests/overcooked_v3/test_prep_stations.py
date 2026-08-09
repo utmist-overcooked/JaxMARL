@@ -480,6 +480,37 @@ class TestAlternatingOrdersAcrossDishes:
         for a, b in zip(types, types[1:]):
             assert b == (a % 3) + 1
 
+    def test_reset_starts_the_rotation_on_every_dish(self):
+        """The seeded first order must vary across resets, not pin to dish 1."""
+        env = self._env()
+        reset = jax.jit(jax.vmap(env.reset))
+        keys = jax.random.split(jax.random.PRNGKey(0), 256)
+        _obs, state = reset(keys)
+
+        starts = set(int(t) for t in state.order_types[:, 0])
+        assert starts == {1, 2, 3}, starts
+
+    def test_rotation_continues_from_a_non_default_start(self):
+        """After a reset seeded with dish 3, the queue steps 3 -> 1 -> 2."""
+        env = self._env()
+        # Find a reset key whose seeded order is not the old hardcoded dish 1.
+        for seed in range(32):
+            key = jax.random.PRNGKey(seed)
+            _obs, state = env.reset(key)
+            if int(state.order_types[0]) == 3:
+                break
+        else:
+            raise AssertionError("no reset key produced a dish-3 start")
+
+        step = jax.jit(env.step_env)
+        for _ in range(4):
+            key, subkey = jax.random.split(key)
+            actions = {a: jnp.array(Actions.stay) for a in env.agents}
+            _obs, state, _rewards, _dones, _info = step(subkey, state, actions)
+
+        types = [int(t) for t in state.order_types if int(t) > 0]
+        assert types[:3] == [3, 1, 2], types
+
     def test_each_order_type_maps_to_its_recipe(self):
         env = self._env()
         for i, recipe in enumerate(env.order_recipes):

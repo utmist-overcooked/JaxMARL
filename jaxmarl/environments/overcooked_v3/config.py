@@ -81,3 +81,8 @@ class OvercookedV3Config:
     # and sink / dirty pile tiles never appear in the grid.
     enable_dish_washing: bool = False
     num_plates: int = 3
+    # How many of the num_plates start in the dirty pile rather than the clean
+    # stack. The dirty pile otherwise only fills when a dish is delivered, so
+    # with 0 the whole wash sub-task is unreachable until the agents already
+    # complete a delivery - and the wash shaped rewards can never be earned.
+    initial_dirty_plates: int = 0

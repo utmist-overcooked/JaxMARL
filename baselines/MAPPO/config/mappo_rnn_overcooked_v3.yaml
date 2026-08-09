@@ -1,5 +1,7 @@
-# IPPO RNN training configuration for Overcooked V3
-# Based on ic3net_overcooked_v3_cramped_room + ippo_rnn_overcooked_v2 defaults
+# MAPPO RNN training configuration for Overcooked V3 (primitive actions).
+# Mirrors ippo_rnn_overcooked_v3.yaml so the two can be compared directly; the
+# only difference is the centralised critic, which needs no extra config (it
+# reads the world state built by OvercookedV3WorldStateWrapper).
 ENV_NAME: "overcooked_v3"
 ENV_KWARGS:
   layout: "cramped_room"
@@ -21,8 +23,11 @@ ENV_KWARGS:
   # delivery, so with 0 the wash sub-task (and its shaped rewards) is
   # unreachable until the agents can already complete a dish.
   initial_dirty_plates: 0
+  # null = full observability; an integer gives each agent that egocentric view
+  # radius instead of the whole grid.
+  agent_view_size: null
 
-# Network
+# Network. Actor and critic each get their own CNN+GRU of this size.
 GRU_HIDDEN_DIM: 128
 FC_DIM_SIZE: 128
 ACTIVATION: "relu"
@@ -36,14 +41,13 @@ NUM_MINIBATCHES: 8
 ANNEAL_LR: true
 
 # Reward shaping (linear anneal from 1.0 → 0.0 over this many timesteps)
-# Set to 50% of TOTAL_TIMESTEPS (matching v1 baseline ratio).
 REW_SHAPING_HORIZON: 60_000_000
 REW_SHAPING_MIN_COEFF: 0.0
 # v3 shaped rewards are 0.1–0.3; v1 uses 3.0–5.0.
 # SHAPED_REWARD_COEFF=30 makes v3 values (30×0.1=3.0) match v1 magnitudes.
 SHAPED_REWARD_COEFF: 30.0
 
-# PPO hyperparameters (matching v1 IPPO baseline)
+# PPO hyperparameters
 LR: 0.0005
 GAMMA: 0.99
 GAE_LAMBDA: 0.95
@@ -58,9 +62,9 @@ MAX_GRAD_NORM: 0.5
 # Logging
 WANDB_MODE: "disabled"
 ENTITY: "dannyb3334-university-of-toronto"
-WANDB_PROJECT: "jaxmarl-ippo"
-WANDB_NAME: "ippo_rnn_overcooked_v3_cramped_room"
-SAVE_PATH: "checkpoints/ippo_overcooked_v3_cramped_room"
+WANDB_PROJECT: "jaxmarl-mappo"
+WANDB_NAME: "mappo_rnn_overcooked_v3_cramped_room"
+SAVE_PATH: "checkpoints/mappo_overcooked_v3_cramped_room"
 SAVE_GIF_PATH: null
 LOG_EVERY: 100
 CHECKPOINT_EVERY: 5000

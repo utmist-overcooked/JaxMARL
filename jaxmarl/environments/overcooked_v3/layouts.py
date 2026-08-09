@@ -564,6 +564,67 @@ W     A  D
 WWWWRWWXWW
 """
 
+# prep_kitchen with the dish washing cycle added. Identical to prep_kitchen -
+# same three prep chains, same pot/plates/delivery/recipe indicator in the same
+# cells - except the two right-hand wall tiles beside the pot become the sink (S)
+# and the dirty plate pile (D). With enable_dish_washing the plate pile is finite,
+# so a delivered dish returns to D dirty and must be washed at S before it can
+# plate another soup; with dish washing off both tiles are inert counters and the
+# layout behaves exactly like prep_kitchen.
+prep_kitchen_wash = """
+WW2WCWWGW3WW
+W  A       S
+B          P
+W       A  D
+WW4WMWWRWXWW
+"""
+
+# prep_kitchen_handoff with the dish washing cycle added. Identical to that
+# layout except the bottom wall on the food/delivery side gains a dirty plate
+# pile (D) and a sink (S). The plate pile stays on the machine side, so with
+# enable_dish_washing the plate cycle crosses the counter as well:
+#   left agent   plates the soup and passes it over the counter
+#   right agent  delivers at X; the plate returns to D dirty
+#   right agent  washes it at S, then passes the clean plate back over
+#   left agent   uses it to plate the next soup
+# Neither agent can keep the kitchen running alone. With dish washing disabled
+# the S/D tiles are inert counters and this behaves exactly like
+# prep_kitchen_handoff.
+prep_kitchen_handoff_wash = """
+WRPWWWWWW
+C   W   2
+G A W A 3
+M   W   4
+B   W   X
+WWWWWDWSW
+"""
+
+# prep_kitchen_handoff_wash, one column wider, with the solid counter replaced by
+# a two-column circulating item conveyor, the sink moved to the top wall, and a
+# gated lettuce pile.
+#
+#   Conveyor: columns 4 and 5 form a closed loop - up the left column, right
+#   across the top, down the right column, left across the bottom:
+#       (1,4)>  (1,5)v          every belt tile pushes into another belt tile,
+#       (2,4)^  (2,5)v          so an item placed on it circulates forever and
+#       (3,4)^  (3,5)v          is never pushed off the map. The belt is still
+#       (4,4)^  (4,5)<          counter-like, so it divides the kitchen exactly
+#                               as the old wall did - only items cross, not agents.
+#
+#   Gate: the pressure plate (_) at (4,3) on the machine side holds open the
+#   barrier (#) at (1,8), which is the only floor tile from which the lettuce
+#   pile (2) at (1,9) can be reached. TOGGLE_BARRIER keeps it open exactly while
+#   an agent stands on the plate, so the cook must hold the plate down while the
+#   runner fetches lettuce - a second, tighter coupling on top of the handoff.
+prep_kitchen_handoff_conveyor = """
+WRPWWWWSWW
+C   >v  #2
+G A ^v A 3
+M   ^v   4
+B  _^<   X
+WWWWWWDWWW
+"""
+
 
 
 @dataclass
@@ -2116,5 +2177,20 @@ overcooked_v3_layouts = {
     ),
     "prep_dish_kitchen": Layout.from_string(
         prep_dish_kitchen, possible_recipes=[[5, 5, 5]],
+    ),
+    "prep_kitchen_wash": Layout.from_string(
+        prep_kitchen_wash, possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+    ),
+    "prep_kitchen_handoff_wash": Layout.from_string(
+        prep_kitchen_handoff_wash,
+        possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+    ),
+    "prep_kitchen_handoff_conveyor": Layout.from_string(
+        prep_kitchen_handoff_conveyor,
+        possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+        # The single barrier starts closed, so the lettuce pile is unreachable
+        # until the machine-side agent stands on the plate.
+        barrier_config=[True],
+        pressure_plate_config=[(0, ButtonAction.TOGGLE_BARRIER)],
     ),
 }
