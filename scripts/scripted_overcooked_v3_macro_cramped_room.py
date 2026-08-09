@@ -20,7 +20,11 @@ from jaxmarl.environments.overcooked_v3.common import (
     DynamicObject,
     StaticObject,
 )
-from jaxmarl.environments.overcooked_v3_macro import MacroActions, OvercookedV3Macro
+from jaxmarl.environments.overcooked_v3_macro import (
+    PRESSURE_PLATE_MACROS,
+    MacroActions,
+    OvercookedV3Macro,
+)
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 
 
@@ -228,9 +232,7 @@ def navigation_snapshot(
         <= macro_action
         <= MacroActions.press_nearest_button
     )
-    pressure_plate_macro = (
-        macro_action == MacroActions.stand_on_nearest_pressure_plate
-    )
+    pressure_plate_macro = macro_action in PRESSURE_PLATE_MACROS
     navigation_macro = interaction_macro or pressure_plate_macro
 
     interaction_goals = (

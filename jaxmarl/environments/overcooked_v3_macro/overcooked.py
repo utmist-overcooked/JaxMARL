@@ -54,15 +54,30 @@ class MacroActions(IntEnum):
     drop_on_nearest_counter = 8
     pickup_from_nearest_counter = 9
     press_nearest_button = 10
-    stand_on_nearest_pressure_plate = 11
-    wait_for_nearest_pot = 12
-    up = 13
-    down = 14
-    left = 15
-    right = 16
+    # One macro per pressure-plate layout slot instead of a single ambiguous
+    # "nearest plate" macro -- see PRESSURE_PLATE_MACROS below. Extending to
+    # more plates means adding stand_on_pressure_plate_2, etc. here (bumping
+    # wait_for_nearest_pot/up/down/left/right accordingly) and appending to
+    # PRESSURE_PLATE_MACROS.
+    stand_on_pressure_plate_0 = 11
+    stand_on_pressure_plate_1 = 12
+    wait_for_nearest_pot = 13
+    up = 14
+    down = 15
+    left = 16
+    right = 17
 
 
 MACRO_ACTION_NAMES: Tuple[str, ...] = tuple(action.name for action in MacroActions)
+
+# Macro index i always targets pressure_plate slot i (state.pressure_plate_positions[i]),
+# in the row-major layout-string order pressure_plate_config indexes by. This
+# fixed mapping is what lets a policy target a specific plate instead of
+# whichever one happens to be nearest.
+PRESSURE_PLATE_MACROS: Tuple[MacroActions, ...] = (
+    MacroActions.stand_on_pressure_plate_0,
+    MacroActions.stand_on_pressure_plate_1,
+)
 
 
 @chex.dataclass
@@ -400,9 +415,24 @@ class OvercookedV3Macro(OvercookedV3):
             (macro_action >= MacroActions.get_ingredient_0)
             & (macro_action <= MacroActions.press_nearest_button)
         )
-        pressure_plate_macro = (
-            macro_action == MacroActions.stand_on_nearest_pressure_plate
+        pressure_plate_macro = jnp.zeros((), dtype=jnp.bool_)
+        pressure_plate_goals = jnp.zeros(
+            (self.height, self.width), dtype=jnp.bool_
         )
+        for plate_idx, plate_macro in enumerate(PRESSURE_PLATE_MACROS):
+            is_this_macro = macro_action == plate_macro
+            pressure_plate_macro = pressure_plate_macro | is_this_macro
+            plate_y = state.pressure_plate_positions[plate_idx, 0]
+            plate_x = state.pressure_plate_positions[plate_idx, 1]
+            this_plate_goal = (
+                jnp.zeros((self.height, self.width), dtype=jnp.bool_)
+                .at[plate_y, plate_x]
+                .set(state.pressure_plate_active_mask[plate_idx])
+            )
+            pressure_plate_goals = jnp.where(
+                is_this_macro, this_plate_goal, pressure_plate_goals
+            )
+        pressure_plate_goals &= walkable_mask
         navigation_macro = interaction_macro | pressure_plate_macro
 
         interaction_goals = (
@@ -411,9 +441,6 @@ class OvercookedV3Macro(OvercookedV3):
             | jnp.pad(target_mask[:, :-1], ((0, 0), (1, 0)))
             | jnp.pad(target_mask[:, 1:], ((0, 0), (0, 1)))
         ) & walkable_mask
-        pressure_plate_goals = (
-            (static_layer == StaticObject.PRESSURE_PLATE) & walkable_mask
-        )
         goal_mask = jnp.where(
             interaction_macro, interaction_goals, pressure_plate_goals
         )
@@ -608,12 +635,15 @@ class OvercookedV3Macro(OvercookedV3):
             | ~jnp.any(state.grid[:, :, 0] == StaticObject.BUTTON),
             done,
         )
-        done = jnp.where(
-            macro_action == MacroActions.stand_on_nearest_pressure_plate,
-            self._agent_on_static_object(state, agent, StaticObject.PRESSURE_PLATE)
-            | ~jnp.any(state.grid[:, :, 0] == StaticObject.PRESSURE_PLATE),
-            done,
-        )
+        for plate_idx, plate_macro in enumerate(PRESSURE_PLATE_MACROS):
+            plate_y = state.pressure_plate_positions[plate_idx, 0]
+            plate_x = state.pressure_plate_positions[plate_idx, 1]
+            on_this_plate = (agent.pos.y == plate_y) & (agent.pos.x == plate_x)
+            done = jnp.where(
+                macro_action == plate_macro,
+                on_this_plate | ~state.pressure_plate_active_mask[plate_idx],
+                done,
+            )
         done = jnp.where(
             macro_action == MacroActions.wait_for_nearest_pot,
             jnp.any(self._ready_recipe_pot_mask(state))
@@ -871,9 +901,10 @@ class OvercookedV3Macro(OvercookedV3):
             mask = mask.at[MacroActions.press_nearest_button].set(
                 jnp.any(state.button_active_mask)
             )
-            mask = mask.at[MacroActions.stand_on_nearest_pressure_plate].set(
-                jnp.any(state.pressure_plate_active_mask)
-            )
+            for plate_idx, plate_macro in enumerate(PRESSURE_PLATE_MACROS):
+                mask = mask.at[plate_macro].set(
+                    state.pressure_plate_active_mask[plate_idx]
+                )
             mask = mask.at[MacroActions.wait_for_nearest_pot].set(
                 jnp.any(state.pot_cooking_timer > 0)
             )

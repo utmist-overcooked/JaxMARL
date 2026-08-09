@@ -2,6 +2,7 @@
 
 from .overcooked import (
     MACRO_ACTION_NAMES,
+    PRESSURE_PLATE_MACROS,
     MacroActions,
     ObservationType,
     OvercookedV3Macro,
