@@ -33,12 +33,23 @@ def update_barrier_timers(state: State, config: OvercookedV3Config) -> State:
         state.barrier_positions,
         state.barrier_active_mask,
     )
+    held_open_by_plate = jnp.any(
+        state.pressure_plate_linked_barrier
+        & state.pressure_plate_active_mask[:, None]
+        & state.pressure_plate_toggled[:, None]
+        & (
+            state.pressure_plate_action_type
+            == ButtonAction.TOGGLE_BARRIER
+        )[:, None],
+        axis=0,
+    )
 
     def _update_single_barrier(i):
         is_active_slot = state.barrier_active_mask[i]
         timer = state.barrier_timer[i]
         barrier_active = state.barrier_active[i]
         occupied = barrier_occupied[i]
+        plate_open = held_open_by_plate[i]
 
         # The barrier would reactivate when its timer ticks from 1 to 0, but
         # if an agent is on the tile we hold the timer at 1 and defer.
@@ -49,7 +60,9 @@ def update_barrier_timers(state: State, config: OvercookedV3Config) -> State:
         has_timer = timer > 0
         new_timer = jax.lax.select(has_timer & ~hold, timer - 1, timer)
 
-        should_reactivate = is_active_slot & would_reactivate & ~occupied
+        should_reactivate = (
+            is_active_slot & would_reactivate & ~occupied & ~plate_open
+        )
         new_active = jax.lax.select(should_reactivate, True, barrier_active)
 
         return new_timer, new_active
@@ -96,14 +109,17 @@ def update_pressure_plates(state: State, config: OvercookedV3Config) -> State:
         agent_ys, agent_xs, state.barrier_positions, state.barrier_active_mask
     )
 
-    # TOGGLE_BARRIER: a linked barrier is open *exactly while* one of its
-    # plates is pressed (or an agent stands on it), and closes again the
-    # moment every plate is released and the tile is clear.
+    # TOGGLE_BARRIER: a linked barrier is open while one of its plates is
+    # pressed, a timed control is still armed, or an agent stands on it. It
+    # closes once all three conditions clear.
     toggle_links = linked & is_toggle[:, None]
     toggle_controlled = jnp.any(toggle_links, axis=0)  # [num_barriers]
     toggle_open = jnp.any(toggle_links & pressed[:, None], axis=0)  # [num_barriers]
+    timer_open = state.barrier_timer > 0
     new_barrier_active = jnp.where(
-        toggle_controlled, ~toggle_open & ~barrier_occupied, state.barrier_active
+        toggle_controlled,
+        ~toggle_open & ~timer_open & ~barrier_occupied,
+        state.barrier_active,
     )
 
     # TIMED_BARRIER: pressing opens the barrier and (re)arms its timer; the
