@@ -1,6 +1,6 @@
 """Functional agent movement and action phase logic for Overcooked V3."""
 
-from typing import Tuple
+from typing import Dict, Tuple
 
 import chex
 import jax
@@ -26,10 +26,15 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_BUTTON_TARGETS,
     MAX_MOVING_WALLS,
     MAX_PRESSURE_PLATES,
+    REWARD_COMPONENT_KEYS,
 )
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
 from jaxmarl.environments.overcooked_v3.utils import tree_select
+
+
+def _zero_reward_breakdown() -> Dict[str, chex.Array]:
+    return {key: jnp.array(0.0, dtype=jnp.float32) for key in REWARD_COMPONENT_KEYS}
 
 def is_agent_walkable(static_object, pos, state: State) -> chex.Array:
     """Return whether an agent can stand on a static object at a position."""
@@ -63,8 +68,13 @@ def run_agent_action_phase(
     state: State,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> Tuple[State, float, chex.Array]:
-    """Run movement, collision handling, interactions, and button effects."""
+) -> Tuple[State, float, chex.Array, Dict[str, chex.Array]]:
+    """Run movement, collision handling, interactions, and button effects.
+
+    The returned reward_breakdown is a dict of REWARD_COMPONENT_KEYS -> a
+    (num_agents,) array each, itemizing what shaped_rewards/reward summed --
+    useful for reward-hacking diagnostics, otherwise safe to ignore.
+    """
     barrier_walkable_by_pressure_plate = (
         find_barriers_opened_by_current_pressure_plate_occupants(state, config)
     )
@@ -77,18 +87,26 @@ def run_agent_action_phase(
     moved_agents = prevent_agents_from_swapping_positions(state.agents, moved_agents)
 
     dense_shaped_rewards = jnp.zeros((config.num_agents,), dtype=jnp.float32)
+    dense_breakdown = {
+        key: jnp.zeros((config.num_agents,), dtype=jnp.float32)
+        for key in REWARD_COMPONENT_KEYS
+    }
     if config.shaped_rewards_enabled and config.dense_task_shaping:
-        dense_shaped_rewards = dense_task_shaping(
+        dense_shaped_rewards, dense_breakdown = dense_task_shaping(
             state.grid, state.recipe, state.agents, moved_agents, actions, config
         )
 
-    state, reward, shaped_rewards = apply_agent_interact_actions(
+    state, reward, shaped_rewards, interact_breakdown = apply_agent_interact_actions(
         key, state, moved_agents, actions, config
     )
     shaped_rewards = shaped_rewards + dense_shaped_rewards
+    reward_breakdown = {
+        key: interact_breakdown[key] + dense_breakdown[key]
+        for key in REWARD_COMPONENT_KEYS
+    }
     state = apply_agent_button_interactions(state, actions, config)
 
-    return state, reward, shaped_rewards
+    return state, reward, shaped_rewards, reward_breakdown
 
 def find_barriers_opened_by_current_pressure_plate_occupants(
     state: State, config: OvercookedV3Config
@@ -236,7 +254,7 @@ def apply_agent_interact_actions(
     moved_agents: Agent,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> Tuple[State, float, chex.Array]:
+) -> Tuple[State, float, chex.Array, Dict[str, chex.Array]]:
     """Apply interact actions, update carried items, and advance pot timers."""
 
     def _interact_wrapper(carry, x):
@@ -263,6 +281,7 @@ def apply_agent_interact_actions(
                 interact_reward,
                 shaped_reward,
                 new_pot_timers,
+                interact_breakdown,
             ) = process_interact(
                 grid,
                 agent,
@@ -291,10 +310,14 @@ def apply_agent_interact_actions(
                 new_pot_cook_durations,
                 key,
             )
-            return carry, (new_agent, shaped_reward)
+            return carry, (new_agent, shaped_reward, interact_breakdown)
 
         return jax.lax.cond(
-            is_interact, _interact, lambda c, a: (c, (a, 0.0)), carry, agent
+            is_interact,
+            _interact,
+            lambda c, a: (c, (a, 0.0, _zero_reward_breakdown())),
+            carry,
+            agent,
         )
 
     carry = (
@@ -315,7 +338,7 @@ def apply_agent_interact_actions(
             new_pot_cook_durations,
             _key,
         ),
-        (new_agents, shaped_rewards),
+        (new_agents, shaped_rewards, reward_breakdown),
     ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
     new_grid, new_pot_timers = update_pot_timers(
@@ -335,6 +358,7 @@ def apply_agent_interact_actions(
         ),
         reward,
         shaped_rewards,
+        reward_breakdown,
     )
 
 def apply_agent_button_interactions(

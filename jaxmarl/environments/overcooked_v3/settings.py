@@ -28,6 +28,22 @@ SHAPED_REWARDS = {
     "INVALID_MOVE": -0.002,       # Trying to move into a blocked cell
 }
 
+# Every distinct reward source an agent can collect in a step, for per-type
+# breakdowns (e.g. reward-hacking diagnostics). DELIVERY is the sparse base
+# reward; the rest mirror SHAPED_REWARDS keys.
+REWARD_COMPONENT_KEYS = (
+    "DELIVERY",
+    "SOUP_IN_DISH",
+    "PLACEMENT_IN_POT",
+    "HANDOFF_DROP",
+    "HANDOFF_PICKUP",
+    "POT_START_COOKING",
+    "PLATE_PICKUP",
+    "TASK_PROGRESS",
+    "TASK_FACING",
+    "INVALID_MOVE",
+)
+
 # Maximum number of pots to track (for fixed array sizes)
 MAX_POTS = 4
 

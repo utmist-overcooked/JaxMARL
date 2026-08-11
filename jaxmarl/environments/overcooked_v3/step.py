@@ -32,7 +32,7 @@ def step_overcooked_v3(
     agent_actions = translate_action_dict_to_ordered_action_array(actions, config)
     agent_key, order_key = partition_step_key(key, config)
 
-    state, reward, shaped_rewards = run_agent_action_phase(
+    state, reward, shaped_rewards, reward_breakdown = run_agent_action_phase(
         agent_key, state, agent_actions, config
     )
     state = advance_dynamic_environment_systems(state, config)
@@ -41,7 +41,9 @@ def step_overcooked_v3(
     )
     state = advance_time_and_update_terminal_flag(state, config)
 
-    return build_step_env_return_values(state, reward, shaped_rewards, config)
+    return build_step_env_return_values(
+        state, reward, shaped_rewards, reward_breakdown, config
+    )
 
 def translate_action_dict_to_ordered_action_array(
     actions: Dict[str, chex.Array], config: OvercookedV3Config
@@ -105,6 +107,7 @@ def build_step_env_return_values(
     state: State,
     reward: float,
     shaped_rewards: chex.Array,
+    reward_breakdown: Dict[str, chex.Array],
     config: OvercookedV3Config,
 ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
     """Build stopped-gradient observations, state, rewards, dones, and info."""
@@ -123,7 +126,13 @@ def build_step_env_return_values(
         lax.stop_gradient(state),
         rewards,
         dones,
-        {"shaped_reward": shaped_rewards_dict},
+        {
+            "shaped_reward": shaped_rewards_dict,
+            # Per REWARD_COMPONENT_KEYS entry -> a (num_agents,) array,
+            # itemizing what shaped_reward/reward summed. For diagnostics
+            # (e.g. reward-hacking histograms), not used in training.
+            "reward_breakdown": reward_breakdown,
+        },
     )
 
 def is_terminal(state: State, config: OvercookedV3Config) -> bool:

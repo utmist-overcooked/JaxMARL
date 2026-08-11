@@ -1,6 +1,6 @@
 """Agent interaction rules for Overcooked V3."""
 
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 import chex
 import jax
@@ -14,7 +14,15 @@ from jaxmarl.environments.overcooked_v3.common import (
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
-from jaxmarl.environments.overcooked_v3.settings import MAX_POTS, SHAPED_REWARDS
+from jaxmarl.environments.overcooked_v3.settings import (
+    MAX_POTS,
+    REWARD_COMPONENT_KEYS,
+    SHAPED_REWARDS,
+)
+
+
+def _zero_reward_breakdown() -> Dict[str, chex.Array]:
+    return {key: jnp.array(0.0, dtype=jnp.float32) for key in REWARD_COMPONENT_KEYS}
 
 
 def sample_pot_cook_time(
@@ -55,6 +63,7 @@ def process_interact(
     )
 
     shaped_reward = jnp.array(0.0, dtype=float)
+    reward_breakdown = _zero_reward_breakdown()
 
     interact_cell = grid[fwd_pos.y, fwd_pos.x]
     interact_item = interact_cell[0]
@@ -118,11 +127,12 @@ def process_interact(
     successful_dish_pickup = pot_is_ready * inventory_is_plate
     is_dish_pickup_useful = merged_ingredients == plated_recipe
     if config.shaped_rewards_enabled:
-        shaped_reward += (
+        reward_breakdown["SOUP_IN_DISH"] = (
             successful_dish_pickup
             * is_dish_pickup_useful
             * SHAPED_REWARDS["SOUP_IN_DISH"]
         )
+        shaped_reward += reward_breakdown["SOUP_IN_DISH"]
 
     successful_pickup = (
         object_is_pile * inventory_is_empty
@@ -149,11 +159,12 @@ def process_interact(
         recipe & ingredient_selector
     )
     if config.shaped_rewards_enabled:
-        shaped_reward += (
+        reward_breakdown["PLACEMENT_IN_POT"] = (
             successful_pot_placement
             * is_pot_placement_useful
             * SHAPED_REWARDS["PLACEMENT_IN_POT"]
         )
+        shaped_reward += reward_breakdown["PLACEMENT_IN_POT"]
 
     # Drop on counter/conveyor
     successful_drop = (
@@ -216,18 +227,21 @@ def process_interact(
         | (counter_item_is_plate & has_plate_target)
     )
     if config.shaped_rewards_enabled:
-        shaped_reward += (
+        reward_breakdown["HANDOFF_DROP"] = (
             is_handoff_counter
             & drop_toward_pot_side
             & successful_counter_drop
             & useful_drop_inventory
         ) * SHAPED_REWARDS["HANDOFF_DROP"]
-        shaped_reward += (
+        reward_breakdown["HANDOFF_PICKUP"] = (
             is_handoff_counter
             & pickup_on_pot_side
             & successful_counter_pickup
             & useful_pickup_item
-        ) * SHAPED_REWARDS["HANDOFF_PICKUP"]    
+        ) * SHAPED_REWARDS["HANDOFF_PICKUP"]
+        shaped_reward += (
+            reward_breakdown["HANDOFF_DROP"] + reward_breakdown["HANDOFF_PICKUP"]
+        )
 
     # Delivery
     successful_delivery = object_is_goal * inventory_is_dish
@@ -247,7 +261,10 @@ def process_interact(
     pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
     auto_cook = pot_is_idle & pot_full_after_drop
     if config.shaped_rewards_enabled:
-        shaped_reward += auto_cook * SHAPED_REWARDS["POT_START_COOKING"]    
+        reward_breakdown["POT_START_COOKING"] = (
+            auto_cook * SHAPED_REWARDS["POT_START_COOKING"]
+        )
+        shaped_reward += reward_breakdown["POT_START_COOKING"]
     initial_pot_timer = pot_cook_time + config.pot_burn_time
 
     # Update pot timer
@@ -283,11 +300,12 @@ def process_interact(
     is_correct_recipe = inventory == plated_recipe
 
     reward = jnp.array(0.0, dtype=float)
-    reward += (
+    reward_breakdown["DELIVERY"] = (
         successful_delivery
         * jax.lax.select(is_correct_recipe, 1.0, 0.0)
         * config.delivery_reward
     )
+    reward += reward_breakdown["DELIVERY"]
 
     # Plate pickup reward
     if config.shaped_rewards_enabled:
@@ -304,11 +322,12 @@ def process_interact(
         )
         num_useful_pots = jnp.sum(full_unburned_pots)
         is_plate_pickup_useful = num_plates_in_inventory < num_useful_pots
-        shaped_reward += (
+        reward_breakdown["PLATE_PICKUP"] = (
             is_plate_pickup_useful
             * successful_plate_pickup
             * SHAPED_REWARDS["PLATE_PICKUP"]
         )
+        shaped_reward += reward_breakdown["PLATE_PICKUP"]
 
     correct_delivery = successful_delivery & is_correct_recipe
 
@@ -319,6 +338,7 @@ def process_interact(
         reward,
         shaped_reward,
         new_pot_timers,
+        reward_breakdown,
     )
 
 
@@ -433,12 +453,14 @@ def dense_task_shaping(
     new_agents: Agent,
     actions: chex.Array,
     config: OvercookedV3Config,
-) -> chex.Array:
+) -> Tuple[chex.Array, Dict[str, chex.Array]]:
     """Dense potential shaping toward each agent's current useful task target.
 
     Scores the policy's already-resolved movement against the Overcooked
     subtask implied by that agent's inventory; never chooses or overwrites
-    an action.
+    an action. Returns the per-agent total plus a per-component breakdown
+    (TASK_PROGRESS/TASK_FACING/INVALID_MOVE; all other REWARD_COMPONENT_KEYS
+    are zero here since this function never touches interaction rewards).
     """
     height, width = config.height, config.width
     yy, xx = jnp.meshgrid(jnp.arange(height), jnp.arange(width), indexing="ij")
@@ -454,22 +476,28 @@ def dense_task_shaping(
         new_dist = _min_dist(new_agent.pos, target_mask)
 
         progress = jnp.clip(old_dist - new_dist, -1.0, 1.0)
-        reward = target_valid * progress * SHAPED_REWARDS["TASK_PROGRESS"]
+        progress_reward = target_valid * progress * SHAPED_REWARDS["TASK_PROGRESS"]
 
         is_movement = action < Actions.stay
         same_position = (old_agent.pos.x == new_agent.pos.x) & (
             old_agent.pos.y == new_agent.pos.y
         )
         invalid_move = is_movement & same_position
-        reward += invalid_move * SHAPED_REWARDS["INVALID_MOVE"]
+        invalid_move_reward = invalid_move * SHAPED_REWARDS["INVALID_MOVE"]
 
         fwd_pos = new_agent.get_fwd_pos()
         fwd_x = jnp.clip(fwd_pos.x, 0, width - 1)
         fwd_y = jnp.clip(fwd_pos.y, 0, height - 1)
         facing_target = target_mask[fwd_y, fwd_x]
-        reward += (
+        facing_reward = (
             is_movement * target_valid * facing_target * SHAPED_REWARDS["TASK_FACING"]
         )
-        return reward
+
+        reward_breakdown = _zero_reward_breakdown()
+        reward_breakdown["TASK_PROGRESS"] = progress_reward
+        reward_breakdown["TASK_FACING"] = facing_reward
+        reward_breakdown["INVALID_MOVE"] = invalid_move_reward
+        total = progress_reward + invalid_move_reward + facing_reward
+        return total, reward_breakdown
 
     return jax.vmap(_agent_reward)(old_agents, new_agents, actions)
