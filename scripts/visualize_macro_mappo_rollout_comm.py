@@ -145,7 +145,7 @@ def run_episode(args, config, env, actor, comm_module, actor_params, comm_params
     total_return = 0.0
     max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 400))
 
-    for _ in range(max_steps):
+    for step in range(max_steps):
         actions, message = select_actions_comm(
             actor, comm_module, actor_params, comm_params, obs, env
         )
@@ -157,13 +157,15 @@ def run_episode(args, config, env, actor, comm_module, actor_params, comm_params
             agent: actions[index] for index, agent in enumerate(env.agents)
         }
         key, step_key = jax.random.split(key)
-        raw_obs, state, reward, done, _ = rollout_env.step_env(
+        raw_obs, state, reward, done, info = rollout_env.step_env(
             step_key, state, env_actions
         )
         obs = env._env._augment(raw_obs, state)
         total_return += float(
             np.mean([np.asarray(reward[agent]) for agent in env.agents])
         )
+        if step % 50==0:
+            print(f"Step {step}: return={total_return:.1f}")
         states.append(state)
         action_labels.append(action_names)
         message_labels.append(message_pair)
