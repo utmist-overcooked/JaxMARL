@@ -19,7 +19,7 @@ ENV_KWARGS:
   layout: race_against_the_clock
   max_steps: 400
   max_macro_steps: 80
-  agent_view_size: 1  # 3x3 window (agent's cell + 1 ring); null/omit for full observability
+  agent_view_size: 2  # 3x3 window (agent's cell + 1 ring); null/omit for full observability
 
 SEED: 0
 NUM_SEEDS: 1
