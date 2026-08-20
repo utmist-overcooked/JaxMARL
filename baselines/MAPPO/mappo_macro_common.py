@@ -21,6 +21,7 @@ from flax.training.train_state import TrainState
 
 import jaxmarl
 from jaxmarl.environments import spaces
+from jaxmarl.environments.overcooked_v3.observations import calculate_observation_shape
 from jaxmarl.wrappers.baselines import JaxMARLWrapper, LogWrapper
 
 
@@ -45,7 +46,21 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
         base_shape = env.observation_space(env.agents[0]).shape
         self.base_obs_size = int(np.prod(base_shape))
         self.actor_obs_size = self.base_obs_size + env.num_macro_actions + 2
-        self._world_state_size = self.actor_obs_size * env.num_agents + env.num_agents
+
+        # The critic input is built from get_obs_default(state) below, which
+        # always returns the full (uncropped) grid regardless of
+        # env.agent_view_size -- cropping only happens later, for actor obs.
+        # So the critic stays fully centralized (CTDE) even when actors are
+        # partially observed; full_obs_size is independent of actor_obs_size.
+        full_obs_shape = calculate_observation_shape(
+            env.width, env.height, env.layout, env.observation_type, None
+        )
+        self.full_obs_size = int(np.prod(full_obs_shape))
+        per_agent_context_size = env.num_macro_actions + 2  # one-hot + done + progress
+        self._world_state_size = (
+            env.num_agents * (self.full_obs_size + per_agent_context_size)
+            + env.num_agents
+        )
 
     def _augment(self, obs, state):
         macro_one_hot = jax.nn.one_hot(
@@ -57,6 +72,7 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
         macro_progress = state.macro_step_count.astype(jnp.float32) / max(
             self._env.max_macro_steps, 1
         )
+        identity = jnp.eye(self._env.num_agents, dtype=jnp.float32)
 
         augmented = {}
         for index, agent in enumerate(self._env.agents):
@@ -69,13 +85,23 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
                 )
             )
 
-        global_obs = jnp.concatenate(
-            [augmented[agent] for agent in self._env.agents]
+        # Privileged critic input, built from the true state rather than
+        # each actor's (possibly partially observed) obs -- see __init__.
+        full_obs = self._env.get_obs_default(state)  # (num_agents, H, W, layers)
+        per_agent_full = jnp.concatenate(
+            (
+                full_obs.reshape(self._env.num_agents, -1).astype(jnp.float32),
+                macro_one_hot,
+                macro_done[:, None],
+                macro_progress[:, None],
+            ),
+            axis=-1,
         )
+        global_full_obs = per_agent_full.reshape(-1)
         augmented["world_state"] = jnp.concatenate(
             (
-                jnp.repeat(global_obs[None, :], self._env.num_agents, axis=0),
-                jnp.eye(self._env.num_agents, dtype=jnp.float32),
+                jnp.repeat(global_full_obs[None, :], self._env.num_agents, axis=0),
+                identity,
             ),
             axis=-1,
         )
