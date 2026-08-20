@@ -50,7 +50,7 @@ def parse_args():
         "--output-dir",
         type=Path,
         default=None,
-        help="Defaults to <run-dir>/checkpoints/actors",
+        help="Defaults to <run-dir>/actors",
     )
     parser.add_argument(
         "--steps",
