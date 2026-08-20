@@ -10,6 +10,32 @@ independently:
 
 Both read from the same rollout loop, so pass both flags to get a GIF you can
 watch alongside the histograms that explain it.
+
+Run from the repo root (needed for the baselines.MAPPO.* imports to resolve):
+
+    python -m scripts.visualize_macro_mappo_rollout \\
+        --variant every_step \\
+        --run-dir models/mappo_macro/mappo_macro_every_step/seed_0 \\
+        --actor-path models/mappo_macro/mappo_macro_every_step/seed_0/final_actor.safetensors \\
+        --gif-output outputs/without_comm/rollout.gif \\
+        --histogram-output outputs/without_comm/histograms.png \\
+        --num-episodes 1
+
+What it reads:
+    <run-dir>/config.yaml
+    --actor-path, if given, else <run-dir>/final_actor.safetensors  (point
+        this at a scripts/extract_actor_checkpoints.py output to eval one
+        specific training step instead of the final policy)
+
+What it writes (only for flags you actually pass -- both are optional; the
+reward/macro text summary always prints regardless):
+    --gif-output           one GIF for --num-episodes == 1, else
+                            <stem>_ep0.gif, <stem>_ep1.gif, ... per episode
+    --histogram-output      one figure, pooled across all --num-episodes
+
+--variant must match how <run-dir> was trained (boundary/every_step/replan).
+--checkpoint-label only labels GIF frames -- it does not select weights,
+that's --actor-path -- and defaults to the actor file's stem.
 """
 
 import argparse

@@ -11,6 +11,24 @@ init (without actually training), uses it to unflatten each checkpoint
 file, and saves just the actor params as a safetensors file per step so
 they can be loaded with `jaxmarl.wrappers.baselines.load_params` the same
 way `visualize_macro_mappo_rollout.py` loads `final_actor.safetensors`.
+
+Run from the repo root (needed for the baselines.MAPPO.* imports to resolve):
+
+    python -m scripts.extract_actor_checkpoints \\
+        --variant every_step \\
+        --run-dir models/mappo_macro/mappo_macro_every_step/seed_0 \\
+        --output-dir models/mappo_macro/mappo_macro_every_step/seed_0/actors
+
+What it reads:
+    <run-dir>/config.yaml
+    <run-dir>/checkpoints/checkpoint_00001000.npz  (one per --steps entry, or all of them)
+
+What it writes (one per extracted step; --output-dir overrides the default):
+    <run-dir>/checkpoints/actors/actor_00001000.safetensors
+
+--variant must match how <run-dir> was trained (boundary/every_step/replan) --
+a mismatch fails loudly (checkpoint structure won't match) rather than
+silently loading garbage.
 """
 
 import argparse
@@ -50,7 +68,7 @@ def parse_args():
         "--output-dir",
         type=Path,
         default=None,
-        help="Defaults to <run-dir>/actors",
+        help="Defaults to <run-dir>/checkpoints/actors",
     )
     parser.add_argument(
         "--steps",

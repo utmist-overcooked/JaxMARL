@@ -17,6 +17,23 @@ visualize_macro_mappo_rollout_comm.py already loads from best_actor.safetensors
 This script rebuilds the same runner pytree structure used at comm-training
 init (without actually training), uses it to unflatten each checkpoint file,
 and saves just comm_state.params as a safetensors file per step.
+
+Run from the repo root (needed for the baselines.MAPPO.* imports to resolve):
+
+    python -m scripts.extract_actor_checkpoints_comm \\
+        --run-dir models/mappo_macro/mappo_macro_every_step_comm_pgc1/seed_0 \\
+        --output-dir models/mappo_macro/mappo_macro_every_step_comm/seed_0/actors
+
+What it reads:
+    <run-dir>/config.yaml   -- including FROZEN_ACTOR_PATH/FROZEN_CRITIC_PATH,
+                                which must still point at valid files
+    <run-dir>/checkpoints/checkpoint_00001000.npz  (one per --steps entry, or all of them)
+
+What it writes (one per extracted step; --output-dir overrides the default):
+    <run-dir>/checkpoints/actors/actor_00001000.safetensors
+
+No --variant flag here (unlike extract_actor_checkpoints.py) -- this script
+only ever targets the every_step_comm runner shape.
 """
 
 import argparse
@@ -52,7 +69,7 @@ def parse_args():
         "--output-dir",
         type=Path,
         default=None,
-        help="Defaults to <run-dir>/actors",
+        help="Defaults to <run-dir>/checkpoints/actors",
     )
     parser.add_argument(
         "--steps",

@@ -16,6 +16,35 @@ Runs deterministic eval episodes and can produce, independently:
 
 Both read from the same rollout loop, so pass both flags to get a GIF you can
 watch alongside the histograms that explain it.
+
+Run from the repo root (needed for the mappo_macro_common/mappo_macro_every_step_comm
+imports to resolve -- this script adds baselines/MAPPO to sys.path itself,
+unlike the base script it does NOT use the `baselines.MAPPO.` prefix):
+
+    python -m scripts.visualize_macro_mappo_rollout_comm \\
+        --run-dir models/mappo_macro/mappo_macro_every_step_comm/seed_0 \\
+        --gif-output outputs/with_comm/rollout.gif \\
+        --histogram-output outputs/with_comm/histograms.png \\
+        --num-episodes 1
+
+What it reads (no --actor-path flag here -- BOTH WEIGHT SOURCES ARE FIXED BY THE COMM TRAINING RUN'S CONFIG.YAML):
+    <run-dir>/config.yaml
+    config["FROZEN_ACTOR_PATH"]   -- the frozen macro actor, trained separately
+    <run-dir>/best_actor.safetensors  -- the trained comm module weights (this
+        run's own best_actor.safetensors, NOT the frozen macro actor -- see
+        note above on why that filename holds comm params here). To eval a
+        specific comm-training step instead, point
+        scripts/extract_actor_checkpoints_comm.py at this run and edit the
+        `comm_params = load_params(...)` line below to load its output.
+
+What it writes (only for flags you actually pass -- both are optional; the
+reward/macro/message text summary always prints regardless):
+    --gif-output           one GIF for --num-episodes == 1, else
+                            <stem>_ep0.gif, <stem>_ep1.gif, ... per episode
+    --histogram-output      one figure, pooled across all --num-episodes
+
+--checkpoint-label only labels GIF frames -- it does not select weights --
+and defaults to <run-dir>'s directory name.
 """
 
 import argparse
