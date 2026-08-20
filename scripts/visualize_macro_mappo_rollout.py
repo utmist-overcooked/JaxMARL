@@ -335,7 +335,7 @@ def main():
         if args.variant == "replan"
         else Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
     )
-    actor_path = args.actor_path or (args.run_dir / "final_actor.safetensors")
+    actor_path = (args.run_dir / args.actor_path) if args.actor_path else (args.run_dir / "final_actor.safetensors")
     if args.checkpoint_label is None:
         args.checkpoint_label = actor_path.stem
     params = load_params(actor_path)
