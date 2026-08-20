@@ -21,7 +21,7 @@ and saves just comm_state.params as a safetensors file per step.
 Run from the repo root (needed for the baselines.MAPPO.* imports to resolve):
 
     python -m scripts.extract_actor_checkpoints_comm \\
-        --run-dir models/mappo_macro/mappo_macro_every_step_comm_pgc1/seed_0 \\
+        --run-dir models/mappo_macro/mappo_macro_every_step_comm/seed_0 \\
         --output-dir models/mappo_macro/mappo_macro_every_step_comm/seed_0/actors
 
 What it reads:

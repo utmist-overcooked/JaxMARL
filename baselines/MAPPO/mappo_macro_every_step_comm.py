@@ -67,7 +67,7 @@ class CommModule(nn.Module):
         )
         self.msg_dense2 = nn.Dense(
             self.vocab_size,
-            kernel_init=orthogonal(0.01),
+            kernel_init=orthogonal(0.0),
             bias_init=constant(0.0),
         )
         self.msg_embed = nn.Embed(self.vocab_size, self.message_embed_dim)
@@ -78,7 +78,7 @@ class CommModule(nn.Module):
         )
         self.corr_dense2 = nn.Dense(
             self.action_dim,
-            kernel_init=orthogonal(0.01),
+            kernel_init=orthogonal(0.0),
             bias_init=constant(0.0),
         )
 
