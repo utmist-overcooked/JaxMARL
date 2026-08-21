@@ -18,7 +18,8 @@ ENV_NAME: overcooked_v3_macro
 ENV_KWARGS:
   layout: cramped_room
   max_steps: 400
-  max_macro_steps: 80
+  max_macro_steps: 150  # must exceed pot_cook_time + pot_burn_time (90+60=150 by default) or
+                         # wait_for_nearest_pot always times out before the pot is ever ready
   agent_view_size: 1  # 3x3 window (agent's cell + 1 ring); null/omit for full observability
 
 SEED: 0

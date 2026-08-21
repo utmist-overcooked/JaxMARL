@@ -18,8 +18,9 @@ ENV_NAME: overcooked_v3_macro_interruptible
 ENV_KWARGS:
   layout: race_against_the_clock
   max_steps: 400
-  max_macro_steps: 80
-  agent_view_size: 2  # 3x3 window (agent's cell + 1 ring); null/omit for full observability
+  max_macro_steps: 150  # must exceed pot_cook_time + pot_burn_time (90+60=150 by default) or
+                         # wait_for_nearest_pot always times out before the pot is ever ready
+  agent_view_size: 2  # 5x5 window (agent's cell + 2 rings); null/omit for full observability
 
 SEED: 0
 NUM_SEEDS: 1
