@@ -927,8 +927,10 @@ class OvercookedV3Visualizer:
 
         img = jax.lax.select(pot_open, img_open, img_closed)
 
-        # Render progress bar (green for cooking, orange for burning window)
-        cooking_progress = (pot_cook_time - time_left) / (pot_cook_time - pot_burn_time)
+        # Render progress bar (green for cooking, orange for burning window).
+        # The timer actually starts at pot_cook_time + pot_burn_time (see
+        # initial_pot_timer in interactions.py), not pot_cook_time alone.
+        cooking_progress = (pot_cook_time + pot_burn_time - time_left) / pot_cook_time
         burning_progress = (pot_burn_time - time_left) / pot_burn_time
 
         progress_fn_cooking = rendering.point_in_rect(
