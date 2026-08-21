@@ -33,6 +33,7 @@ SHAPED_REWARDS = {
 # reward; the rest mirror SHAPED_REWARDS keys.
 REWARD_COMPONENT_KEYS = (
     "DELIVERY",
+    "BURN_PENALTY",
     "SOUP_IN_DISH",
     "PLACEMENT_IN_POT",
     "HANDOFF_DROP",

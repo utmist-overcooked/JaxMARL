@@ -21,6 +21,7 @@ from jaxmarl.environments.overcooked_v3.interactions import (
     sample_pot_cook_time,
 )
 from jaxmarl.environments.overcooked_v3.settings import (
+    BURN_PENALTY,
     MAX_BARRIERS,
     MAX_BUTTONS,
     MAX_BUTTON_TARGETS,
@@ -341,11 +342,23 @@ def apply_agent_interact_actions(
         (new_agents, shaped_rewards, reward_breakdown),
     ) = jax.lax.scan(_interact_wrapper, carry, xs)
 
+    pre_burn_pot_timers = new_pot_timers
     new_grid, new_pot_timers = update_pot_timers(
         new_grid, new_pot_timers, state.pot_positions, state.pot_active_mask, config
     )
     new_pot_cook_durations = jnp.where(
         new_pot_timers == 0, 0, new_pot_cook_durations
+    )
+
+    # A pot that was actively counting down and is now at 0 just burned --
+    # BURN_PENALTY is otherwise defined in settings.py but never applied,
+    # leaving no downside to letting food burn (and free, repeatable
+    # PLACEMENT_IN_POT/POT_START_COOKING reward for refilling afterward).
+    just_burned = (pre_burn_pot_timers > 0) & (new_pot_timers == 0) & state.pot_active_mask
+    burn_penalty = jnp.sum(just_burned).astype(jnp.float32) * BURN_PENALTY
+    reward = reward + burn_penalty
+    reward_breakdown["BURN_PENALTY"] = reward_breakdown["BURN_PENALTY"] + jnp.full(
+        (config.num_agents,), burn_penalty, dtype=jnp.float32
     )
 
     return (
