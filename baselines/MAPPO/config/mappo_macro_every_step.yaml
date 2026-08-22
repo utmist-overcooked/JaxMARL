@@ -45,5 +45,5 @@ MESSAGE_ENT_COEF: 0.05     # higher than your usual ENT_COEF (often ~0.01) —
 MESSAGE_LOSS_COEF: 1.0     # equal weight to the action loss to start; watch
                             # the two loss curves and adjust if one dominates
 
-FROZEN_ACTOR_PATH: models/mappo_macro/mappo_macro_every_step/seed_0/final_actor.safetensors
-FROZEN_CRITIC_PATH: models/mappo_macro/mappo_macro_every_step/seed_0/final_critic.safetensors
+FROZEN_ACTOR_PATH: models/mappo_macro/mappo_macro_every_step/seed_0/best_actor.safetensors
+FROZEN_CRITIC_PATH: models/mappo_macro/mappo_macro_every_step/seed_0/best_critic.safetensors
