@@ -16,12 +16,14 @@ from jaxmarl.environments.overcooked_v3.common import (
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.interactions import (
+    compute_burn_penalty,
     dense_task_shaping,
+    merge_reward_breakdowns,
     process_interact,
     sample_pot_cook_time,
+    zero_reward_breakdown,
 )
 from jaxmarl.environments.overcooked_v3.settings import (
-    BURN_PENALTY,
     MAX_BARRIERS,
     MAX_BUTTONS,
     MAX_BUTTON_TARGETS,
@@ -32,10 +34,6 @@ from jaxmarl.environments.overcooked_v3.settings import (
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.pots import update_pot_timers
 from jaxmarl.environments.overcooked_v3.utils import tree_select
-
-
-def _zero_reward_breakdown() -> Dict[str, chex.Array]:
-    return {key: jnp.array(0.0, dtype=jnp.float32) for key in REWARD_COMPONENT_KEYS}
 
 def is_agent_walkable(static_object, pos, state: State) -> chex.Array:
     """Return whether an agent can stand on a static object at a position."""
@@ -101,10 +99,7 @@ def run_agent_action_phase(
         key, state, moved_agents, actions, config
     )
     shaped_rewards = shaped_rewards + dense_shaped_rewards
-    reward_breakdown = {
-        key: interact_breakdown[key] + dense_breakdown[key]
-        for key in REWARD_COMPONENT_KEYS
-    }
+    reward_breakdown = merge_reward_breakdowns(interact_breakdown, dense_breakdown)
     state = apply_agent_button_interactions(state, actions, config)
 
     return state, reward, shaped_rewards, reward_breakdown
@@ -316,7 +311,7 @@ def apply_agent_interact_actions(
         return jax.lax.cond(
             is_interact,
             _interact,
-            lambda c, a: (c, (a, 0.0, _zero_reward_breakdown())),
+            lambda c, a: (c, (a, 0.0, zero_reward_breakdown())),
             carry,
             agent,
         )
@@ -350,16 +345,11 @@ def apply_agent_interact_actions(
         new_pot_timers == 0, 0, new_pot_cook_durations
     )
 
-    # A pot that was actively counting down and is now at 0 just burned --
-    # BURN_PENALTY is otherwise defined in settings.py but never applied,
-    # leaving no downside to letting food burn (and free, repeatable
-    # PLACEMENT_IN_POT/POT_START_COOKING reward for refilling afterward).
-    just_burned = (pre_burn_pot_timers > 0) & (new_pot_timers == 0) & state.pot_active_mask
-    burn_penalty = jnp.sum(just_burned).astype(jnp.float32) * BURN_PENALTY
-    reward = reward + burn_penalty
-    reward_breakdown["BURN_PENALTY"] = reward_breakdown["BURN_PENALTY"] + jnp.full(
-        (config.num_agents,), burn_penalty, dtype=jnp.float32
+    burn_penalty, burn_breakdown = compute_burn_penalty(
+        pre_burn_pot_timers, new_pot_timers, state.pot_active_mask
     )
+    reward = reward + burn_penalty
+    reward_breakdown = merge_reward_breakdowns(reward_breakdown, burn_breakdown)
 
     return (
         state.replace(

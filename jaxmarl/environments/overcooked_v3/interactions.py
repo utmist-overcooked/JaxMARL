@@ -15,14 +15,51 @@ from jaxmarl.environments.overcooked_v3.common import (
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.settings import (
+    BURN_PENALTY,
     MAX_POTS,
+    ORDER_EXPIRED_PENALTY,
     REWARD_COMPONENT_KEYS,
     SHAPED_REWARDS,
 )
 
 
-def _zero_reward_breakdown() -> Dict[str, chex.Array]:
+def zero_reward_breakdown() -> Dict[str, chex.Array]:
     return {key: jnp.array(0.0, dtype=jnp.float32) for key in REWARD_COMPONENT_KEYS}
+
+
+def compute_burn_penalty(
+    pre_timers: chex.Array,
+    post_timers: chex.Array,
+    pot_active_mask: chex.Array,
+) -> Tuple[chex.Array, Dict[str, chex.Array]]:
+    """Penalize pots that just burned (timer hit 0 while actively cooking)."""
+    just_burned = (pre_timers > 0) & (post_timers == 0) & pot_active_mask
+    penalty = jnp.sum(just_burned).astype(jnp.float32) * BURN_PENALTY
+    breakdown = zero_reward_breakdown()
+    breakdown["BURN_PENALTY"] = penalty
+    return penalty, breakdown
+
+
+def compute_order_expired_penalty(
+    expired_mask: chex.Array,
+) -> Tuple[chex.Array, Dict[str, chex.Array]]:
+    """Penalize orders that expired unfulfilled."""
+    penalty = jnp.sum(expired_mask).astype(jnp.float32) * ORDER_EXPIRED_PENALTY
+    breakdown = zero_reward_breakdown()
+    breakdown["ORDER_EXPIRED_PENALTY"] = penalty
+    return penalty, breakdown
+
+
+def merge_reward_breakdowns(*breakdowns: Dict[str, chex.Array]) -> Dict[str, chex.Array]:
+    """Sum any number of REWARD_COMPONENT_KEYS breakdown dicts together.
+
+    Values may be per-agent arrays or scalars per key; scalar operands
+    broadcast naturally against per-agent arrays under `+`.
+    """
+    merged = zero_reward_breakdown()
+    for breakdown in breakdowns:
+        merged = {key: merged[key] + breakdown[key] for key in REWARD_COMPONENT_KEYS}
+    return merged
 
 
 def sample_pot_cook_time(
@@ -63,7 +100,7 @@ def process_interact(
     )
 
     shaped_reward = jnp.array(0.0, dtype=float)
-    reward_breakdown = _zero_reward_breakdown()
+    reward_breakdown = zero_reward_breakdown()
 
     interact_cell = grid[fwd_pos.y, fwd_pos.x]
     interact_item = interact_cell[0]
@@ -493,7 +530,7 @@ def dense_task_shaping(
             is_movement * target_valid * facing_target * SHAPED_REWARDS["TASK_FACING"]
         )
 
-        reward_breakdown = _zero_reward_breakdown()
+        reward_breakdown = zero_reward_breakdown()
         reward_breakdown["TASK_PROGRESS"] = progress_reward
         reward_breakdown["TASK_FACING"] = facing_reward
         reward_breakdown["INVALID_MOVE"] = invalid_move_reward

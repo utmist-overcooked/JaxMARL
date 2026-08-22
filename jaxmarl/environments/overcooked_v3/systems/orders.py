@@ -1,21 +1,24 @@
 """Order queue system for Overcooked V3."""
 
-from typing import Tuple
+from typing import Dict, Tuple
 
 import chex
 import jax
 import jax.numpy as jnp
 
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
-from jaxmarl.environments.overcooked_v3.settings import ORDER_EXPIRED_PENALTY
+from jaxmarl.environments.overcooked_v3.interactions import (
+    compute_order_expired_penalty,
+    zero_reward_breakdown,
+)
 from jaxmarl.environments.overcooked_v3.state import State
 
 def process_order_queue(
     state: State, key: chex.PRNGKey, config: OvercookedV3Config
-) -> Tuple[State, float]:
+) -> Tuple[State, float, Dict[str, chex.Array]]:
     """Process order queue: generate new orders, check expirations."""
     if not config.enable_order_queue:
-        return state, 0.0
+        return state, 0.0, zero_reward_breakdown()
 
     order_types = state.order_types
     order_expirations = state.order_expirations
@@ -28,8 +31,7 @@ def process_order_queue(
 
     # Check for expired orders
     expired_mask = order_active_mask & (new_expirations <= 0)
-    num_expired = jnp.sum(expired_mask)
-    reward = num_expired * ORDER_EXPIRED_PENALTY
+    reward, reward_breakdown = compute_order_expired_penalty(expired_mask)
 
     # Deactivate expired orders
     new_active_mask = order_active_mask & ~expired_mask
@@ -66,4 +68,4 @@ def process_order_queue(
         order_types=new_order_types,
         order_expirations=new_expirations,
         order_active_mask=new_active_mask,
-    ), reward
+    ), reward, reward_breakdown

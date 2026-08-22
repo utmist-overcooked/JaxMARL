@@ -21,6 +21,7 @@ from jaxmarl.environments.overcooked_v3.systems.conveyors import (
 )
 from jaxmarl.environments.overcooked_v3.systems.moving_walls import move_moving_walls
 from jaxmarl.environments.overcooked_v3.systems.orders import process_order_queue
+from jaxmarl.environments.overcooked_v3.interactions import merge_reward_breakdowns
 
 def step_overcooked_v3(
     key: chex.PRNGKey,
@@ -36,8 +37,8 @@ def step_overcooked_v3(
         agent_key, state, agent_actions, config
     )
     state = advance_dynamic_environment_systems(state, config)
-    state, reward = advance_order_queue_and_add_queue_reward(
-        order_key, state, reward, config
+    state, reward, reward_breakdown = advance_order_queue_and_add_queue_reward(
+        order_key, state, reward, reward_breakdown, config
     )
     state = advance_time_and_update_terminal_flag(state, config)
 
@@ -86,14 +87,16 @@ def advance_order_queue_and_add_queue_reward(
     key: Optional[chex.PRNGKey],
     state: State,
     reward: float,
+    reward_breakdown: Dict[str, chex.Array],
     config: OvercookedV3Config,
-) -> Tuple[State, float]:
+) -> Tuple[State, float, Dict[str, chex.Array]]:
     """Generate and expire queued orders, adding any queue reward to the step reward."""
     if config.enable_order_queue:
-        state, order_reward = process_order_queue(state, key, config)
+        state, order_reward, order_breakdown = process_order_queue(state, key, config)
         reward = reward + order_reward
+        reward_breakdown = merge_reward_breakdowns(reward_breakdown, order_breakdown)
 
-    return state, reward
+    return state, reward, reward_breakdown
 
 def advance_time_and_update_terminal_flag(
     state: State, config: OvercookedV3Config
