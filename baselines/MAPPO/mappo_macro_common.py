@@ -861,6 +861,19 @@ def restore_training_checkpoint(runner, config: Dict):
 
 def initialize_config(config: Dict, env):
     config = dict(config)
+    # The shaping-anneal horizon may be given as a FRACTION of the training
+    # budget (REW_SHAPING_FRACTION in [0, 1]) instead of as absolute primitive
+    # steps. When present it overrides REW_SHAPING_HORIZON so the anneal always
+    # spans the same fraction of the run regardless of TOTAL_TIMESTEPS -- which
+    # matters when the budget itself is swept (an absolute horizon would give
+    # short trials proportionally more shaping). 1.0 => shaping decays across the
+    # whole run (reaches 0 only at the end); 0.1 => fully annealed by 10% of the
+    # run, sparse thereafter. Existing configs without this key are unchanged.
+    shaping_fraction = config.get("REW_SHAPING_FRACTION")
+    if shaping_fraction is not None:
+        config["REW_SHAPING_HORIZON"] = float(shaping_fraction) * int(
+            config["TOTAL_TIMESTEPS"]
+        )
     config["NUM_ACTORS"] = env.num_agents * int(config["NUM_ENVS"])
     config["NUM_UPDATES"] = int(config["TOTAL_TIMESTEPS"]) // (
         int(config["NUM_STEPS"]) * int(config["NUM_ENVS"])
