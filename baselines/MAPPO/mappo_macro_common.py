@@ -230,28 +230,41 @@ class Critic(nn.Module):
 # flat shuffle would destroy the temporal ordering BPTT depends on.
 # ---------------------------------------------------------------------------
 class ScannedRNN(nn.Module):
-    """GRU scanned over the leading (time) axis, resetting on episode ends."""
+    """GRU scanned over the leading (time) axis, resetting on episode ends.
 
-    @partial(
-        nn.scan,
-        variable_broadcast="params",
-        in_axes=0,
-        out_axes=0,
-        split_rngs={"params": False},
-    )
+    Deliberately uses `jax.lax.scan` rather than flax's `nn.scan`: nn.scan
+    routes through flax.core.axes_scan, which calls `jax.api_util.debug_info`
+    and so blows up on flax/jax version combinations where that helper is
+    missing (AttributeError: module 'jax.api_util' has no attribute
+    'debug_info'). Driving the scan directly keeps this working across a much
+    wider range of installed versions. The GRU cell's parameters are created
+    once via self.param and reused at every timestep, which is what nn.scan's
+    variable_broadcast="params" was doing.
+    """
+
     @nn.compact
     def __call__(self, carry, x):
-        rnn_state = carry
         ins, resets = x
-        # Zero the carry wherever the previous step ended an episode, so
-        # memory never leaks across episode boundaries within a rollout.
-        rnn_state = jnp.where(
-            resets[:, np.newaxis],
-            self.initialize_carry(*rnn_state.shape),
-            rnn_state,
+        cell = nn.GRUCell(features=ins.shape[-1])
+        params = self.param(
+            "gru_cell",
+            lambda rng: cell.init(rng, carry, ins[0])["params"],
         )
-        new_rnn_state, y = nn.GRUCell(features=ins.shape[1])(rnn_state, ins)
-        return new_rnn_state, y
+
+        def step(rnn_state, step_input):
+            step_ins, step_resets = step_input
+            # Zero the carry wherever the previous step ended an episode, so
+            # memory never leaks across episode boundaries within a rollout.
+            # (GRUCell's default carry init is zeros, so this matches a fresh
+            # initialize_carry.)
+            rnn_state = jnp.where(
+                step_resets[:, np.newaxis],
+                jnp.zeros_like(rnn_state),
+                rnn_state,
+            )
+            return cell.apply({"params": params}, rnn_state, step_ins)
+
+        return jax.lax.scan(step, carry, (ins, resets))
 
     @staticmethod
     def initialize_carry(batch_size: int, hidden_size: int):
