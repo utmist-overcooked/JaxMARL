@@ -11,6 +11,7 @@ from mappo_macro_common import (
     Critic,
     ReplanActor,
     add_annealed_shaped_reward,
+    anneal_burn_penalty,
     batchify,
     build_env,
     calculate_gae,
@@ -30,6 +31,7 @@ from mappo_macro_common import (
     unbatchify,
     update_ppo,
 )
+from jaxmarl.environments.overcooked_v3.settings import REWARD_COMPONENT_KEYS
 
 
 CONTINUE = 0
@@ -150,6 +152,22 @@ def make_train(config):
                     primitive_timestep,
                     float(config.get("REW_SHAPING_HORIZON", 0.0)),
                 )
+                raw_burn_penalty = {
+                    agent: info["reward_breakdown"]["BURN_PENALTY"][:, agent_idx]
+                    for agent_idx, agent in enumerate(env.agents)
+                }
+                reward, burn_penalty_coefficient = anneal_burn_penalty(
+                    reward,
+                    raw_burn_penalty,
+                    primitive_timestep,
+                    float(config.get("REW_SHAPING_HORIZON", 0.0)),
+                )
+                reward_breakdown = {
+                    key: metadata_batch(
+                        info["reward_breakdown"][key], config["NUM_ACTORS"]
+                    )
+                    for key in REWARD_COMPONENT_KEYS
+                }
                 transition = {
                     "obs": obs_batch,
                     "world_state": world_state,
@@ -170,6 +188,10 @@ def make_train(config):
                     "shaping_coefficient": jnp.full(
                         (config["NUM_ACTORS"],), shaping_coefficient
                     ),
+                    "burn_penalty_coefficient": jnp.full(
+                        (config["NUM_ACTORS"],), burn_penalty_coefficient
+                    ),
+                    "reward_breakdown": reward_breakdown,
                     "done": jnp.tile(done["__all__"], env.num_agents),
                     "returned_episode": metadata_batch(
                         info["returned_episode"], config["NUM_ACTORS"]
@@ -266,6 +288,13 @@ def make_train(config):
                 "shaping_coefficient": jnp.mean(
                     trajectory["shaping_coefficient"]
                 ),
+                "burn_penalty_coefficient": jnp.mean(
+                    trajectory["burn_penalty_coefficient"]
+                ),
+                **{
+                    f"reward/{key}": jnp.mean(trajectory["reward_breakdown"][key])
+                    for key in REWARD_COMPONENT_KEYS
+                },
             }
             metrics["eval_return"] = maybe_evaluate_and_save_best(
                 update_index,

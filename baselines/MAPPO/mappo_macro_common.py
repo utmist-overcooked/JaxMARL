@@ -418,6 +418,42 @@ def add_annealed_shaped_reward(
     return combined_reward, coefficient
 
 
+def anneal_burn_penalty(
+    reward: Dict,
+    raw_burn_penalty: Dict,
+    primitive_timestep,
+    shaping_horizon: float,
+):
+    """Ramp BURN_PENALTY from 0 up to full strength over `shaping_horizon`.
+
+    The env always applies BURN_PENALTY at full strength (it's baked into the
+    raw `reward` the env returns, for accurate eval/reporting). `raw_burn_penalty`
+    is that same full-strength amount, isolated per agent via reward_breakdown.
+    This subtracts back out the not-yet-earned fraction of it, using the same
+    linear schedule as add_annealed_shaped_reward but inverted -- 0 strength at
+    step 0, full strength at `shaping_horizon` -- so the deterrent reaches full
+    strength exactly when the positive shaped rewards finish fading out, instead
+    of punishing early exploration before the agent has ever seen a full cycle.
+    """
+    horizon = jnp.asarray(shaping_horizon, dtype=jnp.float32)
+    ramp = jnp.where(
+        horizon > 0,
+        jnp.clip(
+            jnp.asarray(primitive_timestep, dtype=jnp.float32)
+            / jnp.maximum(horizon, 1.0),
+            0.0,
+            1.0,
+        ),
+        1.0,
+    )
+    adjusted_reward = jax.tree.map(
+        lambda r, raw_burn: r + (ramp - 1.0) * raw_burn,
+        reward,
+        raw_burn_penalty,
+    )
+    return adjusted_reward, ramp
+
+
 def deterministic_evaluation(
     env,
     actor_params,
@@ -788,6 +824,18 @@ def run_experiment(config: Dict, make_train: Callable, experiment_name: str):
             actor_state, critic_state = result["runner_state"][:2]
             save_params(actor_state.params, output_dir / "final_actor.safetensors")
             save_params(critic_state.params, output_dir / "final_critic.safetensors")
+            # One value per completed update (shape (NUM_UPDATES,) each) for
+            # every metrics key, including the per-REWARD_COMPONENT_KEYS means
+            # -- read by scripts/plot_training_rewards.py. Independent of
+            # wandb, since WANDB_MODE is disabled by default in these configs.
+            metrics_path = output_dir / "metrics_history.npz"
+            metrics_tmp_path = f"{metrics_path}.tmp-{os.getpid()}"
+            with open(metrics_tmp_path, "wb") as stream:
+                np.savez(
+                    stream,
+                    **{key: np.asarray(value) for key, value in result["metrics"].items()},
+                )
+            os.replace(metrics_tmp_path, metrics_path)
 
         wandb.finish()
         _RUN_CONTEXT.clear()
