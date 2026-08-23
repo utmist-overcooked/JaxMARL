@@ -824,18 +824,6 @@ def run_experiment(config: Dict, make_train: Callable, experiment_name: str):
             actor_state, critic_state = result["runner_state"][:2]
             save_params(actor_state.params, output_dir / "final_actor.safetensors")
             save_params(critic_state.params, output_dir / "final_critic.safetensors")
-            # One value per completed update (shape (NUM_UPDATES,) each) for
-            # every metrics key, including the per-REWARD_COMPONENT_KEYS means
-            # -- read by scripts/plot_training_rewards.py. Independent of
-            # wandb, since WANDB_MODE is disabled by default in these configs.
-            metrics_path = output_dir / "metrics_history.npz"
-            metrics_tmp_path = f"{metrics_path}.tmp-{os.getpid()}"
-            with open(metrics_tmp_path, "wb") as stream:
-                np.savez(
-                    stream,
-                    **{key: np.asarray(value) for key, value in result["metrics"].items()},
-                )
-            os.replace(metrics_tmp_path, metrics_path)
 
         wandb.finish()
         _RUN_CONTEXT.clear()
