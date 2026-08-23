@@ -35,12 +35,12 @@ NUM_EVAL_ENVS: 8
 EVAL_SEED: 42
 RESUME_FROM: null
 
-VOCAB_SIZE: 4              # 4 discrete message symbols per step, as you specified
-MESSAGE_EMBED_DIM: 8       # small vocab, no need for a big embedding table
+VOCAB_SIZE: 2              # 2 discrete message symbols per step, as you specified
+MESSAGE_EMBED_DIM: 2       # small vocab, no need for a big embedding table
 COMM_HIDDEN_SIZE: 64       # comm module is a thin side-network; leave unset to just reuse HIDDEN_SIZE
 
 MESSAGE_ENT_COEF: 0.05     # higher than your usual ENT_COEF (often ~0.01) —
-                            # a 4-symbol categorical collapses to one symbol
+                            # a 2-symbol categorical collapses to one symbol
                             # fast without extra entropy pressure early on
 MESSAGE_LOSS_COEF: 1.0     # equal weight to the action loss to start; watch
                             # the two loss curves and adjust if one dominates
