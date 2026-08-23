@@ -39,6 +39,9 @@ DEFAULTS = {
     "object_placement": "boundary",
     "counter_density": 0.1,
     "num_regions": 1,
+    # Exact number of counters accessible from both regions. None leaves the
+    # number unconstrained (except that shared workflows still require one).
+    "num_shared_tiles": None,
     "workflow_mode": "single_region",
     "max_attempts": 1000,
 }
@@ -49,6 +52,13 @@ NEIGHBOUR_DELTAS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 
 class CandidateGenerationError(RuntimeError):
     """A constructive candidate could not satisfy all requested constraints."""
+
+
+def _minimum_two_region_blockers(width: int, height: int) -> int:
+    """Return the vertex cut needed to split the rectangular interior grid."""
+    interior_width = width - 2
+    interior_height = height - 2
+    return min(2, interior_width, interior_height)
 
 
 def _integer(config: dict[str, Any], key: str, minimum: int) -> int:
@@ -118,11 +128,24 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     _integer(config, "depots", 1)
     num_regions = _integer(config, "num_regions", 1)
     _integer(config, "max_attempts", 1)
+    num_shared_tiles = config["num_shared_tiles"]
+    if num_shared_tiles is not None and (
+        isinstance(num_shared_tiles, bool)
+        or not isinstance(num_shared_tiles, int)
+        or num_shared_tiles < 0
+    ):
+        raise ValueError(
+            "generator.num_shared_tiles must be null or an integer >= 0"
+        )
 
     if num_regions > 2:
         raise ValueError(
             "generator.num_regions cannot exceed 2 because generated layouts "
             "currently contain exactly two agents"
+        )
+    if num_shared_tiles is not None and num_regions != 2:
+        raise ValueError(
+            "generator.num_shared_tiles requires generator.num_regions = 2"
         )
     if (
         not isinstance(config["workflow_mode"], str)
@@ -135,6 +158,10 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     if config["workflow_mode"] == "shared" and num_regions != 2:
         raise ValueError(
             "generator.workflow_mode 'shared' requires generator.num_regions = 2"
+        )
+    if config["workflow_mode"] == "shared" and num_shared_tiles == 0:
+        raise ValueError(
+            "generator.workflow_mode 'shared' requires at least one shared tile"
         )
     if config["pots"] > MAX_POTS:
         raise ValueError(f"generator.pots cannot exceed MAX_POTS ({MAX_POTS})")
@@ -179,10 +206,18 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     counter_count = round(interior_tiles * density)
     if interior_tiles - counter_count < 2:
         raise ValueError("counter_density leaves fewer than two agent spawn tiles")
-    if num_regions == 2 and counter_count == 0:
+    minimum_blocking_tiles = _minimum_two_region_blockers(width, height)
+    if num_regions == 2 and counter_count < minimum_blocking_tiles:
         raise ValueError(
-            "generator.num_regions = 2 requires at least one interior counter; "
-            "increase counter_density"
+            "generator.num_regions = 2 requires at least "
+            f"{minimum_blocking_tiles} interior counters to separate the "
+            f"{height - 2}x{width - 2} interior grid; counter_density provides "
+            f"{counter_count}"
+        )
+    if num_shared_tiles is not None and num_shared_tiles > counter_count:
+        raise ValueError(
+            "generator.num_shared_tiles cannot exceed the number of interior "
+            f"counters ({counter_count})"
         )
     if config["workflow_mode"] == "shared" and counter_count == 0:
         raise ValueError(
@@ -433,6 +468,21 @@ def _adjacent_regions(
     }
 
 
+def _shared_tiles(
+    grid: list[list[str]],
+    regions: list[set[tuple[int, int]]],
+    interior: set[tuple[int, int]],
+    all_grid_positions: set[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Return ordinary counters that can be interacted with from both regions."""
+    return [
+        position
+        for position in interior - set().union(*regions)
+        if grid[position[0]][position[1]] == "W"
+        and _adjacent_regions(position, regions, all_grid_positions) == {0, 1}
+    ]
+
+
 def _place_region_stations(
     grid: list[list[str]],
     config: dict[str, Any],
@@ -558,19 +608,28 @@ def _generate_candidate(config: dict[str, Any], rng: random.Random) -> str:
         rng,
     )
 
-    if config["workflow_mode"] == "shared":
+    if config["num_regions"] == 2:
         all_positions = {
             (row, col)
             for row in range(height)
             for col in range(width)
         }
-        handoff_counters = [
-            position
-            for position in interior - set().union(*regions)
-            if grid[position[0]][position[1]] == "W"
-            and _adjacent_regions(position, regions, all_positions) == {0, 1}
-        ]
-        if not handoff_counters:
+        shared_tiles = _shared_tiles(
+            grid,
+            regions,
+            interior,
+            all_positions,
+        )
+        requested_shared_tiles = config["num_shared_tiles"]
+        if (
+            requested_shared_tiles is not None
+            and len(shared_tiles) != requested_shared_tiles
+        ):
+            raise CandidateGenerationError(
+                f"layout has {len(shared_tiles)} shared tiles; "
+                f"requested exactly {requested_shared_tiles}"
+            )
+        if config["workflow_mode"] == "shared" and not shared_tiles:
             raise CandidateGenerationError(
                 "shared workflow has no counter accessible from both regions"
             )
