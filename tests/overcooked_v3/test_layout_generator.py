@@ -293,6 +293,22 @@ def test_generator_rejects_invalid_shared_tile_count(value):
         generate_document(_config(num_regions=2, num_shared_tiles=value))
 
 
+def test_two_regions_require_enough_tiles_to_separate_the_interior_grid():
+    with pytest.raises(
+        ValueError,
+        match="requires at least 2 interior counters",
+    ):
+        generate_document(
+            _config(
+                width=5,
+                height=5,
+                num_regions=2,
+                object_placement="boundary",
+                counter_density=0.1,
+            )
+        )
+
+
 def test_shared_tile_count_requires_two_regions():
     with pytest.raises(ValueError, match="requires generator.num_regions = 2"):
         generate_document(_config(num_shared_tiles=1))
