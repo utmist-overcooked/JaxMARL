@@ -21,6 +21,10 @@ often require understanding both packages.
 Python 3.10+ · JAX/JAXlib · Flax · Optax · Distrax · Chex · Hydra/OmegaConf ·
 Weights & Biases · pytest · pygame · Pillow/Matplotlib
 
+The optional `sweep` extra (`pip install -e '.[sweep]'`) adds Torch, GPyTorch,
+and scikit-learn for the Protein hyperparameter sweep (see below); they are not
+needed for training or tests.
+
 The code is designed around JAX transformations (`jit`, `vmap`, and `lax.scan`).
 Environment state uses fixed-shape arrays and JAX-compatible dataclasses.
 
@@ -106,6 +110,32 @@ The default configs disable W&B and save local outputs below
 `models/mappo_macro/<trainer>/seed_0/`. Override values such as
 `TOTAL_TIMESTEPS`, `NUM_ENVS`, `WANDB_MODE`, or `SAVE_PATH` through Hydra.
 
+### Protein hyperparameter sweep
+
+`baselines/MAPPO/protein_sweep.py` runs PufferLib's Protein Bayesian-optimization
+sweep (two Gaussian Processes over score and log-cost, Pareto-frontier candidate
+selection) over any macro trainer. Protein itself is vendored dependency-free in
+`baselines/MAPPO/protein.py`. Install the extra deps first (`pip install -e
+'.[sweep]'`), then run from `baselines/MAPPO/` — the driver imports the trainer
+modules as siblings:
+
+```bash
+cd baselines/MAPPO
+# --target: boundary | every_step | replan | every_step_comm
+python protein_sweep.py --target every_step --max-runs 30 --override WANDB_MODE=offline
+```
+
+Each trial merges a suggestion into the trainer's base config, runs a single-seed
+`run_experiment`, reads the best eval return from `best_eval.json`, times the run,
+and calls `observe(...)`. Structurally invalid suggestions are reported as failed
+trials, not crashes. Search spaces live in `config/sweep/protein.yaml` (and
+`protein_comm.yaml`); they follow PufferLib's `default.ini` — `TOTAL_TIMESTEPS`
+is the searched cost lever, `NUM_ENVS` is fixed via a `fixed:` block, and the
+trainers now read `NUM_LAYERS` and `ADAM_B1/B2/EPS` from config (defaults preserve
+prior behavior). Results land in `models/protein_sweep/<target>/`
+(`sweep_results.jsonl` + `best.json`). See `baselines/MAPPO/README.md` for the
+full design and per-knob rationale.
+
 ### Roll out a trained policy to GIF
 
 ```bash
@@ -175,7 +205,13 @@ macro and learned CONTINUE/REPLAN heads.
 observation augmentation, action masking, PPO updates, evaluation, logging,
 checkpointing, and resume support. Keep variant-specific rollout semantics in
 the three trainer files rather than hiding them here.
+- `baselines/MAPPO/mappo_macro_every_step_comm.py` — RIAL-style discrete
+communication module trained on top of a frozen every-step macro policy.
 - `baselines/MAPPO/config/mappo_macro_*.yaml` — Hydra configs for those trainers.
+- `baselines/MAPPO/protein.py` — vendored PufferLib Protein sweep optimizer.
+- `baselines/MAPPO/protein_sweep.py` — Protein sweep driver over the macro
+trainers (see "Protein hyperparameter sweep" above).
+- `baselines/MAPPO/config/sweep/*.yaml` — Protein sweep search spaces.
 - `baselines/IPPO/`, `baselines/QLearning/`, and `baselines/IC3Net/` — other
 baseline families, including primitive-action Overcooked V3 experiments.
 
