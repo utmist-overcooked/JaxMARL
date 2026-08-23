@@ -526,9 +526,16 @@ def dense_task_shaping(
         fwd_x = jnp.clip(fwd_pos.x, 0, width - 1)
         fwd_y = jnp.clip(fwd_pos.y, 0, height - 1)
         facing_target = target_mask[fwd_y, fwd_x]
+        # Gated on actually having moved, not merely on requesting a movement
+        # action: a blocked move still turns the agent, so rewarding intent
+        # alone lets an agent stand beside a target and farm TASK_FACING
+        # forever without ever interacting.
         facing_reward = (
-            is_movement * target_valid * facing_target * SHAPED_REWARDS["TASK_FACING"]
-        )
+            is_movement
+            & ~same_position
+            & target_valid
+            & facing_target
+        ) * SHAPED_REWARDS["TASK_FACING"]
 
         reward_breakdown = zero_reward_breakdown()
         reward_breakdown["TASK_PROGRESS"] = progress_reward
