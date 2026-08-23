@@ -1,0 +1,54 @@
+# Protein sweep-space for the every_step_comm trainer (learned-communication
+# module on top of a frozen macro policy). The frozen actor/critic are fixed, so
+# this sweeps the comm-module hyperparameters plus the PPO knobs that still apply
+# to the comm policy's own optimization.
+#
+# See protein.yaml for the meaning of the reserved keys and the note on why
+# use_gpu / max_suggestion_cost are omitted.
+
+method: protein
+metric: eval_return
+goal: maximize
+metric_distribution: uniform
+downsample: 1
+early_stop_quantile: 0.3
+prune_pareto: true
+max_runs: 20
+
+# --- Communication-module hyperparameters ------------------------------------
+MESSAGE_ENT_COEF:
+  distribution: log_normal
+  min: 0.005
+  max: 0.2
+  scale: auto
+
+MESSAGE_LOSS_COEF:
+  distribution: uniform
+  min: 0.25
+  max: 2.0
+  scale: auto
+
+# --- PPO knobs that still train the comm policy ------------------------------
+LR:
+  distribution: log_normal
+  min: 0.0001
+  max: 0.003
+  scale: auto
+
+ENT_COEF:
+  distribution: log_normal
+  min: 0.001
+  max: 0.1
+  scale: auto
+
+CLIP_EPS:
+  distribution: uniform
+  min: 0.1
+  max: 0.3
+  scale: auto
+
+UPDATE_EPOCHS:
+  distribution: int_uniform
+  min: 1
+  max: 8
+  scale: auto

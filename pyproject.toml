@@ -61,6 +61,13 @@ dev = [
   "pytest",
   "pygame",
 ]
+# Protein hyperparameter sweep (baselines/MAPPO/protein.py + protein_sweep.py).
+# scipy is already a core dependency above.
+sweep = [
+  "torch",
+  "gpytorch",
+  "scikit-learn",
+]
 
 [project.scripts]
 overcooked-editor = "jaxmarl.tools.layout_editor_v3:main"

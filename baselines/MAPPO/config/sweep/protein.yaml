@@ -1,0 +1,89 @@
+# Protein sweep-space for the Overcooked V3 macro-action MAPPO baselines
+# (boundary / every_step / replan). Consumed by protein_sweep.py.
+#
+# Reserved keys (method, metric, goal, metric_distribution, downsample,
+# early_stop_quantile, prune_pareto, max_runs) configure the optimizer; every
+# other top-level key is a searchable hyperparameter and is merged into the
+# trainer's base config each trial.
+#
+# `use_gpu` and `max_suggestion_cost` are intentionally omitted here so the
+# protein_sweep.py CLI flags (--no-gpu / --max-suggestion-cost) stay authoritative;
+# if you set them in this file they take precedence over the CLI.
+
+method: protein
+metric: eval_return          # matches best_eval.json written by run_experiment
+goal: maximize
+metric_distribution: uniform  # raw returns (NOT 'percentile', which expects [0,1])
+downsample: 1                 # each trial is one full, expensive training run
+early_stop_quantile: 0.3      # only affects Protein's (unused-here) early_stop model
+prune_pareto: true
+max_runs: 20                  # default trial budget; overridable with --max-runs
+
+# --- Searchable hyperparameters ---------------------------------------------
+# distribution: uniform | int_uniform | uniform_pow2 | log_normal | logit_normal
+# scale: 'auto' (=0.5) is a sensible default local search radius per dimension.
+
+LR:
+  distribution: log_normal
+  min: 0.0001
+  max: 0.003
+  scale: auto
+
+ENT_COEF:
+  distribution: log_normal
+  min: 0.001
+  max: 0.1
+  scale: auto
+
+GAMMA:
+  distribution: logit_normal   # good resolution for values close to 1
+  min: 0.9
+  max: 0.9995
+  scale: auto
+
+GAE_LAMBDA:
+  distribution: logit_normal
+  min: 0.8
+  max: 0.995
+  scale: auto
+
+CLIP_EPS:
+  distribution: uniform
+  min: 0.1
+  max: 0.3
+  scale: auto
+
+VF_COEF:
+  distribution: uniform
+  min: 0.25
+  max: 1.0
+  scale: auto
+
+MAX_GRAD_NORM:
+  distribution: uniform
+  min: 0.2
+  max: 1.0
+  scale: auto
+
+UPDATE_EPOCHS:
+  distribution: int_uniform
+  min: 1
+  max: 8
+  scale: auto
+
+HIDDEN_SIZE:
+  distribution: uniform_pow2   # -> 64 / 128 / 256; always structurally valid
+  min: 64
+  max: 256
+  scale: auto
+
+# --- Optional structural knobs (add at your own risk) ------------------------
+# NUM_MINIBATCHES / NUM_STEPS change BATCH_SIZE and update counts, so some
+# combinations violate the divisibility checks in initialize_config and are
+# reported to Protein as failed trials. Uncomment to include them:
+#
+# NUM_MINIBATCHES:
+#   distribution: uniform_pow2
+#   min: 1
+#   max: 8
+#   scale: auto
