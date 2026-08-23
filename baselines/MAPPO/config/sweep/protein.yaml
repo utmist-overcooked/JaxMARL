@@ -1,68 +1,90 @@
 # Protein sweep-space for the Overcooked V3 macro-action MAPPO baselines
 # (boundary / every_step / replan). Consumed by protein_sweep.py.
 #
-# Reserved keys (method, metric, goal, metric_distribution, downsample,
-# early_stop_quantile, prune_pareto, max_runs) configure the optimizer; every
-# other top-level key is a searchable hyperparameter and is merged into the
-# trainer's base config each trial.
+# Layout mirrors PufferLib's own default.ini [sweep] block: TOTAL_TIMESTEPS is
+# the searched cost lever (their train.total_timesteps, scale=time), the batch
+# throughput knob (NUM_ENVS / their vec.total_agents) is FIXED rather than swept,
+# and the algorithmic ranges are kept wide -- Protein's GP narrows in, so a broad
+# box costs little and a narrow one can miss the optimum.
 #
-# `use_gpu` and `max_suggestion_cost` are intentionally omitted here so the
-# protein_sweep.py CLI flags (--no-gpu / --max-suggestion-cost) stay authoritative;
-# if you set them in this file they take precedence over the CLI.
+# Reserved keys (method, metric, goal, metric_distribution, downsample,
+# early_stop_quantile, prune_pareto, max_runs) configure the optimizer.
+# `fixed` is a protein_sweep.py convention (not Protein's): sweep-time base-config
+# overrides that are applied but NOT searched.
+# Every other top-level key is a searchable hyperparameter.
+#
+# `use_gpu` and `max_suggestion_cost` are omitted so the CLI flags
+# (--no-gpu / --max-suggestion-cost) stay authoritative.
 
 method: protein
 metric: eval_return          # matches best_eval.json written by run_experiment
 goal: maximize
-metric_distribution: uniform  # raw returns (NOT 'percentile', which expects [0,1])
-downsample: 1                 # each trial is one full, expensive training run
-early_stop_quantile: 0.3      # only affects Protein's (unused-here) early_stop model
+metric_distribution: linear  # raw returns (NOT 'percentile', which expects [0,1])
+downsample: 1                # each trial is one full training run
+early_stop_quantile: 0.3
 prune_pareto: true
-max_runs: 20                  # default trial budget; overridable with --max-runs
+max_runs: 30
+
+# --- Sweep-time fixed overrides (applied to the base training config) --------
+# NUM_ENVS is fixed high, not swept: like PufferLib's vec.total_agents it is a
+# throughput/batch-size knob, and a big fixed batch gives the most stable
+# gradient updates. Sweeping the training budget (below) then lets Protein find
+# how many steps that stable-but-fewer-updates regime actually needs.
+fixed:
+  NUM_ENVS: 4096
+
+# --- Cost lever: training budget --------------------------------------------
+# Searched, and wired up as Protein's cost_param by the driver. The driver snaps
+# each suggestion to a whole number of NUM_STEPS*NUM_ENVS batches so the
+# divisibility check in initialize_config always passes.
+TOTAL_TIMESTEPS:
+  distribution: log_normal
+  min: 5000000        # 5e6 -- partially-trained floor; cheap early probes
+  max: 30000000       # 3e7 -- convergence ceiling (matches boundary/replan base)
+  scale: time         # PufferLib's time-scaling for the cost dimension
 
 # --- Searchable hyperparameters ---------------------------------------------
 # distribution: uniform | int_uniform | uniform_pow2 | log_normal | logit_normal
-# scale: 'auto' (=0.5) is a sensible default local search radius per dimension.
-
 LR:
   distribution: log_normal
-  min: 0.0001
-  max: 0.003
-  scale: auto
+  min: 0.00001        # 1e-5 .. 1e-2, wide like PufferLib (their upper bound is 0.1)
+  max: 0.01
+  scale: 0.5
 
 ENT_COEF:
   distribution: log_normal
-  min: 0.001
-  max: 0.1
+  min: 0.0001
+  max: 0.2
   scale: auto
 
 GAMMA:
-  distribution: logit_normal   # good resolution for values close to 1
+  distribution: logit_normal   # fine resolution near 1
   min: 0.9
-  max: 0.9995
+  max: 0.9999
   scale: auto
 
 GAE_LAMBDA:
   distribution: logit_normal
-  min: 0.8
+  min: 0.5
   max: 0.995
   scale: auto
 
 CLIP_EPS:
   distribution: uniform
-  min: 0.1
+  min: 0.05
   max: 0.3
   scale: auto
 
 VF_COEF:
   distribution: uniform
-  min: 0.25
-  max: 1.0
+  min: 0.1
+  max: 2.0
   scale: auto
 
 MAX_GRAD_NORM:
   distribution: uniform
   min: 0.2
-  max: 1.0
+  max: 2.0
   scale: auto
 
 UPDATE_EPOCHS:
@@ -72,15 +94,23 @@ UPDATE_EPOCHS:
   scale: auto
 
 HIDDEN_SIZE:
-  distribution: uniform_pow2   # -> 64 / 128 / 256; always structurally valid
+  distribution: uniform_pow2   # -> 64 / 128 / 256 / 512
   min: 64
-  max: 256
+  max: 512
   scale: auto
 
-# --- Optional structural knobs (add at your own risk) ------------------------
-# NUM_MINIBATCHES / NUM_STEPS change BATCH_SIZE and update counts, so some
-# combinations violate the divisibility checks in initialize_config and are
-# reported to Protein as failed trials. Uncomment to include them:
+# --- Optional knobs (enable per target, at your own risk) --------------------
+# NUM_STEPS is the rollout horizon (PufferLib's train.horizon, which they DO
+# sweep as pow2). Safe to enable for every_step / replan. For the `boundary`
+# trainer it is coupled to the episode length (rollouts end on episode
+# boundaries), so sweeping it there changes rollout semantics -- leave it fixed
+# for boundary. When enabled, the driver re-snaps TOTAL_TIMESTEPS accordingly.
+#
+# NUM_STEPS:
+#   distribution: uniform_pow2
+#   min: 64
+#   max: 512
+#   scale: auto
 #
 # NUM_MINIBATCHES:
 #   distribution: uniform_pow2

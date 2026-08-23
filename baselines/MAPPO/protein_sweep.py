@@ -163,7 +163,20 @@ def _read_best_eval(output_dir: Path, result) -> float:
 def run_sweep(args) -> None:
     module_name, base_config_name, required_env, default_sweep = TARGETS[args.target]
 
+    sweep_config = _load_container(
+        Path(args.sweep_config) if args.sweep_config
+        else _SWEEP_CONFIG_DIR / f"{default_sweep}.yaml"
+    )
+    # `fixed:` is our own (non-Protein) convention: sweep-time base-config
+    # overrides (e.g. NUM_ENVS=4096) that are NOT searched. Pop it before Protein
+    # ever sees it -- Protein would try to parse it as a hyperparameter space.
+    fixed_overrides = sweep_config.pop("fixed", None) or {}
+    method = sweep_config.get("method", "protein")
+    optimizer_cls = _OPTIMIZERS[method]
+
     base_config = _load_container(_CONFIG_DIR / f"{args.base_config or base_config_name}.yaml")
+    for key, value in fixed_overrides.items():          # base < fixed < CLI override
+        base_config[key] = value
     _apply_overrides(base_config, args.override)
     if base_config.get("ENV_NAME") != required_env:
         raise ValueError(
@@ -171,12 +184,14 @@ def run_sweep(args) -> None:
             f"but base config has {base_config.get('ENV_NAME')!r}"
         )
 
-    sweep_config = _load_container(
-        Path(args.sweep_config) if args.sweep_config
-        else _SWEEP_CONFIG_DIR / f"{default_sweep}.yaml"
-    )
-    method = sweep_config.get("method", "protein")
-    optimizer_cls = _OPTIMIZERS[method]
+    # Which config keys are actually searched (a param is a dict with 'distribution').
+    swept_names = [
+        k for k, v in sweep_config.items()
+        if isinstance(v, dict) and "distribution" in v
+    ]
+    # If the training budget is searched, make it Protein's cost parameter so the
+    # cost GP is anchored to it; otherwise Protein falls back to observed cost only.
+    cost_param = "TOTAL_TIMESTEPS" if "TOTAL_TIMESTEPS" in swept_names else None
 
     # Import the trainer lazily so `--help` works without jax/wandb installed.
     trainer = __import__(module_name)
@@ -192,7 +207,7 @@ def run_sweep(args) -> None:
         optimizer_kwargs = dict(
             max_suggestion_cost=args.max_suggestion_cost,
             use_gpu=not args.no_gpu,
-            cost_param=None,  # wall-clock cost; not part of the search space
+            cost_param=cost_param,
         )
     optimizer = optimizer_cls(sweep_config, **optimizer_kwargs)
 
@@ -200,7 +215,8 @@ def run_sweep(args) -> None:
     print(
         f"[protein_sweep] target={args.target} method={method} "
         f"max_runs={max_runs} cost_budget={args.max_suggestion_cost}s "
-        f"search_dims={optimizer.hyperparameters.num}"
+        f"search_dims={optimizer.hyperparameters.num} cost_param={cost_param} "
+        f"fixed={fixed_overrides or None}"
     )
 
     best = {"score": -np.inf, "trial": None, "hypers": None}
@@ -212,6 +228,15 @@ def run_sweep(args) -> None:
         _typed_merge(trial_config, hypers)
         trial_config["NUM_SEEDS"] = 1
         trial_config["SAVE_PATH"] = str(save_root / "runs")
+
+        # Snap a searched TOTAL_TIMESTEPS to a whole number of update batches so
+        # initialize_config's divisibility check passes, and feed the snapped
+        # value back to Protein so its cost_param dimension matches what ran.
+        if "TOTAL_TIMESTEPS" in hypers:
+            steps_per_update = int(trial_config["NUM_STEPS"]) * int(trial_config["NUM_ENVS"])
+            num_updates = max(1, round(trial_config["TOTAL_TIMESTEPS"] / steps_per_update))
+            trial_config["TOTAL_TIMESTEPS"] = num_updates * steps_per_update
+            hypers["TOTAL_TIMESTEPS"] = trial_config["TOTAL_TIMESTEPS"]
 
         output_dir = save_root / "runs" / experiment_name / "seed_0"
         print(

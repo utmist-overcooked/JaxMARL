@@ -94,26 +94,53 @@ single-seed `run_experiment`, reads the best evaluation return from the run's
 breaks `BATCH_SIZE` divisibility) are caught and reported as failed trials rather
 than aborting the sweep.
 
+### Search space (mirrors PufferLib's `default.ini`)
+
 The search space and optimizer settings live in `config/sweep/protein.yaml`
-(`config/sweep/protein_comm.yaml` for `every_step_comm`). Reserved keys (`metric`,
-`goal`, `metric_distribution`, `downsample`, `early_stop_quantile`, `prune_pareto`,
-`max_runs`) configure Protein; every other top-level key is a searchable
+(`config/sweep/protein_comm.yaml` for `every_step_comm`). The design follows
+PufferLib's own sweep config:
+
+- **`TOTAL_TIMESTEPS` is the searched cost lever** (`log_normal`, `scale=time`),
+  wired up as Protein's `cost_param` so the cost GP is anchored to it. The driver
+  snaps each suggestion to a whole number of `NUM_STEPS*NUM_ENVS` batches so the
+  divisibility check always passes, and feeds the snapped value back to `observe`.
+- **`NUM_ENVS` is fixed, not swept** (default 4096) — like PufferLib's
+  `vec.total_agents`, it is a throughput/batch-size knob. A big fixed batch gives
+  the most stable gradient updates; sweeping the budget then finds how many steps
+  that regime needs. It is set via a `fixed:` block in the sweep YAML (a
+  `protein_sweep.py` convention, not part of Protein) so the committed training
+  configs are left untouched.
+- **Algorithmic ranges are kept wide** (`LR` 1e-5–1e-2, `GAE_LAMBDA` 0.5–0.995,
+  `HIDDEN_SIZE` 64–512, …) — Protein's GP narrows in, so a broad box is cheap.
+- **`NUM_STEPS`** (PufferLib's `horizon`) is provided commented-out; safe to
+  enable for `every_step`/`replan`, but for `boundary` it is coupled to episode
+  length, so leave it fixed there.
+
+Reserved keys (`method`, `metric`, `goal`, `metric_distribution`, `downsample`,
+`early_stop_quantile`, `prune_pareto`, `max_runs`) configure Protein; `fixed:`
+holds sweep-time base-config overrides; every other top-level key is a searchable
 hyperparameter. Override base-config entries per sweep with `--override`:
 
 ```bash
 python protein_sweep.py --target every_step --max-runs 40 \
     --max-suggestion-cost 1800 \
-    --override TOTAL_TIMESTEPS=2000000 WANDB_MODE=offline
+    --override WANDB_MODE=offline NUM_ENVS=2048
 ```
+
+(`--override` pins a base-config value for the whole sweep and wins over the
+`fixed:` block; it also overrides a searched key if you name one, effectively
+removing it from the search.)
 
 Per-trial checkpoints, a `sweep_results.jsonl` log, and the winning `best.json`
 are written under `--save-path` (default `models/protein_sweep/<target>/`).
 
 Notes:
 
-- Cost is wall-clock **seconds** (matching Protein's default cost budget), so it
-  includes JAX compilation time; structural changes (`HIDDEN_SIZE`, `USE_RNN`)
-  trigger recompilation and are billed accordingly.
+- Observed cost is wall-clock **seconds**, while the *searched* cost dimension is
+  `TOTAL_TIMESTEPS` — the two are monotonically related (more steps → more
+  seconds), so Protein trades return against real runtime while still steering the
+  training budget. Cost includes JAX compilation time; structural changes
+  (`HIDDEN_SIZE`, `USE_RNN`) trigger recompilation and are billed accordingly.
 - Protein's cost-aware `early_stop` is **not** wired into the scanned JAX
   training loop (that would require host callbacks mid-`lax.scan`); the sweep
   observes only completed-run score and cost.
