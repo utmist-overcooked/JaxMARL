@@ -57,7 +57,11 @@ from jaxmarl.environments.overcooked_v3.settings import (
     POT_COOK_TIME,
     POT_COOK_TIME_RANGE,
 )
-from jaxmarl.environments.overcooked_v3.state import ObservationType, State
+from jaxmarl.environments.overcooked_v3.state import (
+    ObservationMode,
+    ObservationType,
+    State,
+)
 from jaxmarl.environments.overcooked_v3.step import is_terminal, step_overcooked_v3
 from jaxmarl.environments.overcooked_v3.systems.barriers import (
     update_barrier_timers,
@@ -83,6 +87,7 @@ class OvercookedV3(MultiAgentEnv):
             ObservationType, List[ObservationType]
         ] = ObservationType.DEFAULT,
         agent_view_size: Optional[int] = None,
+        observation_mode: Union[ObservationMode, str] = ObservationMode.INDIVIDUAL,
         # Pot settings
         pot_cook_time: int = POT_COOK_TIME,
         pot_cook_time_range: Optional[Sequence[int]] = None,
@@ -116,6 +121,11 @@ class OvercookedV3(MultiAgentEnv):
             max_steps: Maximum steps per episode
             observation_type: Type of observation (default or featurized)
             agent_view_size: Partial observability window size (None for full)
+            observation_mode: Per-agent observation lens over the DEFAULT grid
+                obs. "individual" (default): own agent_view_size crop only.
+                "concat": own crop concatenated with the other agents' crops,
+                self-first. "full": the entire grid, overriding agent_view_size.
+                Applies to DEFAULT observations only.
             pot_cook_time: Steps until a full pot becomes ready (default 90)
             pot_cook_time_range: Optional inclusive [min, max] ready-time range.
                 Omit or pass an empty sequence to use pot_cook_time.
@@ -176,6 +186,19 @@ class OvercookedV3(MultiAgentEnv):
                 )
         self.observation_type = observation_type
         self.agent_view_size = agent_view_size
+
+        # Normalize and validate the observation mode (raises on bad strings).
+        self.observation_mode = ObservationMode(observation_mode)
+        if self.observation_mode != ObservationMode.INDIVIDUAL:
+            obs_types = (
+                observation_type
+                if isinstance(observation_type, list)
+                else [observation_type]
+            )
+            if any(t == ObservationType.FEATURIZED for t in obs_types):
+                raise NotImplementedError(
+                    "observation_mode only applies to DEFAULT observations"
+                )
 
         self.max_steps = max_steps
 
@@ -297,6 +320,8 @@ class OvercookedV3(MultiAgentEnv):
             self.layout,
             self.observation_type,
             self.agent_view_size,
+            self.observation_mode,
+            self.num_agents,
         )
 
         # Extract pot positions from layout
@@ -438,6 +463,7 @@ class OvercookedV3(MultiAgentEnv):
             action_set=self.action_set,
             observation_type=self.observation_type,
             agent_view_size=self.agent_view_size,
+            observation_mode=self.observation_mode,
             obs_shape=self.obs_shape,
             max_steps=self.max_steps,
             pot_cook_time=self.pot_cook_time,
@@ -546,6 +572,8 @@ class OvercookedV3(MultiAgentEnv):
             self.layout,
             self.observation_type,
             self.agent_view_size,
+            self.observation_mode,
+            self.num_agents,
         )
 
     def _sample_recipe(self, key: chex.PRNGKey) -> int:

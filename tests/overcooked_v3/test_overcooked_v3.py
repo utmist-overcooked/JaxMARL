@@ -19,6 +19,7 @@ from jaxmarl.environments.overcooked_v3.layouts import (
     moving_wall_demo,
     moving_wall_bounce_demo,
 )
+from jaxmarl.environments.overcooked_v3.state import ObservationType
 from jaxmarl.environments.multi_agent_env import MultiAgentEnv
 
 
@@ -735,6 +736,82 @@ class TestOvercookedV3Observations:
         # Observation should be smaller than full grid
         assert obs[env.agents[0]].shape[0] <= 5
         assert obs[env.agents[0]].shape[1] <= 5
+
+    def test_observation_mode_individual_matches_default(self):
+        """observation_mode='individual' reproduces the default lens exactly."""
+        key = jax.random.PRNGKey(1)
+        env_default = OvercookedV3(agent_view_size=1)
+        env_individual = OvercookedV3(agent_view_size=1, observation_mode="individual")
+
+        assert env_individual.obs_shape == env_default.obs_shape
+        obs_d, _ = env_default.reset(key)
+        obs_i, _ = env_individual.reset(key)
+        for agent in env_default.agents:
+            assert jnp.array_equal(obs_i[agent], obs_d[agent])
+
+    def test_observation_mode_concat_shape_and_self_first(self):
+        """concat stacks every agent's crop self-first under a leading axis."""
+        key = jax.random.PRNGKey(2)
+        env_individual = OvercookedV3(agent_view_size=1, observation_mode="individual")
+        env_concat = OvercookedV3(agent_view_size=1, observation_mode="concat")
+
+        num_agents = env_concat.num_agents
+        view_h, view_w, layers = env_individual.obs_shape
+        assert env_concat.obs_shape == (num_agents, view_h, view_w, layers)
+
+        obs_i, _ = env_individual.reset(key)
+        obs_c, _ = env_concat.reset(key)
+        for i, agent in enumerate(env_concat.agents):
+            assert obs_c[agent].shape == env_concat.obs_shape
+            # Slot 0 is the agent's own crop; later slots are the other agents'.
+            assert jnp.array_equal(obs_c[agent][0], obs_i[agent])
+            for offset in range(1, num_agents):
+                other = env_concat.agents[(i + offset) % num_agents]
+                assert jnp.array_equal(obs_c[agent][offset], obs_i[other])
+
+    def test_observation_mode_full_ignores_view_size(self):
+        """full exposes the whole grid regardless of agent_view_size."""
+        key = jax.random.PRNGKey(3)
+        env_full = OvercookedV3(agent_view_size=1, observation_mode="full")
+
+        assert env_full.obs_shape == (env_full.height, env_full.width, env_full.obs_shape[-1])
+        obs_f, state = env_full.reset(key)
+        full_default = env_full.get_obs_default(state)
+        for i, agent in enumerate(env_full.agents):
+            assert obs_f[agent].shape == env_full.obs_shape
+            assert jnp.array_equal(obs_f[agent], full_default[i])
+
+    def test_observation_mode_concat_no_view_size(self):
+        """concat with no agent_view_size stacks full-grid obs per agent."""
+        env = OvercookedV3(observation_mode="concat")
+        obs, _ = env.reset(jax.random.PRNGKey(4))
+        assert env.obs_shape == (env.num_agents, env.height, env.width, env.obs_shape[-1])
+        for agent in env.agents:
+            assert obs[agent].shape == env.obs_shape
+
+    @pytest.mark.parametrize("mode", ["individual", "concat", "full"])
+    def test_observation_mode_jit(self, mode):
+        """reset/step stay JIT-compatible under each observation mode."""
+        env = OvercookedV3(agent_view_size=1, observation_mode=mode)
+        key = jax.random.PRNGKey(5)
+        obs, state = jax.jit(env.reset)(key)
+        actions = {agent: 4 for agent in env.agents}  # stay
+        obs, state, _, _, _ = jax.jit(env.step)(key, state, actions)
+        for agent in env.agents:
+            assert obs[agent].shape == env.obs_shape
+
+    def test_invalid_observation_mode_raises(self):
+        """An unknown observation_mode string is rejected."""
+        with pytest.raises(ValueError):
+            OvercookedV3(observation_mode="bogus")
+
+    def test_concat_with_featurized_raises(self):
+        """observation_mode only applies to DEFAULT observations."""
+        with pytest.raises(NotImplementedError):
+            OvercookedV3(
+                observation_type=ObservationType.FEATURIZED,
+                observation_mode="concat",
+            )
 
 
 class TestOvercookedV3Actions:

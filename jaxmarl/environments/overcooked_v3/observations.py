@@ -9,7 +9,11 @@ import jax.numpy as jnp
 from jaxmarl.environments.overcooked_v3.common import StaticObject
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.settings import MAX_POTS
-from jaxmarl.environments.overcooked_v3.state import ObservationType, State
+from jaxmarl.environments.overcooked_v3.state import (
+    ObservationMode,
+    ObservationType,
+    State,
+)
 
 def calculate_observation_shape(
     width: int,
@@ -17,15 +21,26 @@ def calculate_observation_shape(
     layout,
     observation_type,
     agent_view_size,
+    observation_mode=ObservationMode.INDIVIDUAL,
+    num_agents: int = 1,
 ) -> Tuple[int, ...]:
-    """Calculate observation shape from static layout and observation settings."""
-    if agent_view_size:
+    """Calculate observation shape from static layout and observation settings.
+
+    ``observation_mode`` selects the per-agent lens over the DEFAULT grid obs:
+    ``INDIVIDUAL`` keeps each agent's own crop, ``CONCAT`` stacks every agent's
+    crop under a leading agent axis (self-first), and ``FULL`` returns the whole
+    grid, ignoring ``agent_view_size``. It has no effect on FEATURIZED obs.
+    """
+    observation_mode = ObservationMode(observation_mode)
+
+    # FULL exposes the entire grid regardless of agent_view_size.
+    if observation_mode == ObservationMode.FULL or not agent_view_size:
+        view_width = width
+        view_height = height
+    else:
         view_size = agent_view_size * 2 + 1
         view_width = min(width, view_size)
         view_height = min(height, view_size)
-    else:
-        view_width = width
-        view_height = height
 
     def _get_obs_shape_single(obs_type):
         if obs_type == ObservationType.DEFAULT:
@@ -40,6 +55,9 @@ def calculate_observation_shape(
             # - extra_layers: 1 (pot timer)
             # Total: 30 + 5 * num_ingredients
             num_layers = 30 + 5 * num_ingredients
+            # CONCAT prepends a leading agent axis holding every agent's crop.
+            if observation_mode == ObservationMode.CONCAT:
+                return (num_agents, view_height, view_width, num_layers)
             return (view_height, view_width, num_layers)
         if obs_type == ObservationType.FEATURIZED:
             return (64,)
@@ -65,16 +83,40 @@ def get_obs(state: State, config: OvercookedV3Config) -> Dict[str, chex.Array]:
 def get_obs_for_type(
     state: State, obs_type: ObservationType, config: OvercookedV3Config
 ) -> Dict[str, chex.Array]:
-    """Get observations for all agents for one observation encoding."""
-    if obs_type == ObservationType.DEFAULT:
-        all_obs = get_obs_default(state, config)
-    elif obs_type == ObservationType.FEATURIZED:
+    """Get observations for all agents for one observation encoding.
+
+    Applies the configured ``observation_mode`` lens to the DEFAULT grid obs:
+    ``INDIVIDUAL`` returns each agent's own crop, ``CONCAT`` returns every
+    agent's crop stacked self-first under a leading agent axis, and ``FULL``
+    returns the whole uncropped grid. FEATURIZED obs ignores the mode.
+    """
+    if obs_type == ObservationType.FEATURIZED:
+        # Flat per-agent stub; observation_mode does not apply (the constructor
+        # forbids non-individual modes together with FEATURIZED observations).
         all_obs = jnp.zeros((config.num_agents,) + config.obs_shape)
-    else:
+        return {f"agent_{i}": obs for i, obs in enumerate(all_obs)}
+    if obs_type != ObservationType.DEFAULT:
         raise ValueError(f"Invalid observation type: {obs_type}")
 
+    observation_mode = ObservationMode(config.observation_mode)
+
+    # Full uncropped grid obs for every agent: (num_agents, H, W, L).
+    all_obs = get_obs_default(state, config)
+
+    # FULL exposes the whole grid to every agent; agent_view_size is ignored.
+    if observation_mode == ObservationMode.FULL:
+        return {f"agent_{i}": obs for i, obs in enumerate(all_obs)}
+
     def _mask_obs(obs, agent):
+        """Crop one agent's full-grid obs to its (2k+1) view window.
+
+        The slice size is derived locally from agent_view_size rather than from
+        config.obs_shape, which under CONCAT carries an extra agent axis.
+        """
         view_size = config.agent_view_size
+        window = view_size * 2 + 1
+        view_height = min(config.height, window)
+        view_width = min(config.width, window)
         pos = agent.pos
 
         padded_obs = jnp.pad(
@@ -87,11 +129,20 @@ def get_obs_for_type(
         return jax.lax.dynamic_slice(
             padded_obs,
             (pos.y, pos.x, 0),
-            config.obs_shape,
+            (view_height, view_width, obs.shape[-1]),
         )
 
+    # INDIVIDUAL/CONCAT with a finite window: crop each agent to its own view.
     if config.agent_view_size is not None:
         all_obs = jax.vmap(_mask_obs)(all_obs, state.agents)
+
+    if observation_mode == ObservationMode.CONCAT:
+        # Self-first cyclic gather: stacked[i, 0] is agent i's own crop, then
+        # the other agents' crops in cyclic order. Shared-parameter policies
+        # therefore always read "my view" in slot 0.
+        n = config.num_agents
+        idx = (jnp.arange(n)[:, None] + jnp.arange(n)[None, :]) % n
+        all_obs = all_obs[idx]  # (num_agents, num_agents, ...)
 
     return {f"agent_{i}": obs for i, obs in enumerate(all_obs)}
 

@@ -22,6 +22,7 @@ from flax.training.train_state import TrainState
 import jaxmarl
 from jaxmarl.environments import spaces
 from jaxmarl.environments.overcooked_v3.observations import calculate_observation_shape
+from jaxmarl.environments.overcooked_v3.state import ObservationMode
 from jaxmarl.wrappers.baselines import JaxMARLWrapper, LogWrapper
 
 
@@ -52,8 +53,15 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
         # env.agent_view_size -- cropping only happens later, for actor obs.
         # So the critic stays fully centralized (CTDE) even when actors are
         # partially observed; full_obs_size is independent of actor_obs_size.
+        # agent_view_size=None and observation_mode=INDIVIDUAL keep this the
+        # per-agent full-grid shape regardless of the env's actor obs mode.
         full_obs_shape = calculate_observation_shape(
-            env.width, env.height, env.layout, env.observation_type, None
+            env.width,
+            env.height,
+            env.layout,
+            env.observation_type,
+            None,
+            ObservationMode.INDIVIDUAL,
         )
         self.full_obs_size = int(np.prod(full_obs_shape))
         per_agent_context_size = env.num_macro_actions + 2  # one-hot + done + progress
