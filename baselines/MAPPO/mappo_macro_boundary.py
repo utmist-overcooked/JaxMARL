@@ -50,8 +50,9 @@ def make_train(config):
         )
 
     def train(rng):
-        actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
-        critic = Critic(int(config["HIDDEN_SIZE"]))
+        num_layers = int(config.get("NUM_LAYERS", 2))
+        actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]), num_layers)
+        critic = Critic(int(config["HIDDEN_SIZE"]), num_layers)
         rng, actor_state, critic_state = initialize_actor_critic(
             actor,
             critic,

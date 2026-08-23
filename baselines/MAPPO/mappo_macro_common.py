@@ -134,21 +134,18 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
 class Actor(nn.Module):
     action_dim: int
     hidden_size: int
+    num_layers: int = 2  # number of tanh hidden layers before the policy head
 
     @nn.compact
     def __call__(self, obs):
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(obs)
-        x = nn.tanh(x)
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = nn.tanh(x)
+        x = obs
+        for _ in range(self.num_layers):
+            x = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(x)
+            x = nn.tanh(x)
         return nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(0.01),
@@ -161,21 +158,18 @@ class ReplanActor(nn.Module):
 
     action_dim: int
     hidden_size: int
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, obs):
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(obs)
-        x = nn.tanh(x)
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = nn.tanh(x)
+        x = obs
+        for _ in range(self.num_layers):
+            x = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(x)
+            x = nn.tanh(x)
         macro_logits = nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(0.01),
@@ -193,21 +187,18 @@ class ReplanActor(nn.Module):
 
 class Critic(nn.Module):
     hidden_size: int
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, world_state):
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(world_state)
-        x = nn.tanh(x)
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = nn.tanh(x)
+        x = world_state
+        for _ in range(self.num_layers):
+            x = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(x)
+            x = nn.tanh(x)
         return nn.Dense(
             1,
             kernel_init=orthogonal(1.0),
@@ -275,6 +266,9 @@ class ScannedRNN(nn.Module):
 class ActorRNN(nn.Module):
     action_dim: int
     hidden_size: int
+    # Total feedforward depth: 1 pre-GRU embedding + (num_layers - 1) post-GRU
+    # hidden layers. Default 2 keeps the original single post-GRU layer.
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -288,12 +282,14 @@ class ActorRNN(nn.Module):
 
         hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
 
-        y = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(2),
-            bias_init=constant(0.0),
-        )(embedding)
-        y = nn.relu(y)
+        y = embedding
+        for _ in range(max(self.num_layers - 1, 0)):
+            y = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(2),
+                bias_init=constant(0.0),
+            )(y)
+            y = nn.relu(y)
         # Returns raw logits (not a distribution) to match the MLP Actor, so
         # callers keep using masked_categorical for action masking.
         logits = nn.Dense(
@@ -306,6 +302,7 @@ class ActorRNN(nn.Module):
 
 class CriticRNN(nn.Module):
     hidden_size: int
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -319,12 +316,14 @@ class CriticRNN(nn.Module):
 
         hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
 
-        y = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(2),
-            bias_init=constant(0.0),
-        )(embedding)
-        y = nn.relu(y)
+        y = embedding
+        for _ in range(max(self.num_layers - 1, 0)):
+            y = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(2),
+                bias_init=constant(0.0),
+            )(y)
+            y = nn.relu(y)
         value = nn.Dense(
             1,
             kernel_init=orthogonal(1.0),
@@ -476,7 +475,12 @@ def make_train_state(network, params, config: Dict, total_updates: int):
         learning_rate = config["LR"]
     optimizer = optax.chain(
         optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-        optax.adam(learning_rate, eps=1e-5),
+        optax.adam(
+            learning_rate,
+            b1=float(config.get("ADAM_B1", 0.9)),
+            b2=float(config.get("ADAM_B2", 0.999)),
+            eps=float(config.get("ADAM_EPS", 1e-5)),
+        ),
     )
     return TrainState.create(apply_fn=network.apply, params=params, tx=optimizer)
 

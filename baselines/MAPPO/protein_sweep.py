@@ -131,12 +131,17 @@ def _typed_merge(config: dict, hypers: dict) -> dict:
     """
     for key, value in hypers.items():
         original = config.get(key)
+        fval = float(value)
         if isinstance(original, bool):
-            config[key] = bool(round(float(value)))
+            config[key] = bool(round(fval))
         elif isinstance(original, int):
-            config[key] = int(round(float(value)))
+            config[key] = int(round(fval))
+        elif original is None:
+            # Key absent from the base config (e.g. NUM_LAYERS, ADAM_*): keep an
+            # integer-valued suggestion an int, otherwise a float.
+            config[key] = int(fval) if fval.is_integer() else fval
         else:
-            config[key] = float(value)
+            config[key] = fval
     return config
 
 

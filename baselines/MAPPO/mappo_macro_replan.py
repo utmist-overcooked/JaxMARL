@@ -43,8 +43,9 @@ def make_train(config):
     config = initialize_config(config, env)
 
     def train(rng):
-        actor = ReplanActor(env.num_actions, int(config["HIDDEN_SIZE"]))
-        critic = Critic(int(config["HIDDEN_SIZE"]))
+        num_layers = int(config.get("NUM_LAYERS", 2))
+        actor = ReplanActor(env.num_actions, int(config["HIDDEN_SIZE"]), num_layers)
+        critic = Critic(int(config["HIDDEN_SIZE"]), num_layers)
         dummy_obs = jnp.zeros(
             (1, env.observation_space(env.agents[0]).shape[0])
         )

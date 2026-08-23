@@ -112,9 +112,24 @@ PufferLib's own sweep config:
   configs are left untouched.
 - **Algorithmic ranges are kept wide** (`LR` 1e-5–1e-2, `GAE_LAMBDA` 0.5–0.995,
   `HIDDEN_SIZE` 64–512, …) — Protein's GP narrows in, so a broad box is cheap.
+- **Model size and Adam internals are searched too** — `NUM_LAYERS`
+  (PufferLib's `policy.num_layers`) and `ADAM_B1` / `ADAM_B2` / `ADAM_EPS`
+  (their `beta1` / `beta2` / `eps`). The GP's per-dimension (ARD) lengthscales
+  suppress whichever of these don't matter for a given layout, which is what
+  makes sweeping ~14 dimensions viable. The only PufferLib knobs left out are its
+  V-trace / prioritized-replay parameters, which have no analogue in this
+  synchronous on-policy MAPPO.
 - **`NUM_STEPS`** (PufferLib's `horizon`) is provided commented-out; safe to
   enable for `every_step`/`replan`, but for `boundary` it is coupled to episode
   length, so leave it fixed there.
+
+Two mechanical notes on the newly-swept knobs: `NUM_LAYERS` and `ADAM_*` are read
+by the trainers with safe defaults (`NUM_LAYERS=2`, `ADAM_EPS=1e-5`, standard
+betas), so configs without them are unchanged. Sweeping `NUM_LAYERS` changes the
+network's parameter tree, so checkpoints are **not** interchangeable across depths
+(same caveat as `USE_RNN`) — fine for a sweep since every trial starts fresh, but
+it is deliberately **not** swept for `every_step_comm`, whose actor/critic are
+frozen and must match the loaded checkpoint's depth.
 
 Reserved keys (`method`, `metric`, `goal`, `metric_distribution`, `downsample`,
 `early_stop_quantile`, `prune_pareto`, `max_runs`) configure Protein; `fixed:`
