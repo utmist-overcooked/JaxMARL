@@ -8,7 +8,7 @@ calculation code that should remain identical between experiments.
 from functools import partial
 import json
 import os
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import distrax
 import flax.linen as nn
@@ -213,6 +213,111 @@ class Critic(nn.Module):
             kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
         )(x).squeeze(-1)
+
+
+# ---------------------------------------------------------------------------
+# Recurrent (GRU) actor/critic, selected by USE_RNN in the config.
+#
+# The MLP Actor/Critic above are memoryless: each macro decision is a pure
+# function of one step's observation. Under partial observability
+# (ENV_KWARGS.agent_view_size) that makes states requiring opposite macros
+# indistinguishable, so these carry a hidden state across the episode instead.
+#
+# Data layout: every RNN call takes (hidden, (x, dones)) where x/dones are
+# TIME-MAJOR -- shape (time, batch, ...). During rollout time == 1; during the
+# PPO update the whole NUM_STEPS sequence is replayed at once, which is why the
+# RNN path must use sequence_minibatches (below) rather than minibatches: the
+# flat shuffle would destroy the temporal ordering BPTT depends on.
+# ---------------------------------------------------------------------------
+class ScannedRNN(nn.Module):
+    """GRU scanned over the leading (time) axis, resetting on episode ends."""
+
+    @partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def __call__(self, carry, x):
+        rnn_state = carry
+        ins, resets = x
+        # Zero the carry wherever the previous step ended an episode, so
+        # memory never leaks across episode boundaries within a rollout.
+        rnn_state = jnp.where(
+            resets[:, np.newaxis],
+            self.initialize_carry(*rnn_state.shape),
+            rnn_state,
+        )
+        new_rnn_state, y = nn.GRUCell(features=ins.shape[1])(rnn_state, ins)
+        return new_rnn_state, y
+
+    @staticmethod
+    def initialize_carry(batch_size: int, hidden_size: int):
+        cell = nn.GRUCell(features=hidden_size)
+        return cell.initialize_carry(jax.random.PRNGKey(0), (batch_size, hidden_size))
+
+
+class ActorRNN(nn.Module):
+    action_dim: int
+    hidden_size: int
+
+    @nn.compact
+    def __call__(self, hidden, x):
+        obs, dones = x
+        embedding = nn.Dense(
+            self.hidden_size,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(obs)
+        embedding = nn.relu(embedding)
+
+        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
+
+        y = nn.Dense(
+            self.hidden_size,
+            kernel_init=orthogonal(2),
+            bias_init=constant(0.0),
+        )(embedding)
+        y = nn.relu(y)
+        # Returns raw logits (not a distribution) to match the MLP Actor, so
+        # callers keep using masked_categorical for action masking.
+        logits = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+        )(y)
+        return hidden, logits
+
+
+class CriticRNN(nn.Module):
+    hidden_size: int
+
+    @nn.compact
+    def __call__(self, hidden, x):
+        world_state, dones = x
+        embedding = nn.Dense(
+            self.hidden_size,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(world_state)
+        embedding = nn.relu(embedding)
+
+        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
+
+        y = nn.Dense(
+            self.hidden_size,
+            kernel_init=orthogonal(2),
+            bias_init=constant(0.0),
+        )(embedding)
+        y = nn.relu(y)
+        value = nn.Dense(
+            1,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+        )(y)
+        return hidden, jnp.squeeze(value, axis=-1)
 
 
 def build_env(config: Dict):
@@ -503,6 +608,73 @@ def deterministic_evaluation(
     return jnp.mean(jnp.sum(rewards, axis=0))
 
 
+def deterministic_evaluation_rnn(
+    env,
+    actor_params,
+    select_actions: Callable,
+    config: Dict,
+    key,
+    hidden_size: int,
+):
+    """Recurrent counterpart of deterministic_evaluation.
+
+    Threads a GRU hidden state across the episode and resets it on episode
+    ends. `select_actions` takes
+    (params, hidden, obs, last_done, action_mask, macro_done, current_macro)
+    and returns (new_hidden, action).
+    """
+    num_envs = int(config.get("NUM_EVAL_ENVS", 8))
+    num_actors = num_envs * env.num_agents
+    reset_keys = jax.random.split(key, num_envs)
+    obs, env_state = jax.vmap(env.reset)(reset_keys)
+    init_hidden = ScannedRNN.initialize_carry(num_actors, hidden_size)
+    init_done = jnp.zeros((num_actors,), dtype=jnp.bool_)
+
+    def eval_step(carry, _):
+        obs, env_state, hidden, last_done, rng = carry
+        obs_batch = batchify(obs, env.agents, num_actors)
+        action_mask = metadata_batch(obs["action_mask"], num_actors).astype(
+            jnp.bool_
+        )
+        macro_done = metadata_batch(obs["macro_done"], num_actors)
+        current_macro = metadata_batch(obs["current_macro"], num_actors)
+        hidden, action = select_actions(
+            actor_params,
+            hidden,
+            obs_batch,
+            last_done,
+            action_mask,
+            macro_done,
+            current_macro,
+        )
+        env_action = unbatchify(action, env.agents, num_envs)
+        rng, step_rng = jax.random.split(rng)
+        step_keys = jax.random.split(step_rng, num_envs)
+        next_obs, next_env_state, reward, done, _ = jax.vmap(
+            env.step, in_axes=(0, 0, 0)
+        )(step_keys, env_state, env_action)
+        mean_team_reward = jnp.mean(
+            jnp.stack([reward[agent] for agent in env.agents], axis=-1),
+            axis=-1,
+        )
+        next_done = jnp.tile(done["__all__"], env.num_agents)
+        return (
+            next_obs,
+            next_env_state,
+            hidden,
+            next_done,
+            rng,
+        ), mean_team_reward
+
+    _, rewards = jax.lax.scan(
+        eval_step,
+        (obs, env_state, init_hidden, init_done, key),
+        None,
+        int(config.get("ENV_KWARGS", {}).get("max_steps", 400)),
+    )
+    return jnp.mean(jnp.sum(rewards, axis=0))
+
+
 def _atomic_write(path, data: bytes):
     temporary_path = f"{path}.tmp-{os.getpid()}"
     with open(temporary_path, "wb") as stream:
@@ -698,6 +870,26 @@ def minibatches(rng, batch, num_minibatches: int):
     )
 
 
+def sequence_minibatches(rng, batch, num_minibatches: int, num_actors: int):
+    """Split a TIME-MAJOR batch into minibatches without breaking sequences.
+
+    Every leaf is (time, num_actors, ...). Only the actor axis is shuffled and
+    split, so each minibatch keeps whole contiguous trajectories for BPTT --
+    unlike `minibatches`, which flattens time into the batch axis and would
+    destroy the ordering the RNN depends on.
+
+    Returns leaves shaped (num_minibatches, time, actors_per_minibatch, ...).
+    """
+    permutation = jax.random.permutation(rng, num_actors)
+    shuffled = jax.tree.map(lambda x: jnp.take(x, permutation, axis=1), batch)
+    return jax.tree.map(
+        lambda x: jnp.swapaxes(
+            x.reshape((x.shape[0], num_minibatches, -1) + x.shape[2:]), 0, 1
+        ),
+        shuffled,
+    )
+
+
 def update_ppo(
     rng,
     actor_state,
@@ -705,8 +897,18 @@ def update_ppo(
     batch,
     actor_loss_fn: Callable,
     config: Dict,
+    critic_predict: Optional[Callable] = None,
+    minibatch_fn: Optional[Callable] = None,
 ):
-    """Run shared shuffled PPO epochs with a variant-specific actor loss."""
+    """Run shared shuffled PPO epochs with a variant-specific actor loss.
+
+    critic_predict: optional (params, minibatch) -> value predictions. Defaults
+        to the memoryless `apply_fn(params, world_state)`; the RNN path passes
+        one that threads the stored initial hidden state and dones instead.
+    minibatch_fn: optional (rng, batch) -> minibatches. Defaults to the flat
+        shuffle in `minibatches`; the RNN path passes `sequence_minibatches`
+        so trajectories stay contiguous for BPTT.
+    """
 
     def update_minibatch(states, minibatch):
         current_actor_state, current_critic_state = states
@@ -717,9 +919,12 @@ def update_ppo(
         )
 
         def critic_loss_fn(params):
-            prediction = current_critic_state.apply_fn(
-                params, minibatch["world_state"]
-            )
+            if critic_predict is None:
+                prediction = current_critic_state.apply_fn(
+                    params, minibatch["world_state"]
+                )
+            else:
+                prediction = critic_predict(params, minibatch)
             value_loss = clipped_value_loss(
                 prediction,
                 minibatch["old_value"],
@@ -747,9 +952,12 @@ def update_ppo(
     def update_epoch(carry, unused):
         epoch_rng, current_actor_state, current_critic_state = carry
         epoch_rng, shuffle_rng = jax.random.split(epoch_rng)
-        epoch_minibatches = minibatches(
-            shuffle_rng, batch, int(config["NUM_MINIBATCHES"])
-        )
+        if minibatch_fn is None:
+            epoch_minibatches = minibatches(
+                shuffle_rng, batch, int(config["NUM_MINIBATCHES"])
+            )
+        else:
+            epoch_minibatches = minibatch_fn(shuffle_rng, batch)
         (current_actor_state, current_critic_state), metrics = jax.lax.scan(
             update_minibatch,
             (current_actor_state, current_critic_state),

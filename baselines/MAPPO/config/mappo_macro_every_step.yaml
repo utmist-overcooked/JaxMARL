@@ -14,6 +14,14 @@ VF_COEF: 0.5
 MAX_GRAD_NORM: 0.5
 ANNEAL_LR: true
 
+# true  -> recurrent GRU actor/critic (ActorRNN/CriticRNN). Needed under
+#          partial observability: a memoryless policy cannot distinguish
+#          states that require opposite macros when the pot is out of view.
+# false -> original memoryless MLP Actor/Critic.
+# Checkpoints are NOT interchangeable between the two (different param trees).
+# Requires NUM_ACTORS (num_agents * NUM_ENVS) divisible by NUM_MINIBATCHES.
+USE_RNN: true
+
 ENV_NAME: overcooked_v3_macro_interruptible
 ENV_KWARGS:
   layout: race_against_the_clock

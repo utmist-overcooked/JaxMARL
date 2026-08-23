@@ -57,7 +57,13 @@ from jaxmarl.environments.overcooked_v3.settings import REWARD_COMPONENT_KEYS
 from jaxmarl.wrappers.baselines import load_params
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 
-from baselines.MAPPO.mappo_macro_common import Actor, ReplanActor, build_env
+from baselines.MAPPO.mappo_macro_common import (
+    Actor,
+    ActorRNN,
+    ReplanActor,
+    ScannedRNN,
+    build_env,
+)
 from baselines.MAPPO.mappo_macro_replan import REPLAN
 
 
@@ -120,6 +126,20 @@ def episode_output_path(base: Path, index: int, total: int) -> Path:
         return base
     suffix = base.suffix if base.suffix else ".gif"
     return base.with_name(f"{base.stem}_ep{index}{suffix}")
+
+
+def select_actions_rnn(actor, params, hidden, last_done, obs, env):
+    """Recurrent action selection: threads the GRU carry across the episode.
+
+    A leading time axis of 1 is added because ScannedRNN scans over time.
+    """
+    actor_obs = jnp.stack([obs[agent] for agent in env.agents])
+    action_mask = obs["action_mask"].astype(jnp.bool_)
+    hidden, logits = actor.apply(
+        params, hidden, (actor_obs[None, :], last_done[None, :])
+    )
+    logits = logits.squeeze(0)
+    return hidden, jnp.argmax(jnp.where(action_mask, logits, -1e9), axis=-1)
 
 
 def select_actions(variant, actor, params, obs, env):
@@ -208,8 +228,21 @@ def run_episode(
     shaped_return = 0.0
     max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 400))
 
+    use_rnn = bool(config.get("USE_RNN", False))
+    hidden = (
+        ScannedRNN.initialize_carry(env.num_agents, int(config["HIDDEN_SIZE"]))
+        if use_rnn
+        else None
+    )
+    last_done = jnp.zeros((env.num_agents,), dtype=jnp.bool_)
+
     for step in range(max_steps):
-        actions = select_actions(args.variant, actor, params, obs, env)
+        if use_rnn:
+            hidden, actions = select_actions_rnn(
+                actor, params, hidden, last_done, obs, env
+            )
+        else:
+            actions = select_actions(args.variant, actor, params, obs, env)
         action_names = tuple(
             env.macro_action_names[int(action)] for action in np.asarray(actions)
         )
@@ -246,6 +279,7 @@ def run_episode(
             action_labels.append(action_names)
             returns.append(total_return)
             shaped_returns.append(shaped_return)
+        last_done = jnp.full((env.num_agents,), bool(np.asarray(done["__all__"])))
         if bool(np.asarray(done["__all__"])):
             break
 
@@ -377,11 +411,14 @@ def main():
         OmegaConf.load(args.run_dir / "config.yaml"), resolve=True
     )
     env = build_env(config)
-    actor = (
-        ReplanActor(env.num_actions, int(config["HIDDEN_SIZE"]))
-        if args.variant == "replan"
-        else Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
-    )
+    if config.get("USE_RNN", False):
+        # Must match how the run was trained -- the RNN and MLP parameter
+        # trees are different, so loading one into the other will fail.
+        actor = ActorRNN(env.num_actions, int(config["HIDDEN_SIZE"]))
+    elif args.variant == "replan":
+        actor = ReplanActor(env.num_actions, int(config["HIDDEN_SIZE"]))
+    else:
+        actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
     actor_path = (args.run_dir / args.actor_path) if args.actor_path else (args.run_dir / "final_actor.safetensors")
     if args.checkpoint_label is None:
         args.checkpoint_label = actor_path.stem
