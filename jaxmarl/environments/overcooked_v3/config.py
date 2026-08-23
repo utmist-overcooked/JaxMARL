@@ -15,6 +15,7 @@ class OvercookedV3Config:
     action_set: Any
     observation_type: Any
     agent_view_size: Optional[int]
+    observation_mode: Any
     obs_shape: Union[Tuple[int, ...], List[Tuple[int, ...]]]
     max_steps: int
     pot_cook_time: int

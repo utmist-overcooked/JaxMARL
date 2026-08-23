@@ -91,6 +91,39 @@ def test_macro_world_state_contains_actor_and_centralized_features():
     assert env.world_state_size() == actor_size * env.num_agents + env.num_agents
 
 
+def test_observation_mode_scales_actor_but_not_centralized_critic():
+    """Actor obs grows with the observation mode; the critic stays centralized."""
+
+    def build(mode):
+        return build_env(
+            {
+                "ENV_NAME": "overcooked_v3_macro",
+                "ENV_KWARGS": {
+                    "layout": "cramped_room",
+                    "agent_view_size": 1,
+                    "observation_mode": mode,
+                },
+            }
+        )
+
+    individual = build("individual")
+    concat = build("concat")
+    full = build("full")
+
+    def actor_size(env):
+        return env.observation_space(env.agents[0]).shape[0]
+
+    # concat holds every agent's crop, so its actor obs is strictly larger than
+    # a single crop; full (whole grid) is larger still on cramped_room.
+    assert actor_size(concat) > actor_size(individual)
+    assert actor_size(full) > actor_size(individual)
+
+    # The centralized critic reads the full uncropped grid regardless of mode.
+    critic_size = individual.world_state_size()
+    assert concat.world_state_size() == critic_size
+    assert full.world_state_size() == critic_size
+
+
 def test_macro_actor_uses_expanded_environment_action_space():
     env = build_env(
         {

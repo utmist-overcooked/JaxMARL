@@ -29,6 +29,9 @@ ENV_KWARGS:
   max_macro_steps: 150  # must exceed pot_cook_time + pot_burn_time (90+60=150 by default) or
                          # wait_for_nearest_pot always times out before the pot is ever ready
   agent_view_size: 2  # 5x5 window (agent's cell + 2 rings); null/omit for full observability
+  observation_mode: individual  # individual: own crop only | concat: own + others'
+                                 # crops (self-first) | full: whole grid (ignores
+                                 # agent_view_size)
   dense_task_shaping: true  # TASK_PROGRESS/TASK_FACING/INVALID_MOVE -- dense guidance
                              # toward whatever the current useful target is, on top of
                              # the discrete event rewards in SHAPED_REWARDS

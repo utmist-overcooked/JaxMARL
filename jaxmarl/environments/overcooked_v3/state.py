@@ -12,6 +12,22 @@ class ObservationType(str, Enum):
     DEFAULT = "default"
     FEATURIZED = "featurized"
 
+class ObservationMode(str, Enum):
+    """How much of the world each agent's observation exposes.
+
+    The world dynamics are identical across modes; only the per-agent
+    observation "lens" changes. Subclassing ``str`` lets raw config strings
+    (e.g. from a training YAML) compare equal to these members.
+    """
+
+    # Each agent sees only its own ``agent_view_size`` crop (default).
+    INDIVIDUAL = "individual"
+    # Each agent sees its own crop concatenated with the other agents' crops,
+    # self-first (the observing agent's crop is always in slot 0).
+    CONCAT = "concat"
+    # Each agent sees the entire grid; this overrides ``agent_view_size``.
+    FULL = "full"
+
 @chex.dataclass
 class State:
     """Environment state for Overcooked V3."""
