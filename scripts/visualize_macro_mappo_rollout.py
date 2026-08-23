@@ -152,8 +152,10 @@ def select_actions(variant, actor, params, obs, env):
     return jnp.where(replace, macro_action, current_macro)
 
 
-def add_header(frame, variant, checkpoint_label, step, action_names, total_return):
-    header_height = 58
+def add_header(
+    frame, variant, checkpoint_label, step, action_names, total_return, shaped_return
+):
+    header_height = 76
     image = Image.fromarray(np.asarray(frame, dtype=np.uint8))
     canvas = Image.new("RGB", (image.width, image.height + header_height), (18, 20, 28))
     canvas.paste(image, (0, header_height))
@@ -173,8 +175,14 @@ def add_header(frame, variant, checkpoint_label, step, action_names, total_retur
     )
     draw.text(
         (7, 42),
-        f"sparse team return: {total_return:.1f}",
+        f"[sparse] team return: {total_return:.1f}",
         fill=(170, 245, 185),
+        font=font,
+    )
+    draw.text(
+        (7, 60),
+        f"[shaped] team return: {shaped_return:.1f}",
+        fill=(255, 205, 130),
         font=font,
     )
     return np.asarray(canvas)
@@ -195,7 +203,9 @@ def run_episode(
     states = [state]
     action_labels = [("wait", "wait")]
     returns = [0.0]
+    shaped_returns = [0.0]
     total_return = 0.0
+    shaped_return = 0.0
     max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 400))
 
     for step in range(max_steps):
@@ -214,8 +224,14 @@ def run_episode(
         total_return += float(
             np.mean([np.asarray(reward[agent]) for agent in env.agents])
         )
+        shaped_return += float(
+            np.mean([np.asarray(info["shaped_reward"][agent]) for agent in env.agents])
+        )
         if step % 50 == 0:
-            print(f"Step {step}: return={total_return:.1f}")
+            print(
+                f"Step {step}: [sparse] return={total_return:.1f}  "
+                f"[shaped] return={shaped_return:.1f}"
+            )
 
         breakdown = info["reward_breakdown"]
         for component_idx, component_key in enumerate(REWARD_COMPONENT_KEYS):
@@ -229,6 +245,7 @@ def run_episode(
             states.append(state)
             action_labels.append(action_names)
             returns.append(total_return)
+            shaped_returns.append(shaped_return)
         if bool(np.asarray(done["__all__"])):
             break
 
@@ -262,6 +279,7 @@ def run_episode(
                 step,
                 action_labels[step],
                 returns[step],
+                shaped_returns[step],
             )
             for frame, step in zip(rendered, frame_indices)
         ]
@@ -277,9 +295,12 @@ def run_episode(
             loop=0,
             optimize=False,
         )
-        print(f"Saved {gif_output_path} ({len(frames)} frames, return={total_return:.1f})")
+        print(
+            f"Saved {gif_output_path} ({len(frames)} frames, "
+            f"[sparse] return={total_return:.1f} [shaped] return={shaped_return:.1f})"
+        )
 
-    return total_return, episode_length
+    return total_return, shaped_return, episode_length
 
 
 AGENT_COLORS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
@@ -370,6 +391,7 @@ def main():
     macro_counts = np.zeros((env.num_agents, env.num_actions), dtype=np.int64)
 
     episode_returns = []
+    episode_shaped_returns = []
     episode_lengths = []
     for episode_index in range(args.num_episodes):
         seed = args.seed + episode_index
@@ -378,20 +400,24 @@ def main():
             if args.gif_output is not None
             else None
         )
-        total_return, length = run_episode(
+        total_return, shaped_return, length = run_episode(
             args, config, env, actor, params, seed, gif_output_path,
             reward_totals, macro_counts,
         )
         episode_returns.append(total_return)
+        episode_shaped_returns.append(shaped_return)
         episode_lengths.append(length)
 
     if args.num_episodes > 1:
         returns_array = np.asarray(episode_returns)
+        shaped_returns_array = np.asarray(episode_shaped_returns)
         lengths_array = np.asarray(episode_lengths)
         print(
             f"\n{args.num_episodes} episodes: "
-            f"return mean={returns_array.mean():.2f} std={returns_array.std():.2f} "
+            f"[sparse] return mean={returns_array.mean():.2f} std={returns_array.std():.2f} "
             f"min={returns_array.min():.2f} max={returns_array.max():.2f} | "
+            f"[shaped] return mean={shaped_returns_array.mean():.2f} "
+            f"std={shaped_returns_array.std():.2f} | "
             f"length mean={lengths_array.mean():.1f}"
         )
 
