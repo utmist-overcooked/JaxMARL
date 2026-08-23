@@ -6,7 +6,10 @@ import chex
 import jax
 import jax.numpy as jnp
 
-from jaxmarl.environments.overcooked_v3.common import StaticObject
+from jaxmarl.environments.overcooked_v3.common import (
+    StaticObject,
+    DIRTY_PLATE_BIT_SHIFT,
+)
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.settings import MAX_POTS
 from jaxmarl.environments.overcooked_v3.state import ObservationType, State
@@ -17,6 +20,8 @@ def calculate_observation_shape(
     layout,
     observation_type,
     agent_view_size,
+    has_prep_stations: bool = False,
+    enable_dish_washing: bool = False,
 ) -> Tuple[int, ...]:
     """Calculate observation shape from static layout and observation settings."""
     if agent_view_size:
@@ -39,7 +44,16 @@ def calculate_observation_shape(
             # - recipe_layers: 2 + num_ing
             # - extra_layers: 1 (pot timer)
             # Total: 30 + 5 * num_ingredients
+            # Layouts with prep stations add 3 static layers (cutting
+            # board, grill, blender) and 1 extra layer (prep progress).
             num_layers = 30 + 5 * num_ingredients
+            if has_prep_stations:
+                num_layers += 4
+            # Dish washing adds 2 static layers (sink, dirty pile), 1 extra
+            # layer (plate stack / dirty pile counts) and a dirty-plate bit
+            # in each of the 4 item-encoding blocks.
+            if enable_dish_washing:
+                num_layers += 7
             return (view_height, view_width, num_layers)
         if obs_type == ObservationType.FEATURIZED:
             return (64,)
@@ -103,33 +117,57 @@ def get_obs_default(state: State, config: OvercookedV3Config) -> chex.Array:
 
     static_objects = state.grid[:, :, 0]
     ingredients = state.grid[:, :, 1]
-    static_encoding = jnp.array(
-        [
-            StaticObject.WALL,
-            StaticObject.GOAL,
-            StaticObject.POT,
-            StaticObject.RECIPE_INDICATOR,
-            StaticObject.PLATE_PILE,
-            StaticObject.ITEM_CONVEYOR,
-            StaticObject.PLAYER_CONVEYOR,
-            StaticObject.MOVING_WALL,
-            StaticObject.BUTTON,
-            StaticObject.BARRIER,
-            StaticObject.PRESSURE_PLATE,
+    static_encoding_list = [
+        StaticObject.WALL,
+        StaticObject.GOAL,
+        StaticObject.POT,
+        StaticObject.RECIPE_INDICATOR,
+        StaticObject.PLATE_PILE,
+        StaticObject.ITEM_CONVEYOR,
+        StaticObject.PLAYER_CONVEYOR,
+        StaticObject.MOVING_WALL,
+        StaticObject.BUTTON,
+        StaticObject.BARRIER,
+        StaticObject.PRESSURE_PLATE,
+    ]
+    if config.has_prep_stations:
+        static_encoding_list += [
+            StaticObject.CUTTING_BOARD,
+            StaticObject.GRILL,
+            StaticObject.BLENDER,
         ]
-    )
+    if config.enable_dish_washing:
+        static_encoding_list += [
+            StaticObject.SINK,
+            StaticObject.DIRTY_PLATE_PILE,
+        ]
+    static_encoding = jnp.array(static_encoding_list)
     static_layers = static_objects[..., None] == static_encoding
 
     def _ingredient_layers(ingredients):
-        shift = jnp.array([0, 1] + [2 * (i + 1) for i in range(num_ingredients)])
-        mask = jnp.array([0x1, 0x1] + [0x3] * num_ingredients)
+        shifts = [0, 1] + [2 * (i + 1) for i in range(num_ingredients)]
+        masks = [0x1, 0x1] + [0x3] * num_ingredients
+        if config.enable_dish_washing:
+            # Dirty plates must be distinguishable from clean ones.
+            shifts = shifts + [DIRTY_PLATE_BIT_SHIFT]
+            masks = masks + [0x1]
+        shift = jnp.array(shifts)
+        mask = jnp.array(masks)
 
         layers = ingredients[..., None] >> shift
         layers = layers & mask
         return layers
 
     recipe_indicator_mask = static_objects == StaticObject.RECIPE_INDICATOR
-    recipe_ingredients = jnp.where(recipe_indicator_mask, state.recipe, 0)
+    has_recipe_indicator = jnp.any(recipe_indicator_mask)
+    # Order queues can change the target recipe mid-episode. Some older
+    # layouts, including around_the_island, have no R tile because they used
+    # a fixed recipe; broadcast the active order in the existing recipe
+    # channels so the policy can observe what should be delivered.
+    recipe_visible_mask = recipe_indicator_mask | (
+        config.enable_order_queue & ~has_recipe_indicator
+    )
+    recipe_ingredients = jnp.where(recipe_visible_mask, state.recipe, 0)
 
     pot_timer_layer = jnp.zeros((height, width), dtype=jnp.int32)
     for i in range(MAX_POTS):
@@ -140,7 +178,30 @@ def get_obs_default(state: State, config: OvercookedV3Config) -> chex.Array:
             is_active, pot_timer_layer.at[y, x].set(timer), pot_timer_layer
         )
 
-    extra_layers = jnp.stack([pot_timer_layer], axis=-1)
+    extra_layer_list = [pot_timer_layer]
+    if config.enable_dish_washing:
+        # Surface both plate counters spatially: the clean stack sits on the
+        # plate pile tiles, the dirty backlog on the dirty pile tiles.
+        plate_count_layer = jnp.where(
+            static_objects == StaticObject.PLATE_PILE,
+            state.plate_stack_count,
+            0,
+        )
+        plate_count_layer = jnp.where(
+            static_objects == StaticObject.DIRTY_PLATE_PILE,
+            state.dirty_pile_count,
+            plate_count_layer,
+        )
+        extra_layer_list.append(plate_count_layer)
+    if config.has_prep_stations:
+        # Chop progress / grill timer / blender timer on station tiles
+        prep_progress_layer = jnp.where(
+            StaticObject.is_prep_station(static_objects),
+            state.grid[:, :, 2],
+            0,
+        )
+        extra_layer_list.append(prep_progress_layer)
+    extra_layers = jnp.stack(extra_layer_list, axis=-1)
 
     def _agent_layers(agent):
         pos = agent.pos

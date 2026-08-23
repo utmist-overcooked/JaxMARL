@@ -11,6 +11,7 @@ import pytest
 MAPPO_DIR = Path(__file__).parents[2] / "baselines" / "MAPPO"
 sys.path.insert(0, str(MAPPO_DIR))
 
+from jaxmarl.environments.overcooked_v3_macro.overcooked import MacroActions
 from mappo_macro_common import (  # noqa: E402
     _initial_best_eval_return,
     Actor,
@@ -104,7 +105,10 @@ def test_macro_actor_uses_expanded_environment_action_space():
     logits = actor.apply(actor.init(jax.random.PRNGKey(0), obs), obs)
 
     assert logits.shape == (1, env.num_actions)
-    assert env.num_actions == 17
+    # 18 macro actions: the pressure-plate macro is split per plate slot
+    # (stand_on_pressure_plate_0/1), so the head is one wider than the
+    # original 17-action set.
+    assert env.num_actions == len(MacroActions) == 18
 
 
 def test_config_rejects_a_silently_truncated_timestep_budget():

@@ -1,0 +1,46 @@
+LR: 0.0003
+NUM_ENVS: 16
+NUM_STEPS: 125
+TOTAL_TIMESTEPS: 200000
+REW_SHAPING_HORIZON: 100000
+HIDDEN_SIZE: 128
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 4
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+VF_COEF: 0.5
+MAX_GRAD_NORM: 0.5
+ANNEAL_LR: true
+ENV_NAME: overcooked_v3_macro_interruptible
+ENV_KWARGS:
+  layout: around_the_island
+  max_steps: 400
+  max_macro_steps: 150
+  agent_view_size: 2
+  dense_task_shaping: true
+  enable_order_queue: true
+  order_queue_mode: alternating
+  max_orders: 3
+  order_generation_rate: 0.05
+  order_expiration_time: 0
+SEED: 0
+NUM_SEEDS: 1
+SAVE_PATH: artifacts/smoke/mappo_macro
+WANDB_MODE: disabled
+ENTITY: ''
+PROJECT: macro-comm-multistage-smoke
+LOG_INTERVAL_UPDATES: 10
+CHECKPOINT_INTERVAL_UPDATES: 1000
+EVAL_INTERVAL_UPDATES: 25
+NUM_EVAL_ENVS: 8
+EVAL_SEED: 42
+RESUME_FROM: null
+VOCAB_SIZE: 2
+MESSAGE_EMBED_DIM: 2
+COMM_HIDDEN_SIZE: 64
+MESSAGE_ENT_COEF: 0.05
+MESSAGE_LOSS_COEF: 1.0
+FROZEN_ACTOR_PATH: artifacts/smoke/mappo_macro/mappo_macro_every_step/seed_0/final_actor.safetensors
+FROZEN_CRITIC_PATH: artifacts/smoke/mappo_macro/mappo_macro_every_step/seed_0/final_critic.safetensors

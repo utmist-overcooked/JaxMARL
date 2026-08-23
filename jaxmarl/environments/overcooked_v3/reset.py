@@ -11,6 +11,7 @@ from jaxmarl.environments.overcooked_v3.common import (
     Agent,
     Direction,
     Position,
+    SoupType,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
 from jaxmarl.environments.overcooked_v3.initialization import (
@@ -26,6 +27,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
     MAX_PRESSURE_PLATES,
 )
 from jaxmarl.environments.overcooked_v3.state import State
+from jaxmarl.environments.overcooked_v3.systems.orders import order_type_to_recipe
 
 def reset_overcooked_v3(
     key: chex.PRNGKey, config: OvercookedV3Config
@@ -59,8 +61,20 @@ def reset_overcooked_v3(
         inventory=jnp.zeros((config.num_agents,), dtype=jnp.int32),
     )
 
+    # Sample recipe. When the alternating order queue is enabled, seed the
+    # queue with the first orderable dish and expose that order through the
+    # recipe indicator immediately.
     key, subkey = jax.random.split(key)
     recipe = sample_recipe(subkey, config)
+    order_types = jnp.zeros(config.max_orders, dtype=jnp.int32)
+    order_expirations = jnp.zeros(config.max_orders, dtype=jnp.int32)
+    order_active_mask = jnp.zeros(config.max_orders, dtype=jnp.bool_)
+    if config.enable_order_queue and config.order_queue_mode == "alternating":
+        first_order_type = jnp.array(1, dtype=jnp.int32)
+        order_types = order_types.at[0].set(first_order_type)
+        order_expirations = order_expirations.at[0].set(config.order_expiration_time)
+        order_active_mask = order_active_mask.at[0].set(True)
+        recipe = order_type_to_recipe(first_order_type, config)
 
     state = State(
         agents=agents,
@@ -69,9 +83,9 @@ def reset_overcooked_v3(
         pot_cooking_timer=jnp.zeros(MAX_POTS, dtype=jnp.int32),
         pot_cook_durations=jnp.zeros(MAX_POTS, dtype=jnp.int32),
         pot_active_mask=jnp.array(config.pot_active_mask),
-        order_types=jnp.zeros(config.max_orders, dtype=jnp.int32),
-        order_expirations=jnp.zeros(config.max_orders, dtype=jnp.int32),
-        order_active_mask=jnp.zeros(config.max_orders, dtype=jnp.bool_),
+        order_types=order_types,
+        order_expirations=order_expirations,
+        order_active_mask=order_active_mask,
         item_conveyor_positions=jnp.array(config.item_conveyor_positions),
         item_conveyor_directions=jnp.array(config.item_conveyor_directions),
         item_conveyor_active_mask=jnp.array(config.item_conveyor_active_mask),
@@ -103,6 +117,10 @@ def reset_overcooked_v3(
         terminal=False,
         recipe=recipe,
         new_correct_delivery=False,
+        plate_stack_count=jnp.array(
+            config.num_plates if config.enable_dish_washing else 0, dtype=jnp.int32
+        ),
+        dirty_pile_count=jnp.array(0, dtype=jnp.int32),
     )
 
     key, key_randomize = jax.random.split(key)

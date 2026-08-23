@@ -55,6 +55,11 @@ FALLBACK_MOVING_WALL = 22
 FALLBACK_BUTTON = 23
 FALLBACK_BARRIER = 24
 FALLBACK_PRESSURE_PLATE = 25
+FALLBACK_CUTTING_BOARD = 26
+FALLBACK_GRILL = 27
+FALLBACK_BLENDER = 28
+FALLBACK_SINK = 29
+FALLBACK_DIRTY_PLATE_PILE = 30
 
 # ButtonAction values. Keep these in sync with overcooked_v3.common.ButtonAction.
 BUTTON_ACTION_TOGGLE_PAUSE = 0
@@ -246,9 +251,30 @@ def _make_tools():
         EditorTool("Ingredient 1",   "1",  "Tomato pile (ingredient source).",        COLOR_RED,
                    static_object=(_so("INGREDIENT_PILE_BASE", FALLBACK_INGREDIENT_BASE) + 1),
                    keyboard_shortcut="1"),
-        EditorTool("Ingredient 2",   "2",  "Lettuce pile (ingredient source).",       (0, 150, 0),
+        EditorTool("Ingredient 2",   "2",  "Lettuce pile (chop at cutting board).",   (0, 150, 0),
                    static_object=(_so("INGREDIENT_PILE_BASE", FALLBACK_INGREDIENT_BASE) + 2),
                    keyboard_shortcut="2"),
+        EditorTool("Ingredient 3",   "3",  "Meat pile (cook at grill).",              (255, 105, 180),
+                   static_object=(_so("INGREDIENT_PILE_BASE", FALLBACK_INGREDIENT_BASE) + 3),
+                   keyboard_shortcut="3"),
+        EditorTool("Ingredient 4",   "4",  "Carrot pile (blend at blender).",         (237, 145, 33),
+                   static_object=(_so("INGREDIENT_PILE_BASE", FALLBACK_INGREDIENT_BASE) + 4),
+                   keyboard_shortcut="4"),
+        EditorTool("Cutting Board",  "C",  "Chops lettuce (2) into chopped (5).",     (205, 170, 125),
+                   static_object=_so("CUTTING_BOARD", FALLBACK_CUTTING_BOARD),
+                   keyboard_shortcut="c"),
+        EditorTool("Grill",          "G",  "Grills meat (3) into grilled (6).",       (60, 60, 60),
+                   static_object=_so("GRILL", FALLBACK_GRILL),
+                   keyboard_shortcut="g"),
+        EditorTool("Blender",        "M",  "Blends carrot (4) into puree (7).",       (173, 216, 230),
+                   static_object=_so("BLENDER", FALLBACK_BLENDER),
+                   keyboard_shortcut="m"),
+        EditorTool("Sink",           "S",  "Washes a held dirty plate clean.",        (90, 180, 220),
+                   static_object=_so("SINK", FALLBACK_SINK),
+                   keyboard_shortcut="s"),
+        EditorTool("Dirty Plates",   "D",  "Delivered plates return here dirty.",     (124, 106, 62),
+                   static_object=_so("DIRTY_PLATE_PILE", FALLBACK_DIRTY_PLATE_PILE),
+                   keyboard_shortcut="d"),
         EditorTool("Item Conv >",    ">",  "Moves items to the right.",               COLOR_CYAN,
                    conveyor_direction=2, keyboard_shortcut=">"),
         EditorTool("Item Conv <",    "<",  "Moves items to the left.",                COLOR_CYAN,
@@ -492,6 +518,24 @@ class EditorState:
             if ingredient_base <= obj < item_conveyor_val:
                 ingredient_idx = obj - ingredient_base
                 num_ingredients = max(num_ingredients, ingredient_idx + 1)
+
+        # Prep chains introduce processed ingredient types (raw idx + offset),
+        # mirroring Layout.from_string's expansion.
+        if DEPENDENCIES_AVAILABLE:
+            from jaxmarl.environments.overcooked_v3.common import (
+                PREP_PROCESSED_OFFSET,
+                PREP_STATION_FOR_RAW,
+            )
+            prep_chain_raws = [
+                raw_idx
+                for raw_idx, station in PREP_STATION_FOR_RAW.items()
+                if (self.static_objects == ingredient_base + raw_idx).any()
+                or (self.static_objects == station).any()
+            ]
+            if prep_chain_raws:
+                num_ingredients = max(
+                    num_ingredients, max(prep_chain_raws) + PREP_PROCESSED_OFFSET + 1
+                )
 
         return Layout(
             agent_positions=self.agent_positions,
@@ -1077,6 +1121,11 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
                 StaticObject.BUTTON: "!",
                 StaticObject.BARRIER: "#",
                 StaticObject.PRESSURE_PLATE: "_",
+                StaticObject.CUTTING_BOARD: "C",
+                StaticObject.GRILL: "G",
+                StaticObject.BLENDER: "M",
+                StaticObject.SINK: "S",
+                StaticObject.DIRTY_PLATE_PILE: "D",
             }
         else:
             ingredient_base = FALLBACK_INGREDIENT_BASE
@@ -1090,6 +1139,11 @@ overcooked_v3_layouts["{self.state.layout_name}"] = Layout.from_string(
                 FALLBACK_BUTTON: "!",
                 FALLBACK_BARRIER: "#",
                 FALLBACK_PRESSURE_PLATE: "_",
+                FALLBACK_CUTTING_BOARD: "C",
+                FALLBACK_GRILL: "G",
+                FALLBACK_BLENDER: "M",
+                FALLBACK_SINK: "S",
+                FALLBACK_DIRTY_PLATE_PILE: "D",
             }
 
         item_symbols = {2: ">", 3: "<", 0: "^", 1: "v"}

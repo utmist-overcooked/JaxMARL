@@ -1,5 +1,6 @@
 """Public Overcooked V3 environment wrapper."""
 
+import dataclasses
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 import warnings
 
@@ -10,15 +11,12 @@ import numpy as np
 
 from jaxmarl.environments import MultiAgentEnv
 from jaxmarl.environments import spaces
-from jaxmarl.environments.overcooked_v3.agent_step import (
-    barriers_occupied,
-    is_agent_walkable,
-    run_agent_action_phase,
-)
+from jaxmarl.environments.overcooked_v3.agent_step import run_agent_action_phase
 from jaxmarl.environments.overcooked_v3.common import (
     Actions,
     Agent,
     ButtonAction,
+    DynamicObject,
     StaticObject,
 )
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
@@ -32,6 +30,7 @@ from jaxmarl.environments.overcooked_v3.interactions import (
     sample_pot_cook_time,
 )
 from jaxmarl.environments.overcooked_v3.layouts import Layout, overcooked_v3_layouts
+from jaxmarl.environments.overcooked_v3.movement import is_agent_walkable
 from jaxmarl.environments.overcooked_v3.observations import (
     calculate_observation_shape,
     get_obs,
@@ -40,11 +39,17 @@ from jaxmarl.environments.overcooked_v3.observations import (
 )
 from jaxmarl.environments.overcooked_v3.reset import reset_overcooked_v3
 from jaxmarl.environments.overcooked_v3.settings import (
+    BLEND_TIME,
+    CHOP_STAGES,
     DEFAULT_BARRIER_DURATION,
     DEFAULT_MAX_ORDERS,
+    DEFAULT_NUM_PLATES,
     DEFAULT_ORDER_EXPIRATION_TIME,
     DEFAULT_ORDER_GENERATION_RATE,
     DELIVERY_REWARD,
+    EVENT_NAMES,
+    GRILL_BURN_TIME,
+    GRILL_COOK_TIME,
     MAX_BARRIERS,
     MAX_BUTTONS,
     MAX_BUTTON_TARGETS,
@@ -60,6 +65,7 @@ from jaxmarl.environments.overcooked_v3.settings import (
 from jaxmarl.environments.overcooked_v3.state import ObservationType, State
 from jaxmarl.environments.overcooked_v3.step import is_terminal, step_overcooked_v3
 from jaxmarl.environments.overcooked_v3.systems.barriers import (
+    barriers_occupied,
     update_barrier_timers,
     update_pressure_plates,
 )
@@ -75,6 +81,8 @@ from jaxmarl.environments.overcooked_v3.utils import compute_enclosed_spaces
 class OvercookedV3(MultiAgentEnv):
     """Overcooked V3 environment backed by explicit functional JAX logic."""
 
+    EVENT_NAMES = EVENT_NAMES
+
     def __init__(
         self,
         layout: Union[str, Layout] = "cramped_room",
@@ -87,11 +95,20 @@ class OvercookedV3(MultiAgentEnv):
         pot_cook_time: int = POT_COOK_TIME,
         pot_cook_time_range: Optional[Sequence[int]] = None,
         pot_burn_time: int = POT_BURN_TIME,
+        # Prep station settings
+        chop_stages: int = CHOP_STAGES,
+        grill_cook_time: int = GRILL_COOK_TIME,
+        grill_burn_time: int = GRILL_BURN_TIME,
+        blend_time: int = BLEND_TIME,
+        # Dish washing settings
+        enable_dish_washing: bool = False,
+        num_plates: int = DEFAULT_NUM_PLATES,
         # Order queue settings
         enable_order_queue: bool = False,
         max_orders: int = DEFAULT_MAX_ORDERS,
         order_generation_rate: float = DEFAULT_ORDER_GENERATION_RATE,
         order_expiration_time: int = DEFAULT_ORDER_EXPIRATION_TIME,
+        order_queue_mode: str = "random",
         # Conveyor belt settings
         enable_item_conveyors: Optional[bool] = None,
         enable_player_conveyors: Optional[bool] = None,
@@ -124,6 +141,8 @@ class OvercookedV3(MultiAgentEnv):
             max_orders: Maximum orders in queue
             order_generation_rate: Probability of new order each step
             order_expiration_time: Steps before order expires
+            order_queue_mode: "random" or "alternating"; alternating produces
+                onion, tomato, onion, tomato orders
             enable_item_conveyors: Whether item conveyors move items. If None,
                 inferred from whether the layout contains item conveyors.
             enable_player_conveyors: Whether player conveyors push agents. If
@@ -151,6 +170,20 @@ class OvercookedV3(MultiAgentEnv):
             layout = overcooked_v3_layouts[layout]
         elif not isinstance(layout, Layout):
             raise ValueError("Invalid layout, must be a Layout object or a string key")
+
+        # With dish washing off there is no sink and no dirty pile: those tiles
+        # collapse into ordinary counters, so the grid, the observation and the
+        # rendered frame look exactly as they would in a layout that never had
+        # them. Copy first - layouts are shared module-level objects.
+        if not enable_dish_washing:
+            dish_tiles = np.isin(
+                layout.static_objects,
+                [StaticObject.SINK, StaticObject.DIRTY_PLATE_PILE],
+            )
+            if dish_tiles.any():
+                neutral_statics = layout.static_objects.copy()
+                neutral_statics[dish_tiles] = StaticObject.WALL
+                layout = dataclasses.replace(layout, static_objects=neutral_statics)
 
         is_playable, validation_messages = layout.validate_playable()
         if not is_playable:
@@ -197,11 +230,85 @@ class OvercookedV3(MultiAgentEnv):
         self.pot_cook_time_range = jnp.array(cook_time_range, dtype=jnp.int32)
         self.pot_burn_time = pot_burn_time
 
+        # Prep station settings. Layouts without stations keep the exact
+        # observation schema and step graph they had before prep stations
+        # existed (see has_prep_stations gating below).
+        self.chop_stages = chop_stages
+        self.grill_cook_time = grill_cook_time
+        self.grill_burn_time = grill_burn_time
+        self.blend_time = blend_time
+        self.has_prep_stations = bool(
+            np.isin(
+                layout.static_objects,
+                [
+                    StaticObject.CUTTING_BOARD,
+                    StaticObject.GRILL,
+                    StaticObject.BLENDER,
+                ],
+            ).any()
+        )
+
+        # Dish washing settings. Everything is gated on this flag so that a
+        # layout without dish washing keeps the exact step graph and observation
+        # schema it had before the feature existed.
+        self.enable_dish_washing = enable_dish_washing
+        self.num_plates = num_plates
+        if enable_dish_washing:
+            if num_plates < 1:
+                raise ValueError("num_plates must be at least 1 for dish washing")
+            has_sink = bool((layout.static_objects == StaticObject.SINK).any())
+            has_dirty_pile = bool(
+                (layout.static_objects == StaticObject.DIRTY_PLATE_PILE).any()
+            )
+            missing = []
+            if not has_sink:
+                missing.append("a sink ('S')")
+            if not has_dirty_pile:
+                missing.append("a dirty plate pile ('D')")
+            if missing:
+                raise ValueError(
+                    "enable_dish_washing=True requires a layout containing "
+                    + " and ".join(missing)
+                )
+
         # Order queue settings
         self.enable_order_queue = enable_order_queue
         self.max_orders = max_orders
         self.order_generation_rate = order_generation_rate
         self.order_expiration_time = order_expiration_time
+        if order_queue_mode not in ("random", "alternating"):
+            raise ValueError("order_queue_mode must be 'random' or 'alternating'")
+
+        # Which dishes orders can ask for. A layout that lists several recipes
+        # (e.g. the prep-station kitchens) drives its orders from exactly those,
+        # so the queue cycles through every dish the kitchen can make. Layouts
+        # that pin a single recipe but stock several ingredient piles keep the
+        # legacy behaviour: one single-ingredient soup per pile, capped at the
+        # onion/tomato pair the queue historically alternated between.
+        if len(layout.possible_recipes) >= 2:
+            order_recipes = [list(recipe) for recipe in layout.possible_recipes]
+        else:
+            order_recipes = [
+                [i] * 3 for i in range(min(layout.num_ingredients, 2))
+            ]
+        self.order_recipes = order_recipes
+        if order_queue_mode == "alternating" and len(order_recipes) < 2:
+            raise ValueError(
+                "alternating order queue needs at least two orderable dishes: "
+                "give the layout multiple possible_recipes, or a second "
+                "ingredient pile"
+            )
+        self.order_queue_mode = order_queue_mode
+        # Index 0 is "no order"; order type i + 1 requests order_recipes[i].
+        self._order_recipe_encodings = jnp.array(
+            [0]
+            + [
+                DynamicObject.get_recipe_encoding(jnp.array(recipe))
+                for recipe in order_recipes
+            ],
+            dtype=jnp.int32,
+        )
+        self.num_order_types = len(order_recipes)
 
         # Conveyor settings
         layout_has_item_conveyors = len(layout.item_conveyor_info) > 0
@@ -297,6 +404,8 @@ class OvercookedV3(MultiAgentEnv):
             self.layout,
             self.observation_type,
             self.agent_view_size,
+            self.has_prep_stations,
+            self.enable_dish_washing,
         )
 
         # Extract pot positions from layout
@@ -308,6 +417,12 @@ class OvercookedV3(MultiAgentEnv):
         for i, (y, x) in enumerate(pot_indices[:MAX_POTS]):
             self._pot_positions[i] = [y, x]
             self._pot_active_mask[i] = True
+
+        # Goal positions are fixed by layout and used for post-plating distance
+        # shaping. Keep them as a static array so JIT-compiled steps can compute
+        # nearest-goal Euclidean distance without scanning the grid dynamically.
+        goal_indices = np.argwhere(layout.static_objects == StaticObject.GOAL)
+        self._goal_positions = goal_indices.astype(np.int32)
 
         # Extract conveyor info from layout
         self._item_conveyor_positions = np.zeros(
@@ -449,6 +564,9 @@ class OvercookedV3(MultiAgentEnv):
             max_orders=self.max_orders,
             order_generation_rate=self.order_generation_rate,
             order_expiration_time=self.order_expiration_time,
+            order_queue_mode=self.order_queue_mode,
+            order_recipe_encodings=self._order_recipe_encodings,
+            num_order_types=self.num_order_types,
             enable_item_conveyors=self.enable_item_conveyors,
             enable_player_conveyors=self.enable_player_conveyors,
             enable_moving_walls=self.enable_moving_walls,
@@ -463,6 +581,7 @@ class OvercookedV3(MultiAgentEnv):
             enclosed_spaces=self.enclosed_spaces,
             pot_positions=self._pot_positions,
             pot_active_mask=self._pot_active_mask,
+            goal_positions=self._goal_positions,
             item_conveyor_positions=self._item_conveyor_positions,
             item_conveyor_directions=self._item_conveyor_directions,
             item_conveyor_active_mask=self._item_conveyor_active_mask,
@@ -487,6 +606,13 @@ class OvercookedV3(MultiAgentEnv):
             pressure_plate_linked_barrier=self._pressure_plate_linked_barrier,
             pressure_plate_action_type=self._pressure_plate_action_type,
             pressure_plate_active_mask=self._pressure_plate_active_mask,
+            has_prep_stations=self.has_prep_stations,
+            chop_stages=self.chop_stages,
+            grill_cook_time=self.grill_cook_time,
+            grill_burn_time=self.grill_burn_time,
+            blend_time=self.blend_time,
+            enable_dish_washing=self.enable_dish_washing,
+            num_plates=self.num_plates,
         )
 
     def reset(
@@ -510,7 +636,7 @@ class OvercookedV3(MultiAgentEnv):
         key: chex.PRNGKey,
         state: State,
         actions: chex.Array,
-    ) -> Tuple[State, float, chex.Array]:
+    ) -> Tuple[State, float, chex.Array, Dict[str, chex.Array], chex.Array]:
         """Compatibility wrapper for the functional agent action phase."""
         return run_agent_action_phase(key, state, actions, self.config)
 
@@ -524,6 +650,8 @@ class OvercookedV3(MultiAgentEnv):
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
         pot_cook_time: Optional[chex.Array] = None,
+        plate_stack: chex.Array = 0,
+        dirty_pile: chex.Array = 0,
     ):
         """Compatibility wrapper for functional interact processing."""
         return process_interact(
@@ -536,6 +664,8 @@ class OvercookedV3(MultiAgentEnv):
             pot_active_mask,
             self.config,
             pot_cook_time,
+            plate_stack,
+            dirty_pile,
         )
 
     def _get_obs_shape(self) -> Tuple[int, ...]:
@@ -582,7 +712,7 @@ class OvercookedV3(MultiAgentEnv):
         pot_timers: chex.Array,
         pot_positions: chex.Array,
         pot_active_mask: chex.Array,
-    ) -> Tuple[chex.Array, chex.Array]:
+    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
         """Compatibility wrapper for functional pot timer updates."""
         return update_pot_timers(
             grid, pot_timers, pot_positions, pot_active_mask, self.config
@@ -610,7 +740,7 @@ class OvercookedV3(MultiAgentEnv):
 
     def _process_order_queue(
         self, state: State, key: chex.PRNGKey
-    ) -> Tuple[State, float]:
+    ) -> Tuple[State, float, chex.Array]:
         """Compatibility wrapper for functional order queue updates."""
         return process_order_queue(state, key, self.config)
 

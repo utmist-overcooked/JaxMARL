@@ -89,8 +89,8 @@ class State:
 
     pot_positions: chex.Array
     pot_cooking_timer: chex.Array
-    pot_active_mask: chex.Array
     pot_cook_durations: chex.Array
+    pot_active_mask: chex.Array
 
     order_types: chex.Array
     order_expirations: chex.Array
@@ -137,6 +137,10 @@ class State:
     current_macro_actions: chex.Array
     macro_action_done: chex.Array
     macro_step_count: chex.Array
+
+    # Dish washing counters, mirroring the base OvercookedV3 state.
+    plate_stack_count: chex.Array = 0
+    dirty_pile_count: chex.Array = 0
 
 
 class OvercookedV3Macro(OvercookedV3):
@@ -287,8 +291,8 @@ class OvercookedV3Macro(OvercookedV3):
             grid=state.grid,
             pot_positions=state.pot_positions,
             pot_cooking_timer=state.pot_cooking_timer,
-            pot_active_mask=state.pot_active_mask,
             pot_cook_durations=state.pot_cook_durations,
+            pot_active_mask=state.pot_active_mask,
             order_types=state.order_types,
             order_expirations=state.order_expirations,
             order_active_mask=state.order_active_mask,
@@ -323,6 +327,8 @@ class OvercookedV3Macro(OvercookedV3):
             terminal=state.terminal,
             recipe=state.recipe,
             new_correct_delivery=state.new_correct_delivery,
+            plate_stack_count=state.plate_stack_count,
+            dirty_pile_count=state.dirty_pile_count,
             current_macro_actions=jnp.full(
                 (self.num_agents,), MacroActions.wait, dtype=jnp.int32
             ),
