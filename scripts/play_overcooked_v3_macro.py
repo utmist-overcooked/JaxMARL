@@ -438,9 +438,13 @@ def main():
             # Idle-on-completion: an agent whose macro just finished with no
             # newer distinct command pending reverts to wait. In boundary mode
             # a queued click (commanded != the macro that just ran) survives so
-            # it starts at the boundary.
+            # it starts at the boundary. This must run even on the frame the
+            # command was clicked: single-tick macros (up/down/left/right)
+            # finish in the same step they are issued, so waiting a frame to
+            # clear them lets the driver re-issue the same macro and move the
+            # agent twice per click.
             for i in range(env.num_agents):
-                if bool(state.macro_action_done[i]) and not clicked_this_frame[i]:
+                if bool(state.macro_action_done[i]):
                     if int(state.current_macro_actions[i]) == commanded[i]:
                         commanded[i] = int(MacroActions.wait)
                 # The replan gate settles back to CONTINUE after each tick
