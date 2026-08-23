@@ -231,11 +231,23 @@ class ScannedRNN(nn.Module):
     wider range of installed versions. The GRU cell's parameters are created
     once via self.param and reused at every timestep, which is what nn.scan's
     variable_broadcast="params" was doing.
+
+    The input tuple ``x`` is either ``(ins, resets)`` -- the standard per-step
+    recurrence used by the every_step trainer -- or ``(ins, resets, advance)``.
+    When an ``advance`` mask is supplied the carry only commits to the GRU's
+    output where ``advance`` is True and otherwise passes the previous carry
+    through unchanged. This "decision-gated" mode is what the boundary trainer
+    needs: the hidden state advances once per macro decision and is frozen
+    while a macro executes. The emitted output is always the GRU's proposed
+    hidden for that step; callers mask the non-decision steps out of the loss.
+    With no ``advance`` mask the behaviour is identical to before (advance
+    every step), so the every_step path is unaffected.
     """
 
     @nn.compact
     def __call__(self, carry, x):
-        ins, resets = x
+        ins, resets = x[0], x[1]
+        advance = x[2] if len(x) > 2 else None
         cell = nn.GRUCell(features=ins.shape[-1])
         params = self.param(
             "gru_cell",
@@ -243,19 +255,32 @@ class ScannedRNN(nn.Module):
         )
 
         def step(rnn_state, step_input):
-            step_ins, step_resets = step_input
+            step_ins, step_resets, step_advance = step_input
             # Zero the carry wherever the previous step ended an episode, so
             # memory never leaks across episode boundaries within a rollout.
             # (GRUCell's default carry init is zeros, so this matches a fresh
             # initialize_carry.)
-            rnn_state = jnp.where(
+            reset_state = jnp.where(
                 step_resets[:, np.newaxis],
                 jnp.zeros_like(rnn_state),
                 rnn_state,
             )
-            return cell.apply({"params": params}, rnn_state, step_ins)
+            candidate_state, output = cell.apply(
+                {"params": params}, reset_state, step_ins
+            )
+            # Decision gate: only commit the advanced hidden where advance is
+            # True; elsewhere carry the pre-step hidden untouched. The GRU's
+            # output equals candidate_state, so `output` is the advanced hidden
+            # for this step regardless of the gate (non-advance steps are
+            # masked out of the loss by the caller).
+            new_state = jnp.where(
+                step_advance[:, np.newaxis], candidate_state, rnn_state
+            )
+            return new_state, output
 
-        return jax.lax.scan(step, carry, (ins, resets))
+        if advance is None:
+            advance = jnp.ones(resets.shape, dtype=jnp.bool_)
+        return jax.lax.scan(step, carry, (ins, resets, advance))
 
     @staticmethod
     def initialize_carry(batch_size: int, hidden_size: int):
@@ -272,7 +297,8 @@ class ActorRNN(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
-        obs, dones = x
+        obs, dones = x[0], x[1]
+        advance = x[2] if len(x) > 2 else None
         embedding = nn.Dense(
             self.hidden_size,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -280,7 +306,10 @@ class ActorRNN(nn.Module):
         )(obs)
         embedding = nn.relu(embedding)
 
-        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
+        rnn_input = (embedding, dones) if advance is None else (
+            embedding, dones, advance
+        )
+        hidden, embedding = ScannedRNN()(hidden, rnn_input)
 
         y = embedding
         for _ in range(max(self.num_layers - 1, 0)):
@@ -306,7 +335,8 @@ class CriticRNN(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
-        world_state, dones = x
+        world_state, dones = x[0], x[1]
+        advance = x[2] if len(x) > 2 else None
         embedding = nn.Dense(
             self.hidden_size,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -314,7 +344,10 @@ class CriticRNN(nn.Module):
         )(world_state)
         embedding = nn.relu(embedding)
 
-        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
+        rnn_input = (embedding, dones) if advance is None else (
+            embedding, dones, advance
+        )
+        hidden, embedding = ScannedRNN()(hidden, rnn_input)
 
         y = embedding
         for _ in range(max(self.num_layers - 1, 0)):
