@@ -35,5 +35,6 @@ LOG_INTERVAL_UPDATES: 10
 CHECKPOINT_INTERVAL_UPDATES: 100
 EVAL_INTERVAL_UPDATES: 100
 NUM_EVAL_ENVS: 8
+EVAL_STEPS: 2000                  # eval rollout length in primitive steps (env max_steps=400 => multi-episode average)
 EVAL_SEED: 42
 RESUME_FROM: null

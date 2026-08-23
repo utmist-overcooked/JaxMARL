@@ -649,11 +649,15 @@ def deterministic_evaluation(
         )
         return (next_obs, next_env_state, rng), mean_team_reward
 
+    eval_steps = int(
+        config.get("EVAL_STEPS")
+        or config.get("ENV_KWARGS", {}).get("max_steps", 400)
+    )
     _, rewards = jax.lax.scan(
         eval_step,
         (obs, env_state, key),
         None,
-        int(config.get("ENV_KWARGS", {}).get("max_steps", 400)),
+        eval_steps,
     )
     return jnp.mean(jnp.sum(rewards, axis=0))
 
@@ -716,11 +720,15 @@ def deterministic_evaluation_rnn(
             rng,
         ), mean_team_reward
 
+    eval_steps = int(
+        config.get("EVAL_STEPS")
+        or config.get("ENV_KWARGS", {}).get("max_steps", 400)
+    )
     _, rewards = jax.lax.scan(
         eval_step,
         (obs, env_state, init_hidden, init_done, key),
         None,
-        int(config.get("ENV_KWARGS", {}).get("max_steps", 400)),
+        eval_steps,
     )
     return jnp.mean(jnp.sum(rewards, axis=0))
 
