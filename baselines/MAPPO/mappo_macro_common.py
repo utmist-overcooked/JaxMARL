@@ -41,11 +41,19 @@ def _initial_best_eval_return(output_dir, resume_from):
 class MacroWorldStateWrapper(JaxMARLWrapper):
     """Add macro context for actors and a global state for the MAPPO critic."""
 
-    def __init__(self, env):
+    def __init__(self, env, share_teammate_obs: bool = False):
         super().__init__(env)
+        # When True, each actor observation concatenates every agent's cropped
+        # view (own crop first, then the other agent's) so the actor sees both
+        # its own 5x5 window and the teammate's 5x5 window, instead of only its
+        # own crop. The critic is unaffected -- it is always fully centralized.
+        self.share_teammate_obs = share_teammate_obs
         base_shape = env.observation_space(env.agents[0]).shape
         self.base_obs_size = int(np.prod(base_shape))
-        self.actor_obs_size = self.base_obs_size + env.num_macro_actions + 2
+        obs_multiplier = env.num_agents if share_teammate_obs else 1
+        self.actor_obs_size = (
+            obs_multiplier * self.base_obs_size + env.num_macro_actions + 2
+        )
 
         # The critic input is built from get_obs_default(state) below, which
         # always returns the full (uncropped) grid regardless of
@@ -74,11 +82,29 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
         )
         identity = jnp.eye(self._env.num_agents, dtype=jnp.float32)
 
+        # Each agent's own cropped 5x5 view (already centered on that agent).
+        crops = {
+            agent: obs[agent].reshape(-1).astype(jnp.float32)
+            for agent in self._env.agents
+        }
+
         augmented = {}
         for index, agent in enumerate(self._env.agents):
+            if self.share_teammate_obs:
+                # Egocentric order: this agent's own crop first, then the other
+                # agents' crops. A shared-parameter actor thus sees every 5x5
+                # window while staying agent-agnostic.
+                others = [
+                    crops[other]
+                    for j, other in enumerate(self._env.agents)
+                    if j != index
+                ]
+                view = jnp.concatenate([crops[agent], *others])
+            else:
+                view = crops[agent]
             augmented[agent] = jnp.concatenate(
                 (
-                    obs[agent].reshape(-1).astype(jnp.float32),
+                    view,
                     macro_one_hot[index],
                     macro_done[index, None],
                     macro_progress[index, None],
@@ -367,7 +393,9 @@ class CriticRNN(nn.Module):
 
 def build_env(config: Dict):
     env = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
-    env = MacroWorldStateWrapper(env)
+    env = MacroWorldStateWrapper(
+        env, share_teammate_obs=config.get("ACTOR_SHARE_TEAMMATE_OBS", False)
+    )
     return LogWrapper(env)
 
 
