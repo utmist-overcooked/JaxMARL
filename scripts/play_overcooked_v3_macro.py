@@ -455,8 +455,8 @@ def main():
             if bool(dones["__all__"]):
                 # env.step auto-resets; treat the returned state as episode 0.
                 commanded = [int(MacroActions.wait)] * env.num_agents
+                gate = ["CONTINUE"] * env.num_agents
                 total_reward, step_count = 0.0, 0
-
         ui = {
             "commanded": commanded,
             "gate": gate,
