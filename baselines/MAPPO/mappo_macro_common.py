@@ -41,11 +41,19 @@ def _initial_best_eval_return(output_dir, resume_from):
 class MacroWorldStateWrapper(JaxMARLWrapper):
     """Add macro context for actors and a global state for the MAPPO critic."""
 
-    def __init__(self, env):
+    def __init__(self, env, share_teammate_obs: bool = False):
         super().__init__(env)
+        # When True, each actor observation concatenates every agent's cropped
+        # view (own crop first, then the other agent's) so the actor sees both
+        # its own 5x5 window and the teammate's 5x5 window, instead of only its
+        # own crop. The critic is unaffected -- it is always fully centralized.
+        self.share_teammate_obs = share_teammate_obs
         base_shape = env.observation_space(env.agents[0]).shape
         self.base_obs_size = int(np.prod(base_shape))
-        self.actor_obs_size = self.base_obs_size + env.num_macro_actions + 2
+        obs_multiplier = env.num_agents if share_teammate_obs else 1
+        self.actor_obs_size = (
+            obs_multiplier * self.base_obs_size + env.num_macro_actions + 2
+        )
 
         # The critic input is built from get_obs_default(state) below, which
         # always returns the full (uncropped) grid regardless of
@@ -74,11 +82,29 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
         )
         identity = jnp.eye(self._env.num_agents, dtype=jnp.float32)
 
+        # Each agent's own cropped 5x5 view (already centered on that agent).
+        crops = {
+            agent: obs[agent].reshape(-1).astype(jnp.float32)
+            for agent in self._env.agents
+        }
+
         augmented = {}
         for index, agent in enumerate(self._env.agents):
+            if self.share_teammate_obs:
+                # Egocentric order: this agent's own crop first, then the other
+                # agents' crops. A shared-parameter actor thus sees every 5x5
+                # window while staying agent-agnostic.
+                others = [
+                    crops[other]
+                    for j, other in enumerate(self._env.agents)
+                    if j != index
+                ]
+                view = jnp.concatenate([crops[agent], *others])
+            else:
+                view = crops[agent]
             augmented[agent] = jnp.concatenate(
                 (
-                    obs[agent].reshape(-1).astype(jnp.float32),
+                    view,
                     macro_one_hot[index],
                     macro_done[index, None],
                     macro_progress[index, None],
@@ -134,21 +160,18 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
 class Actor(nn.Module):
     action_dim: int
     hidden_size: int
+    num_layers: int = 2  # number of tanh hidden layers before the policy head
 
     @nn.compact
     def __call__(self, obs):
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(obs)
-        x = nn.tanh(x)
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = nn.tanh(x)
+        x = obs
+        for _ in range(self.num_layers):
+            x = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(x)
+            x = nn.tanh(x)
         return nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(0.01),
@@ -161,21 +184,18 @@ class ReplanActor(nn.Module):
 
     action_dim: int
     hidden_size: int
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, obs):
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(obs)
-        x = nn.tanh(x)
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = nn.tanh(x)
+        x = obs
+        for _ in range(self.num_layers):
+            x = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(x)
+            x = nn.tanh(x)
         macro_logits = nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(0.01),
@@ -193,21 +213,18 @@ class ReplanActor(nn.Module):
 
 class Critic(nn.Module):
     hidden_size: int
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, world_state):
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(world_state)
-        x = nn.tanh(x)
-        x = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = nn.tanh(x)
+        x = world_state
+        for _ in range(self.num_layers):
+            x = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )(x)
+            x = nn.tanh(x)
         return nn.Dense(
             1,
             kernel_init=orthogonal(1.0),
@@ -240,11 +257,23 @@ class ScannedRNN(nn.Module):
     wider range of installed versions. The GRU cell's parameters are created
     once via self.param and reused at every timestep, which is what nn.scan's
     variable_broadcast="params" was doing.
+
+    The input tuple ``x`` is either ``(ins, resets)`` -- the standard per-step
+    recurrence used by the every_step trainer -- or ``(ins, resets, advance)``.
+    When an ``advance`` mask is supplied the carry only commits to the GRU's
+    output where ``advance`` is True and otherwise passes the previous carry
+    through unchanged. This "decision-gated" mode is what the boundary trainer
+    needs: the hidden state advances once per macro decision and is frozen
+    while a macro executes. The emitted output is always the GRU's proposed
+    hidden for that step; callers mask the non-decision steps out of the loss.
+    With no ``advance`` mask the behaviour is identical to before (advance
+    every step), so the every_step path is unaffected.
     """
 
     @nn.compact
     def __call__(self, carry, x):
-        ins, resets = x
+        ins, resets = x[0], x[1]
+        advance = x[2] if len(x) > 2 else None
         cell = nn.GRUCell(features=ins.shape[-1])
         params = self.param(
             "gru_cell",
@@ -252,19 +281,32 @@ class ScannedRNN(nn.Module):
         )
 
         def step(rnn_state, step_input):
-            step_ins, step_resets = step_input
+            step_ins, step_resets, step_advance = step_input
             # Zero the carry wherever the previous step ended an episode, so
             # memory never leaks across episode boundaries within a rollout.
             # (GRUCell's default carry init is zeros, so this matches a fresh
             # initialize_carry.)
-            rnn_state = jnp.where(
+            reset_state = jnp.where(
                 step_resets[:, np.newaxis],
                 jnp.zeros_like(rnn_state),
                 rnn_state,
             )
-            return cell.apply({"params": params}, rnn_state, step_ins)
+            candidate_state, output = cell.apply(
+                {"params": params}, reset_state, step_ins
+            )
+            # Decision gate: only commit the advanced hidden where advance is
+            # True; elsewhere carry the pre-step hidden untouched. The GRU's
+            # output equals candidate_state, so `output` is the advanced hidden
+            # for this step regardless of the gate (non-advance steps are
+            # masked out of the loss by the caller).
+            new_state = jnp.where(
+                step_advance[:, np.newaxis], candidate_state, rnn_state
+            )
+            return new_state, output
 
-        return jax.lax.scan(step, carry, (ins, resets))
+        if advance is None:
+            advance = jnp.ones(resets.shape, dtype=jnp.bool_)
+        return jax.lax.scan(step, carry, (ins, resets, advance))
 
     @staticmethod
     def initialize_carry(batch_size: int, hidden_size: int):
@@ -275,10 +317,14 @@ class ScannedRNN(nn.Module):
 class ActorRNN(nn.Module):
     action_dim: int
     hidden_size: int
+    # Total feedforward depth: 1 pre-GRU embedding + (num_layers - 1) post-GRU
+    # hidden layers. Default 2 keeps the original single post-GRU layer.
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, hidden, x):
-        obs, dones = x
+        obs, dones = x[0], x[1]
+        advance = x[2] if len(x) > 2 else None
         embedding = nn.Dense(
             self.hidden_size,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -286,14 +332,19 @@ class ActorRNN(nn.Module):
         )(obs)
         embedding = nn.relu(embedding)
 
-        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
+        rnn_input = (embedding, dones) if advance is None else (
+            embedding, dones, advance
+        )
+        hidden, embedding = ScannedRNN()(hidden, rnn_input)
 
-        y = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(2),
-            bias_init=constant(0.0),
-        )(embedding)
-        y = nn.relu(y)
+        y = embedding
+        for _ in range(max(self.num_layers - 1, 0)):
+            y = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(2),
+                bias_init=constant(0.0),
+            )(y)
+            y = nn.relu(y)
         # Returns raw logits (not a distribution) to match the MLP Actor, so
         # callers keep using masked_categorical for action masking.
         logits = nn.Dense(
@@ -306,10 +357,12 @@ class ActorRNN(nn.Module):
 
 class CriticRNN(nn.Module):
     hidden_size: int
+    num_layers: int = 2
 
     @nn.compact
     def __call__(self, hidden, x):
-        world_state, dones = x
+        world_state, dones = x[0], x[1]
+        advance = x[2] if len(x) > 2 else None
         embedding = nn.Dense(
             self.hidden_size,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -317,14 +370,19 @@ class CriticRNN(nn.Module):
         )(world_state)
         embedding = nn.relu(embedding)
 
-        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
+        rnn_input = (embedding, dones) if advance is None else (
+            embedding, dones, advance
+        )
+        hidden, embedding = ScannedRNN()(hidden, rnn_input)
 
-        y = nn.Dense(
-            self.hidden_size,
-            kernel_init=orthogonal(2),
-            bias_init=constant(0.0),
-        )(embedding)
-        y = nn.relu(y)
+        y = embedding
+        for _ in range(max(self.num_layers - 1, 0)):
+            y = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(2),
+                bias_init=constant(0.0),
+            )(y)
+            y = nn.relu(y)
         value = nn.Dense(
             1,
             kernel_init=orthogonal(1.0),
@@ -335,7 +393,9 @@ class CriticRNN(nn.Module):
 
 def build_env(config: Dict):
     env = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
-    env = MacroWorldStateWrapper(env)
+    env = MacroWorldStateWrapper(
+        env, share_teammate_obs=config.get("ACTOR_SHARE_TEAMMATE_OBS", False)
+    )
     return LogWrapper(env)
 
 
@@ -476,7 +536,12 @@ def make_train_state(network, params, config: Dict, total_updates: int):
         learning_rate = config["LR"]
     optimizer = optax.chain(
         optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-        optax.adam(learning_rate, eps=1e-5),
+        optax.adam(
+            learning_rate,
+            b1=float(config.get("ADAM_B1", 0.9)),
+            b2=float(config.get("ADAM_B2", 0.999)),
+            eps=float(config.get("ADAM_EPS", 1e-5)),
+        ),
     )
     return TrainState.create(apply_fn=network.apply, params=params, tx=optimizer)
 
@@ -612,11 +677,15 @@ def deterministic_evaluation(
         )
         return (next_obs, next_env_state, rng), mean_team_reward
 
+    eval_steps = int(
+        config.get("EVAL_STEPS")
+        or config.get("ENV_KWARGS", {}).get("max_steps", 400)
+    )
     _, rewards = jax.lax.scan(
         eval_step,
         (obs, env_state, key),
         None,
-        int(config.get("ENV_KWARGS", {}).get("max_steps", 400)),
+        eval_steps,
     )
     return jnp.mean(jnp.sum(rewards, axis=0))
 
@@ -679,11 +748,15 @@ def deterministic_evaluation_rnn(
             rng,
         ), mean_team_reward
 
+    eval_steps = int(
+        config.get("EVAL_STEPS")
+        or config.get("ENV_KWARGS", {}).get("max_steps", 400)
+    )
     _, rewards = jax.lax.scan(
         eval_step,
         (obs, env_state, init_hidden, init_done, key),
         None,
-        int(config.get("ENV_KWARGS", {}).get("max_steps", 400)),
+        eval_steps,
     )
     return jnp.mean(jnp.sum(rewards, axis=0))
 
@@ -857,6 +930,19 @@ def restore_training_checkpoint(runner, config: Dict):
 
 def initialize_config(config: Dict, env):
     config = dict(config)
+    # The shaping-anneal horizon may be given as a FRACTION of the training
+    # budget (REW_SHAPING_FRACTION in [0, 1]) instead of as absolute primitive
+    # steps. When present it overrides REW_SHAPING_HORIZON so the anneal always
+    # spans the same fraction of the run regardless of TOTAL_TIMESTEPS -- which
+    # matters when the budget itself is swept (an absolute horizon would give
+    # short trials proportionally more shaping). 1.0 => shaping decays across the
+    # whole run (reaches 0 only at the end); 0.1 => fully annealed by 10% of the
+    # run, sparse thereafter. Existing configs without this key are unchanged.
+    shaping_fraction = config.get("REW_SHAPING_FRACTION")
+    if shaping_fraction is not None:
+        config["REW_SHAPING_HORIZON"] = float(shaping_fraction) * int(
+            config["TOTAL_TIMESTEPS"]
+        )
     config["NUM_ACTORS"] = env.num_agents * int(config["NUM_ENVS"])
     config["NUM_UPDATES"] = int(config["TOTAL_TIMESTEPS"]) // (
         int(config["NUM_STEPS"]) * int(config["NUM_ENVS"])

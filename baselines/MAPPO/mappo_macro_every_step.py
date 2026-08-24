@@ -112,8 +112,9 @@ def _training_metrics(trajectory, loss_metrics):
 # ---------------------------------------------------------------------------
 def _make_train_mlp(config, env):
     def train(rng):
-        actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
-        critic = Critic(int(config["HIDDEN_SIZE"]))
+        num_layers = int(config.get("NUM_LAYERS", 2))
+        actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]), num_layers)
+        critic = Critic(int(config["HIDDEN_SIZE"]), num_layers)
         rng, actor_state, critic_state = initialize_actor_critic(
             actor,
             critic,
@@ -305,8 +306,9 @@ def _make_train_rnn(config, env):
         )
 
     def train(rng):
-        actor = ActorRNN(env.num_actions, hidden_size)
-        critic = CriticRNN(hidden_size)
+        num_layers = int(config.get("NUM_LAYERS", 2))
+        actor = ActorRNN(env.num_actions, hidden_size, num_layers)
+        critic = CriticRNN(hidden_size, num_layers)
 
         obs_dim = env.observation_space(env.agents[0]).shape[0]
         world_state_dim = env.world_state_size()

@@ -153,8 +153,11 @@ def make_train(config):
         raise ValueError("This script only supports exactly 2 agents.")
 
     def train(rng):
-        actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
-        critic = Critic(int(config["HIDDEN_SIZE"]))
+        # Must match the frozen checkpoint's architecture; keep NUM_LAYERS aligned
+        # with the config the frozen every_step policy was trained under.
+        num_layers = int(config.get("NUM_LAYERS", 2))
+        actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]), num_layers)
+        critic = Critic(int(config["HIDDEN_SIZE"]), num_layers)
         comm_module = CommModule(
             hidden_size=int(config.get("COMM_HIDDEN_SIZE", config["HIDDEN_SIZE"])),
             vocab_size=int(config["VOCAB_SIZE"]),
@@ -180,7 +183,12 @@ def make_train(config):
             params=comm_params,
             tx=optax.chain(
                 optax.clip_by_global_norm(config.get("MAX_GRAD_NORM", 0.5)),
-                optax.adam(config["LR"], eps=1e-5),
+                optax.adam(
+                    config["LR"],
+                    b1=float(config.get("ADAM_B1", 0.9)),
+                    b2=float(config.get("ADAM_B2", 0.999)),
+                    eps=float(config.get("ADAM_EPS", 1e-5)),
+                ),
             ),
         )
         frozen_critic_state = TrainState.create(

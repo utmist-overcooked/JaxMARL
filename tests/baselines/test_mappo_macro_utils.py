@@ -5,6 +5,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 
@@ -14,6 +15,7 @@ sys.path.insert(0, str(MAPPO_DIR))
 from mappo_macro_common import (  # noqa: E402
     _initial_best_eval_return,
     Actor,
+    ScannedRNN,
     add_annealed_shaped_reward,
     build_env,
     calculate_smdp_gae,
@@ -104,7 +106,85 @@ def test_macro_actor_uses_expanded_environment_action_space():
     logits = actor.apply(actor.init(jax.random.PRNGKey(0), obs), obs)
 
     assert logits.shape == (1, env.num_actions)
-    assert env.num_actions == 17
+    assert env.num_actions == 18
+
+
+def test_scanned_rnn_without_advance_mask_advances_every_step():
+    """A 2-tuple call (no gate) must behave exactly as before: advance always.
+
+    This is what guarantees the every_step trainer is unaffected by the gate.
+    """
+    rng = jax.random.PRNGKey(0)
+    time_steps, batch, features = 5, 3, 4
+    ins = jax.random.normal(rng, (time_steps, batch, features))
+    resets = jnp.zeros((time_steps, batch), dtype=jnp.bool_)
+    carry = ScannedRNN.initialize_carry(batch, features)
+
+    params = ScannedRNN().init(rng, carry, (ins, resets))
+    ungated_carry, ungated_out = ScannedRNN().apply(params, carry, (ins, resets))
+    all_advance = jnp.ones((time_steps, batch), dtype=jnp.bool_)
+    gated_carry, gated_out = ScannedRNN().apply(
+        params, carry, (ins, resets, all_advance)
+    )
+
+    assert jnp.allclose(ungated_out, gated_out, atol=1e-6)
+    assert jnp.allclose(ungated_carry, gated_carry, atol=1e-6)
+
+
+def test_scanned_rnn_advance_false_freezes_the_carry():
+    """With advance all-False the hidden must never move off its initial value."""
+    rng = jax.random.PRNGKey(1)
+    time_steps, batch, features = 4, 2, 3
+    ins = jax.random.normal(rng, (time_steps, batch, features))
+    resets = jnp.zeros((time_steps, batch), dtype=jnp.bool_)
+    no_advance = jnp.zeros((time_steps, batch), dtype=jnp.bool_)
+    carry = ScannedRNN.initialize_carry(batch, features)
+
+    params = ScannedRNN().init(rng, carry, (ins, resets, no_advance))
+    final_carry, _ = ScannedRNN().apply(params, carry, (ins, resets, no_advance))
+
+    assert jnp.allclose(final_carry, carry, atol=1e-7)
+
+
+def test_scanned_rnn_gate_matches_compacted_decision_sequence():
+    """The core §5.2 property behind the boundary RNN trainer.
+
+    Replaying the decision-gated GRU over the fixed-size buffer -- advancing
+    only on the (in-order) decision steps and carrying the hidden through the
+    frozen steps in between -- must produce exactly the same hidden sequence as
+    running an ordinary GRU over just the compacted decision sequence. This is
+    what lets the update reuse the fixed-shape masked buffer instead of a
+    dynamic squeeze, while still doing true BPTT over the decision sequence.
+    """
+    rng = jax.random.PRNGKey(2)
+    time_steps, batch, features = 6, 1, 4
+    ins = jax.random.normal(rng, (time_steps, batch, features))
+    # Decisions complete at steps 0, 2, 3, 5; the buffer is frozen elsewhere.
+    advance = jnp.array([True, False, True, True, False, True]).reshape(
+        time_steps, batch
+    )
+    # Episode-first decisions reset the hidden; must be a subset of `advance`
+    # (non-decision slots always carry decision_reset=False in the trainer).
+    resets = jnp.array([True, False, False, True, False, False]).reshape(
+        time_steps, batch
+    )
+    carry = ScannedRNN.initialize_carry(batch, features)
+
+    params = ScannedRNN().init(rng, carry, (ins, resets, advance))
+    gated_carry, gated_out = ScannedRNN().apply(
+        params, carry, (ins, resets, advance)
+    )
+
+    # Compact to just the decision steps, in order, and run without the gate.
+    decision_idx = np.where(np.asarray(advance)[:, 0])[0]
+    compact_carry, compact_out = ScannedRNN().apply(
+        params, carry, (ins[decision_idx], resets[decision_idx])
+    )
+
+    # Output at each decision step matches the compacted run, and the final
+    # carry (seed for the next rollout) is identical too.
+    assert jnp.allclose(gated_out[decision_idx], compact_out, atol=1e-5)
+    assert jnp.allclose(gated_carry, compact_carry, atol=1e-5)
 
 
 def test_config_rejects_a_silently_truncated_timestep_budget():

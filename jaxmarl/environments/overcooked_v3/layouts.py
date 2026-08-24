@@ -244,6 +244,41 @@ W      AW
 WWWWWWRWW
 """
 
+# Three-plate variant of pressure_gated_circuit: barriers '#' on three sides of
+# the central ring (top/left/right) each with a pressure plate '_' just inside.
+# Every plate toggles the barrier it sits next to (plate i -> barrier i in
+# row-major parse order), so all three gates must be held open to move freely
+# around the loop. Sits between pressure_gated_circuit (2 gates) and
+# pressure_gated_circuit_4plate (4 gates); the bottom side stays open.
+pressure_gated_circuit_3plate = """
+WWWWWWWWW
+W   #   W
+W PWWW0 W
+W W _ W W
+W#W_A_W#W
+W W   W W
+W XWWWB W
+W      AW
+WWWWWWRWW
+"""
+
+# Four-plate variant of pressure_gated_circuit: a barrier '#' on each side of the
+# central ring (top/left/right/bottom) and a pressure plate '_' just inside each
+# one. Every plate toggles the barrier it sits next to (plate i -> barrier i in
+# row-major parse order), so all four gates must be held open to move freely
+# around the loop. Compare pressure_gated_circuit, which activates only 2 of them.
+pressure_gated_circuit_4plate = """
+WWWWWWWWW
+W   #   W
+W PWWW0 W
+W W _ W W
+W#W_A_W#W
+W W _ W W
+W XWWWB W
+W   #  AW
+WWWWWWRWW
+"""
+
 pressure_gated_zones = """
 WWWWWWW0W
 WP  #   1
@@ -1410,6 +1445,38 @@ overcooked_v3_layouts = {
             True,
             # True,
             # True,
+        ],
+    ),
+
+    "pressure_gated_circuit_3plate": Layout.from_string(
+        pressure_gated_circuit_3plate,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),  # top plate   -> top barrier
+            (1, ButtonAction.TOGGLE_BARRIER),  # left plate  -> left barrier
+            (2, ButtonAction.TOGGLE_BARRIER),  # right plate -> right barrier
+        ],
+        barrier_config=[
+            True,
+            True,
+            True,
+        ],
+    ),
+
+    "pressure_gated_circuit_4plate": Layout.from_string(
+        pressure_gated_circuit_4plate,
+        possible_recipes=[[0, 0, 0]],
+        pressure_plate_config=[
+            (0, ButtonAction.TOGGLE_BARRIER),  # top plate  -> top barrier
+            (1, ButtonAction.TOGGLE_BARRIER),  # left plate  -> left barrier
+            (2, ButtonAction.TOGGLE_BARRIER),  # right plate -> right barrier
+            (3, ButtonAction.TOGGLE_BARRIER),  # bottom plate-> bottom barrier
+        ],
+        barrier_config=[
+            True,
+            True,
+            True,
+            True,
         ],
     ),
 
