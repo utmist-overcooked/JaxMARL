@@ -257,6 +257,8 @@ directory. Include JIT coverage for environment transition changes.
 - Macro training budgets are measured in primitive environment steps. Respect
 each trainer's divisibility and rollout-boundary checks rather than silently
 truncating a run.
+- Never enable W&B artifact uploads (`wandb.Artifact`, `log_artifact`,
+`save_code=True`, `WANDB_LOG_MODEL`) unless the user explicitly asks for it.
 
 ## Writing PRs
 
