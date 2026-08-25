@@ -12,6 +12,10 @@ from jaxmarl.environments.overcooked_v3.common import (
     StaticObject,
     Direction,
     ButtonAction,
+    PREP_RAW_START,
+    NUM_PREP_CHAINS,
+    PREP_PROCESSED_OFFSET,
+    PREP_STATION_FOR_RAW,
 )
 from jaxmarl.environments.overcooked_v3.settings import (
     MAX_POTS,
@@ -437,6 +441,129 @@ W B XA!W
 WWWWWWWW
 """
 
+# Prep station kitchens. Each raw prep ingredient must be processed at its
+# station before it matches the recipe:
+#   2 lettuce -> C cutting board (interact repeatedly) -> 5 chopped lettuce
+#   3 meat    -> G grill (auto-cooks, can burn)        -> 6 grilled meat
+#   4 carrot  -> M blender (manual start, timed)       -> 7 carrot puree
+cutting_board_room = """
+WWPWW
+2A AC
+W   W
+WBWXW
+"""
+
+grill_room = """
+WWPWW
+3A AG
+W   W
+WBWXW
+"""
+
+blender_room = """
+WWPWW
+4A AM
+W   W
+WBWXW
+"""
+
+# All three prep chains in one kitchen with a recipe indicator.
+prep_kitchen = """
+WW2WCWWGW3WW
+W  A       W
+B          P
+W       A  W
+WW4WMWWRWXWW
+"""
+
+# Handoff variants: a full counter column splits the kitchen into a prep side
+# (raw pile + station) and a cook side (pot, plates, delivery), forced_coord
+# style. Neither agent can reach the other side, so processed ingredients must
+# be passed across the middle counter tiles.
+cutting_board_handoff = """
+WWWPW
+2 W B
+CAWAX
+W W W
+WWWWW
+"""
+
+grill_handoff = """
+WWWPW
+3 W B
+GAWAX
+W W W
+WWWWW
+"""
+
+blender_handoff = """
+WWWPW
+4 W B
+MAWAX
+W W W
+WWWWW
+"""
+
+# All three chains on the prep side, cooking and delivery on the other.
+# All food on the right, all machines on the left, split by a counter wall.
+# Neither agent can finish a dish alone:
+#   right agent  takes raw food from the piles -> passes it over the counter
+#   left agent   processes it at the matching machine -> pot -> plates it
+#                -> passes the plated soup back over the counter
+#   right agent  delivers at X
+# The recipe indicator sits on the machine side only - the agent that actually
+# cooks the dish is the one that needs to read the current order.
+prep_kitchen_handoff = """
+WRPWWWWWW
+C   W   2
+G A W A 3
+M   W   4
+B   W   X
+WWWWWWWWW
+"""
+
+# Dish washing kitchens. With dish washing enabled the plate pile holds a finite
+# number of plates; a delivered dish returns to the dirty pile (D) and must be
+# carried to the sink (S) to become clean again. These layouts are ordinary
+# kitchens when dish washing is disabled (the S/D tiles are then inert counters).
+dish_washing_room = """
+WWPWW
+0A AS
+W   D
+WBWXW
+"""
+
+# Two agents, one sink, one pot: someone has to keep the dish cycle moving while
+# the other cooks, or the kitchen runs out of clean plates.
+dish_washing_kitchen = """
+WWWPWWW
+0     S
+W A A W
+B     D
+WWWXWWW
+"""
+
+# Dish washing behind a counter handoff. The cook side owns the pot and the plate
+# pile; the wash side owns delivery, the dirty pile and the sink. Plated soup goes
+# over the counter one way and clean plates come back the other, so the whole
+# plate cycle depends on both agents.
+dish_washing_handoff = """
+WWPWWWW
+0 AW  X
+B  WA D
+W  W  S
+WWWWWWW
+"""
+
+# Prep chains and dish washing combined: chop lettuce, cook, deliver, then wash.
+prep_dish_kitchen = """
+WW2WCWWPWW
+W  A     S
+B        W
+W     A  D
+WWWWRWWXWW
+"""
+
 
 
 @dataclass
@@ -508,6 +635,11 @@ class Layout:
             StaticObject.POT: 'P',
             StaticObject.RECIPE_INDICATOR: 'R',
             StaticObject.PRESSURE_PLATE: '_',
+            StaticObject.CUTTING_BOARD: 'C',
+            StaticObject.GRILL: 'G',
+            StaticObject.BLENDER: 'M',
+            StaticObject.SINK: 'S',
+            StaticObject.DIRTY_PLATE_PILE: 'D',
         }
 
         item_conveyor_symbols = {
@@ -586,6 +718,9 @@ class Layout:
             'num_player_conveyors': len(self.player_conveyor_info),
             'has_recipe_indicator': False,
             'possible_recipes': self.possible_recipes,
+            'num_prep_stations': {},
+            'num_sinks': 0,
+            'num_dirty_plate_piles': 0,
         }
 
         for y in range(self.height):
@@ -594,6 +729,15 @@ class Layout:
 
                 if obj == StaticObject.POT:
                     info['num_pots'] += 1
+                elif StaticObject.is_prep_station(obj):
+                    station = StaticObject(obj)
+                    info['num_prep_stations'][station] = (
+                        info['num_prep_stations'].get(station, 0) + 1
+                    )
+                elif obj == StaticObject.SINK:
+                    info['num_sinks'] += 1
+                elif obj == StaticObject.DIRTY_PLATE_PILE:
+                    info['num_dirty_plate_piles'] += 1
                 elif obj == StaticObject.PLATE_PILE:
                     info['num_plate_piles'] += 1
                 elif obj == StaticObject.GOAL:
@@ -635,6 +779,17 @@ class Layout:
 
         if info['num_pots'] == 0:
             warnings.append("No pots found - agents won't be able to cook")
+
+        # A sink is only useful alongside a dirty plate pile and vice versa; the
+        # env errors out if dish washing is enabled without both.
+        if info['num_sinks'] > 0 and info['num_dirty_plate_piles'] == 0:
+            warnings.append(
+                "Layout has a sink but no dirty plate pile - dish washing cannot be enabled"
+            )
+        if info['num_dirty_plate_piles'] > 0 and info['num_sinks'] == 0:
+            warnings.append(
+                "Layout has a dirty plate pile but no sink - dish washing cannot be enabled"
+            )
 
         if info['num_pots'] > MAX_POTS:
             errors.append(f"Too many pots ({info['num_pots']} > {MAX_POTS}). Increase MAX_POTS in settings.py")
@@ -840,6 +995,19 @@ class Layout:
                             errors.append(
                                 f"Recipe {i} ingredient {ingredient_idx} must be non-negative"
                             )
+                        elif self._is_processed_ingredient(ingredient_idx):
+                            raw_idx = ingredient_idx - PREP_PROCESSED_OFFSET
+                            station = PREP_STATION_FOR_RAW[raw_idx]
+                            if raw_idx not in info['num_ingredient_piles']:
+                                warnings.append(
+                                    f"Recipe uses processed ingredient {ingredient_idx} but no "
+                                    f"pile for raw ingredient {raw_idx} exists in layout"
+                                )
+                            if info['num_prep_stations'].get(station, 0) == 0:
+                                warnings.append(
+                                    f"Recipe uses processed ingredient {ingredient_idx} but no "
+                                    f"{station.name} exists in layout"
+                                )
                         elif ingredient_idx not in info['num_ingredient_piles'] and ingredient_idx < self.num_ingredients:
                             warnings.append(f"Recipe uses ingredient {ingredient_idx} but no pile exists in layout")
 
@@ -847,6 +1015,11 @@ class Layout:
         is_valid = len(errors) == 0
 
         return is_valid, all_messages
+
+    @staticmethod
+    def _is_processed_ingredient(idx) -> bool:
+        processed_start = PREP_RAW_START + PREP_PROCESSED_OFFSET
+        return processed_start <= idx < processed_start + NUM_PREP_CHAINS
 
     @staticmethod
     def _is_agent_walkable_tile(obj) -> bool:
@@ -947,15 +1120,33 @@ class Layout:
                 if not isinstance(recipe, list) or len(recipe) != 3:
                     continue
 
-                missing = sorted(set(recipe) - ingredient_piles)
+                # Processed ingredients are sourced from their raw pile plus
+                # the matching prep station rather than a direct pile.
+                required_piles = set()
+                required_stations = set()
+                for ingredient_idx in set(recipe):
+                    if self._is_processed_ingredient(ingredient_idx):
+                        raw_idx = ingredient_idx - PREP_PROCESSED_OFFSET
+                        required_piles.add(raw_idx)
+                        required_stations.add(PREP_STATION_FOR_RAW[raw_idx])
+                    else:
+                        required_piles.add(ingredient_idx)
+
+                missing = sorted(required_piles - ingredient_piles)
                 if missing:
                     errors.append(
                         f"Recipe {recipe} requires missing ingredient piles: {missing}"
                     )
 
+                for station in sorted(required_stations):
+                    if not self._has_interactable_object(station):
+                        errors.append(
+                            f"Recipe {recipe} requires a reachable {station.name}"
+                        )
+
                 blocked_ingredients = [
                     ingredient_idx
-                    for ingredient_idx in sorted(set(recipe))
+                    for ingredient_idx in sorted(required_piles)
                     if ingredient_idx in ingredient_piles
                     and not self._has_interactable_ingredient(ingredient_idx)
                 ]
@@ -1174,7 +1365,16 @@ class Layout:
             X = Delivery Zone (Goal)
             A = Agent Start Position
             R = Recipe Indicator (randomized recipes)
-            0-9 = Ingredient Piles (0=onion, 1=tomato, 2=lettuce, etc.)
+            0-9 = Ingredient Piles (0=onion, 1=tomato, 2=lettuce, 3=meat, 4=carrot, ...)
+
+            Prep Stations (multi-stage preparation):
+                C = cutting board (chop lettuce 2 -> chopped lettuce 5)
+                G = grill (grill meat 3 -> grilled meat 6, burns if left)
+                M = blender (blend carrot 4 -> carrot puree 7)
+
+            Dish Washing (when enabled):
+                S = sink (wash a dirty plate clean)
+                D = dirty plate pile (delivered plates land here)
             
             Item Conveyors (move items):
                 > = moves right
@@ -1254,6 +1454,15 @@ class Layout:
             Barriers (togglable blocking tiles):
             #: barrier (blocks all movement when active)
 
+            Prep stations (multi-stage ingredient preparation):
+            C: cutting board (chops raw ingredient 2 -> processed 5)
+            G: grill (grills raw ingredient 3 -> processed 6, can burn)
+            M: blender (blends raw ingredient 4 -> processed 7)
+
+            Dish washing (only active when the env enables it):
+            S: sink (washes a held dirty plate clean)
+            D: dirty plate pile (delivered plates return here dirty)
+
         Args:
             grid: ASCII string layout
             possible_recipes: List of recipes, or None for auto-detect
@@ -1302,6 +1511,11 @@ class Layout:
             "R": StaticObject.RECIPE_INDICATOR,
             "#": StaticObject.BARRIER,
             "_": StaticObject.PRESSURE_PLATE,
+            "C": StaticObject.CUTTING_BOARD,
+            "G": StaticObject.GRILL,
+            "M": StaticObject.BLENDER,
+            "S": StaticObject.SINK,
+            "D": StaticObject.DIRTY_PLATE_PILE,
         }
 
         # Add ingredient piles 0-9
@@ -1411,6 +1625,19 @@ class Layout:
         # Ensure at least one ingredient type
         if num_ingredients == 0:
             num_ingredients = 1
+
+        # Prep chains introduce processed ingredient types (raw idx + offset).
+        # Expand num_ingredients so recipes and observations can reference them.
+        prep_chain_raws = [
+            raw_idx
+            for raw_idx, station in PREP_STATION_FOR_RAW.items()
+            if (static_objects == StaticObject.INGREDIENT_PILE_BASE + raw_idx).any()
+            or (static_objects == station).any()
+        ]
+        if prep_chain_raws:
+            num_ingredients = max(
+                num_ingredients, max(prep_chain_raws) + PREP_PROCESSED_OFFSET + 1
+            )
 
         # Build moving wall info with bounce config
         if moving_wall_bounce is None:
@@ -1847,4 +2074,47 @@ overcooked_v3_layouts = {
         island_plus_choke, possible_recipes=[[0, 0, 0]],
     ),
 
+    # Prep station kitchens (multi-stage preparation)
+    "cutting_board_room": Layout.from_string(
+        cutting_board_room, possible_recipes=[[5, 5, 5]],
+    ),
+    "grill_room": Layout.from_string(
+        grill_room, possible_recipes=[[6, 6, 6]],
+    ),
+    "blender_room": Layout.from_string(
+        blender_room, possible_recipes=[[7, 7, 7]],
+    ),
+    "prep_kitchen": Layout.from_string(
+        prep_kitchen, possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+    ),
+
+    # Prep station handoff kitchens: a counter wall separates the prep side
+    # from the cook side, so processed ingredients must be handed over.
+    "cutting_board_handoff": Layout.from_string(
+        cutting_board_handoff, possible_recipes=[[5, 5, 5]],
+    ),
+    "grill_handoff": Layout.from_string(
+        grill_handoff, possible_recipes=[[6, 6, 6]],
+    ),
+    "blender_handoff": Layout.from_string(
+        blender_handoff, possible_recipes=[[7, 7, 7]],
+    ),
+    "prep_kitchen_handoff": Layout.from_string(
+        prep_kitchen_handoff, possible_recipes=[[5, 5, 5], [6, 6, 6], [7, 7, 7]],
+    ),
+
+    # Dish washing kitchens (pass enable_dish_washing=True to activate the
+    # finite plate stack, the dirty pile and the sink).
+    "dish_washing_room": Layout.from_string(
+        dish_washing_room, possible_recipes=[[0, 0, 0]],
+    ),
+    "dish_washing_kitchen": Layout.from_string(
+        dish_washing_kitchen, possible_recipes=[[0, 0, 0]],
+    ),
+    "dish_washing_handoff": Layout.from_string(
+        dish_washing_handoff, possible_recipes=[[0, 0, 0]],
+    ),
+    "prep_dish_kitchen": Layout.from_string(
+        prep_dish_kitchen, possible_recipes=[[5, 5, 5]],
+    ),
 }

@@ -123,6 +123,10 @@ class State:
     macro_action_done: chex.Array
     macro_step_count: chex.Array
 
+    # Dish washing counters, mirroring the base OvercookedV3 state.
+    plate_stack_count: chex.Array = 0
+    dirty_pile_count: chex.Array = 0
+
 
 class OvercookedV3Macro(OvercookedV3):
     """Overcooked V3 with temporally extended macro actions."""
@@ -313,6 +317,8 @@ class OvercookedV3Macro(OvercookedV3):
             terminal=state.terminal,
             recipe=state.recipe,
             new_correct_delivery=state.new_correct_delivery,
+            plate_stack_count=state.plate_stack_count,
+            dirty_pile_count=state.dirty_pile_count,
             current_macro_actions=jnp.full(
                 (self.num_agents,), MacroActions.wait, dtype=jnp.int32
             ),

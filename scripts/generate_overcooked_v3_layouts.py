@@ -219,6 +219,11 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
             "generator.num_shared_tiles cannot exceed the number of interior "
             f"counters ({counter_count})"
         )
+    if num_shared_tiles is not None and num_shared_tiles > counter_count:
+        raise ValueError(
+            "generator.num_shared_tiles cannot exceed the number of interior "
+            f"counters ({counter_count})"
+        )
     if config["workflow_mode"] == "shared" and counter_count == 0:
         raise ValueError(
             "generator.workflow_mode 'shared' requires an interior counter for "

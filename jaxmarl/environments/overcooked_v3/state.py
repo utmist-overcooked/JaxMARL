@@ -83,3 +83,9 @@ class State:
 
     # Delivery tracking
     new_correct_delivery: bool = False
+
+    # Dish washing (only meaningful when the env enables dish washing).
+    # plate_stack_count + dirty_pile_count + every plate held or lying on the
+    # grid is invariant and equals num_plates.
+    plate_stack_count: chex.Array = 0
+    dirty_pile_count: chex.Array = 0
