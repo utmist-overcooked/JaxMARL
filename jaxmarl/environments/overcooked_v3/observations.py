@@ -17,6 +17,8 @@ def calculate_observation_shape(
     layout,
     observation_type,
     agent_view_size,
+    enable_order_queue: bool = False,
+    max_orders: int = 1,
 ) -> Tuple[int, ...]:
     """Calculate observation shape from static layout and observation settings."""
     if agent_view_size:
@@ -36,10 +38,15 @@ def calculate_observation_shape(
             # - static_layers: 11
             # - ingredient_pile_layers: num_ing
             # - ingredients_layers: 2 + num_ing
-            # - recipe_layers: 2 + num_ing
+            # - recipe_layers: (2 + num_ing) per visible recipe slot
             # - extra_layers: 1 (pot timer)
-            # Total: 30 + 5 * num_ingredients
-            num_layers = 30 + 5 * num_ingredients
+            # Queue-off uses one slot; queue-on exposes all max_orders slots.
+            num_recipe_slots = max_orders if enable_order_queue else 1
+            num_layers = (
+                28
+                + 4 * num_ingredients
+                + num_recipe_slots * (2 + num_ingredients)
+            )
             return (view_height, view_width, num_layers)
         if obs_type == ObservationType.FEATURIZED:
             return (64,)
@@ -130,14 +137,29 @@ def get_obs_default(state: State, config: OvercookedV3Config) -> chex.Array:
 
     recipe_indicator_mask = static_objects == StaticObject.RECIPE_INDICATOR
     has_recipe_indicator = jnp.any(recipe_indicator_mask)
-    # Order queues can change the target recipe mid-episode. Some older
-    # layouts, including around_the_island, have no R tile because they used
-    # a fixed recipe; broadcast the active order in the existing recipe
-    # channels so the policy can observe what should be delivered.
-    recipe_visible_mask = recipe_indicator_mask | (
-        config.enable_order_queue & ~has_recipe_indicator
+    # An R tile spatially gates recipe information. Layouts without one expose
+    # the current recipe (or the complete queue) at every visible grid cell.
+    recipe_visible_mask = recipe_indicator_mask | ~has_recipe_indicator
+
+    if config.enable_order_queue:
+        safe_order_types = jnp.clip(
+            state.order_types,
+            0,
+            config.order_recipe_encodings.shape[0] - 1,
+        )
+        visible_recipes = jnp.where(
+            state.order_active_mask,
+            config.order_recipe_encodings[safe_order_types],
+            0,
+        )
+    else:
+        visible_recipes = state.recipe[None]
+
+    recipe_ingredients = jnp.where(
+        recipe_visible_mask[..., None],
+        visible_recipes[None, None, :],
+        0,
     )
-    recipe_ingredients = jnp.where(recipe_visible_mask, state.recipe, 0)
 
     pot_timer_layer = jnp.zeros((height, width), dtype=jnp.int32)
     for i in range(MAX_POTS):
@@ -177,7 +199,13 @@ def get_obs_default(state: State, config: OvercookedV3Config) -> chex.Array:
         other_agent_layers = all_agent_layers - agent_layer
 
         ingredients_layers = _ingredient_layers(ingredients)
-        recipe_layers = _ingredient_layers(recipe_ingredients)
+        recipe_layers = jnp.concatenate(
+            [
+                _ingredient_layers(recipe_ingredients[..., slot_idx])
+                for slot_idx in range(recipe_ingredients.shape[-1])
+            ],
+            axis=-1,
+        )
 
         ingredient_pile_encoding = jnp.array(
             [

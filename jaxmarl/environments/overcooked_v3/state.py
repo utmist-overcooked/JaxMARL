@@ -6,11 +6,13 @@ import chex
 
 from jaxmarl.environments.overcooked_v3.common import Agent
 
+
 class ObservationType(str, Enum):
     """Available observation encodings for Overcooked V3 agents."""
 
     DEFAULT = "default"
     FEATURIZED = "featurized"
+
 
 @chex.dataclass
 class State:
@@ -31,10 +33,10 @@ class State:
     pot_cook_durations: chex.Array  # [max_pots] - sampled steps until ready
     pot_active_mask: chex.Array  # [max_pots] - bool, which pot slots are valid
 
-    # Order queue state (optional feature)
-    order_types: chex.Array  # [max_orders] - SoupType enum values
-    order_expirations: chex.Array  # [max_orders] - steps remaining
-    order_active_mask: chex.Array  # [max_orders] - bool, which order slots are valid
+    # Fixed-size order queue arrays; inactive when enable_order_queue is false.
+    order_types: chex.Array  # [max_orders] - one-based recipe indices
+    order_expirations: chex.Array  # [max_orders] - remaining lifetimes
+    order_active_mask: chex.Array  # [max_orders] - occupied queue slots
 
     # Item conveyor state
     item_conveyor_positions: chex.Array  # [max_item_conveyors, 2] - (y, x)
@@ -80,6 +82,8 @@ class State:
     time: chex.Array
     terminal: bool
     recipe: int  # Current target recipe (bit-encoded)
+    next_recipe_idx: chex.Array  # Next layout recipe used by alternating mode
 
     # Delivery tracking
-    new_correct_delivery: bool = False
+    new_correct_delivery: bool
+    new_correct_delivery_types: chex.Array  # [num_agents], 0 means none

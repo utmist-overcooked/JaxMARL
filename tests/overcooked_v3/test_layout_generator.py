@@ -351,7 +351,7 @@ def test_json_loader_reads_and_runs_generated_layout(tmp_path):
     assert layout.width == 8
     assert len(layout.agent_positions) == 2
     assert layout.get_info()["num_ingredient_piles"] == {0: 2, 1: 1}
-    assert OvercookedV3(layout=layout).layout is layout
+    assert OvercookedV3(layout=layout, recipe_mode="alternating").layout is layout
 
 
 def test_json_loader_accepts_legacy_grid_key(tmp_path):
