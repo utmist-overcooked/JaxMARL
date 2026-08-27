@@ -4,6 +4,7 @@ import math
 from functools import partial
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 try:
     import imageio
@@ -134,17 +135,17 @@ class OvercookedV3Visualizer:
         """Animate a gif from a state sequence and save to file."""
         if not HAS_IMAGEIO:
             raise ImportError("imageio is required for animation. Install with: pip install imageio")
-        frame_seq = jax.vmap(self._render_state, in_axes=(0, None))(
-            state_seq, agent_view_size
-        )
+        frame_seq = self.render_sequence(state_seq, agent_view_size)
         imageio.mimsave(filename, frame_seq, "GIF", duration=0.5)
 
     def render_sequence(self, state_seq, agent_view_size=None):
         """Render a sequence of states to images."""
-        frame_seq = jax.vmap(self._render_state, in_axes=(0, None))(
-            state_seq, agent_view_size
-        )
-        return frame_seq
+        num_frames = jax.tree_util.tree_leaves(state_seq)[0].shape[0]
+        frames = []
+        for frame_idx in range(num_frames):
+            state = jax.tree_util.tree_map(lambda x: x[frame_idx], state_seq)
+            frames.append(np.asarray(jax.device_get(self._render_state(state, agent_view_size))))
+        return np.stack(frames, axis=0)
 
     @classmethod
     def _encode_agent_extras(cls, direction, idx):
@@ -424,7 +425,20 @@ class OvercookedV3Visualizer:
 
         static_objects = grid[:, :, 0]
 
-        # Show recipe on recipe indicators
+        # Show recipe on recipe indicators. Older fixed-recipe layouts may not
+        # contain an R tile; when the order queue is enabled, draw a render-only
+        # order board in the top-left corner so GIFs expose the active order.
+        recipe_indicator_mask = static_objects == StaticObject.RECIPE_INDICATOR
+        has_recipe_indicator = jnp.any(recipe_indicator_mask)
+        render_order_board = getattr(self.env, "enable_order_queue", False) & (
+            ~has_recipe_indicator
+        )
+        grid = jax.lax.select(
+            render_order_board,
+            grid.at[0, 0, 0].set(StaticObject.RECIPE_INDICATOR),
+            grid,
+        )
+        static_objects = grid[:, :, 0]
         recipe_indicator_mask = static_objects == StaticObject.RECIPE_INDICATOR
         new_ingredients_layer = jnp.where(
             recipe_indicator_mask,
@@ -928,8 +942,9 @@ class OvercookedV3Visualizer:
         ingredients = cell[1]
         time_left = cell[2]
 
+        burn_enabled = pot_burn_time > 0
         is_cooking = time_left > pot_burn_time
-        is_burning = (time_left > 0) & (time_left <= pot_burn_time)
+        is_burning = burn_enabled & (time_left > 0) & (time_left <= pot_burn_time)
         is_cooked = (ingredients & DynamicObject.COOKED) != 0
         is_burned = (ingredients & DynamicObject.BURNED) != 0
         is_idle = ~is_cooking & ~is_burning & ~is_cooked & ~is_burned
@@ -969,13 +984,15 @@ class OvercookedV3Visualizer:
 
         img = jax.lax.select(pot_open, img_open, img_closed)
 
-        # Render progress bar (green for cooking, orange for burning window)
+        # Render progress bar (green while cooking, orange while cooked but
+        # approaching burn/expiry). The environment stores total remaining time
+        # as cook_duration + burn_time so the visualizer can show both phases.
         cook_duration = jnp.where(
             pot_cook_duration > 0, pot_cook_duration, pot_cook_time
         )
         initial_timer = cook_duration + pot_burn_time
-        cooking_progress = (initial_timer - time_left) / cook_duration
-        burning_progress = (pot_burn_time - time_left) / pot_burn_time
+        cooking_progress = (initial_timer - time_left) / jnp.maximum(cook_duration, 1)
+        burning_progress = (pot_burn_time - time_left) / jnp.maximum(pot_burn_time, 1)
 
         progress_fn_cooking = rendering.point_in_rect(
             0.1, 0.1 + 0.8 * jnp.clip(cooking_progress, 0, 1), 0.83, 0.88
