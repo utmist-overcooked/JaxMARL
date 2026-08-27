@@ -105,15 +105,19 @@ WWXWW
 """
 
 race_against_the_clock = """
-XWWWWWWWWWW 2
-            1
- WWWWWWWWWW 0
-AB        WWW
+WWWWWWWWWWWWW
+B           2
+XWWWWWWWWWW 1
+            0
+ WWWWWWWWWWWW
+AW          W
 PW          W
-AB        WWW
- WWWWWWWWWW 0
-            1
-XWWWWWWWWWW 2
+AW          W
+ WWWWWWWWWWWW
+            0
+XWWWWWWWWWW 1
+B           2
+WWWWWWWWWWWWW
 """
 
 maze_conveyor_hell  = """
@@ -285,6 +289,20 @@ W P B       AW
 WWWWWWWWWWWWWW
 """
 
+center_transport = """
+W1WWWWWWWBW
+W         W
+W WWWWWWW W
+W WWW WWW W
+W WW   WW W
+2 W  R  W 0
+W WW A WW W
+W WWW WWW W
+W WWWWWWW W
+W    A    W
+WPWWWWWWWXW
+"""
+
 # List of All Pressure Plate & Button Levels:
 
 # pressure_plate_demo, pressure_gated_conveyor_access, pressure_gated_circuit, pressure_gated_zones, twin_movement
@@ -327,11 +345,11 @@ pressure_gated_zones = """
 WWWWWWW0W
 WP  #   1
 W _ # _ W
-W   #   W
+W  A#   W
 W###W###W
-W   #   W
-W _ # _AW
-WB  # AXW
+W   #A  W
+W _ # _ W
+WB  #  XW
 WWWWWWWWW
 """
 
@@ -368,27 +386,60 @@ WA  #  PW
 WWWWWWRWW
 """
 
-button_gated_circuit = """
-WWWWWWWWW
-W   #   W
-W PWWW0 W
-W W ! W W
-W#W!A!W#W
-W W ! W W
-W XWWWB W
-W   #  AW
-WWWWWWRWW
+button_gated_access = """
+WWWWWWWWWWBWW
+!   W   #   W
+W W W W W   0
+W W W W W   W
+WAW W XARWWWW
+W W W W W   W
+W W W W W   P
+! W   W #   W
+WWWWWWWWWW1WW
 """
+
+button_gated_circuit = """
+WWWWWWWWWWWWW
+W   W # W   W
+W W W W W W W
+W W   W   W W
+W WPWWWWW0W W
+W   WW!WW   W
+W#WWW!A!WWW#W
+W   WW!WW   W
+W WXWWWWWBW W
+W W   W   W W
+W W W W W W W
+W   W # W  AW
+WWWWWWWWWWWWW
+"""
+# button_gated_circuit = """
+# WWWWWWWWWWWWWWW
+# W    W # W    W
+# W WW W W W WW W
+# W WW   W   WW W
+# W   W  W  W   W
+# WWW  PWWW0  WWW
+# W    WW!WW    W
+# W#WWWW!A!WWWW#W
+# W    WW!WW    W
+# WWW  XWWWB  WWW
+# W   W  W  W   W
+# W WW   W   WW W
+# W WW W W W WW W
+# W    W # W   AW
+# WWWWWWWWWWWWWWW
+# """
 
 button_gated_zones = """
 WWWWWWW0W
 WP  #   1
 W ! # ! W
-W   #   W
+W  A#   W
 W###W###W
-W   #   W
-W ! # !AW
-WB  # AXW
+W   #A  W
+W ! # ! W
+WB  #  XW
 WWWWWWWWW
 """
 
@@ -1715,10 +1766,10 @@ overcooked_v3_layouts = {
         pressure_gated_zones,
         possible_recipes=[[0, 0, 0]],
         pressure_plate_config=[
-            ((0, 1, 2, 3, 4, 5), ButtonAction.TOGGLE_BARRIER),
-            ((0, 1, 2, 6, 7, 8), ButtonAction.TOGGLE_BARRIER),
-            ((3, 4, 5, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
             ((6, 7, 8, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+            ((3, 4, 5, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+            ((0, 1, 2, 6, 7, 8), ButtonAction.TOGGLE_BARRIER),
+            ((0, 1, 2, 3, 4, 5), ButtonAction.TOGGLE_BARRIER),          
         ],
         barrier_config=[True] * 12,
     ),
@@ -1772,14 +1823,27 @@ overcooked_v3_layouts = {
         ],
     ),
 
+    "button_gated_access": Layout.from_string(
+        button_gated_access,
+        possible_recipes=[[0, 0, 0], [1, 1, 1]],
+        button_config=[
+            (0, ButtonAction.TIMED_BARRIER),
+            (1, ButtonAction.TIMED_BARRIER),
+        ],
+        barrier_config=[
+            True,
+            True,
+        ],
+    ),
+
     "button_gated_circuit": Layout.from_string(
         button_gated_circuit,
         possible_recipes=[[0, 0, 0]],
         button_config=[
-            (0, ButtonAction.TOGGLE_BARRIER),
-            (1, ButtonAction.TOGGLE_BARRIER),
-            (2, ButtonAction.TOGGLE_BARRIER),
-            (3, ButtonAction.TOGGLE_BARRIER),
+            (0, ButtonAction.TIMED_BARRIER),
+            (1, ButtonAction.TIMED_BARRIER),
+            (2, ButtonAction.TIMED_BARRIER),
+            (3, ButtonAction.TIMED_BARRIER),
         ],
         barrier_config=[
             True,
@@ -1793,10 +1857,10 @@ overcooked_v3_layouts = {
         button_gated_zones,
         possible_recipes=[[0, 0, 0]],
         button_config=[
-            ((0, 1, 2, 3, 4, 5), ButtonAction.TOGGLE_BARRIER),
-            ((0, 1, 2, 6, 7, 8), ButtonAction.TOGGLE_BARRIER),
-            ((3, 4, 5, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
-            ((6, 7, 8, 9, 10, 11), ButtonAction.TOGGLE_BARRIER),
+            ((6, 7, 8, 9, 10, 11), ButtonAction.TIMED_BARRIER),
+            ((3, 4, 5, 9, 10, 11), ButtonAction.TIMED_BARRIER),
+            ((0, 1, 2, 6, 7, 8), ButtonAction.TIMED_BARRIER),
+            ((0, 1, 2, 3, 4, 5), ButtonAction.TIMED_BARRIER),
         ],
         barrier_config=[True] * 12,
     ),
@@ -1847,4 +1911,13 @@ overcooked_v3_layouts = {
         island_plus_choke, possible_recipes=[[0, 0, 0]],
     ),
 
+    "center_transport": Layout.from_string(
+        center_transport,
+        possible_recipes=[[0, 0, 0], [1, 1, 1], [2, 2, 2]],
+    ),
+
+    "race_against_the_clock": Layout.from_string(
+        race_against_the_clock,
+        possible_recipes=[[0, 0, 0], [1, 1, 1], [2, 2, 2]],
+    ),
 }
