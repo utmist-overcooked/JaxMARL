@@ -49,6 +49,7 @@ For more details, take a look at our [blog post](https://blog.foersterlab.com/ja
 | 🔴 MPE | [Paper](https://arxiv.org/abs/1706.02275) | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/jaxmarl/environments/mpe) | Communication orientated tasks in a multi-agent particle world
 | 🍲 Overcooked | [Paper](https://arxiv.org/abs/1910.05789) | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/jaxmarl/environments/overcooked) | Fully-cooperative human-AI coordination tasks based on the video game of the same name | 
 | 🥘 OvercookedV2 | [Paper](https://arxiv.org/abs/2503.17821) | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/jaxmarl/environments/overcooked_v2) | Partially observable and stochastic extention of Overcooked. Fully-cooperative. | 
+| 🍳 Overcooked V3 | — | [`jaxmarl/environments/overcooked_v3`](jaxmarl/environments/overcooked_v3) | Extensible Overcooked environment with primitive and macro-action interfaces. |
 | 🦾 Multi-Agent Brax | [Paper](https://arxiv.org/abs/2003.06709) | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/jaxmarl/environments/mabrax) | Continuous multi-agent robotic control based on Brax, analogous to Multi-Agent MuJoCo |
 | 🎆 Hanabi | [Paper](https://arxiv.org/abs/1902.00506) | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/jaxmarl/environments/hanabi) | Fully-cooperative partially-observable multiplayer card game |
 | 👾 SMAX | Novel | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/jaxmarl/environments/smax) | Simplified cooperative StarCraft micro-management environment |
@@ -72,6 +73,22 @@ We follow CleanRL's philosophy of providing single file implementations which ca
 | TransfQMIX | [Paper](https://www.southampton.ac.uk/~eg/AAMAS2023/pdfs/p1679.pdf) | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/baselines/QLearning) |
 | SHAQ | [Paper](https://arxiv.org/abs/2105.15013) | [Source](https://github.com/FLAIROx/JaxMARL/tree/main/baselines/QLearning) |
 | PQN-VDN | [Paper](https://arxiv.org/abs/2407.04811) | [Source](https://github.com/mttga/purejaxql) |
+
+### Overcooked V3 baselines and rollout GIFs
+
+Current Overcooked V3 trainers share the interface in
+[`baselines/overcooked_v3`](baselines/overcooked_v3). Model-specific adapters
+define how observations and model state become actions; the shared code runs the
+environment episode, renders it, saves the GIF locally, and optionally uploads
+it to W&B. Primitive MAPPO, IPPO CNN/RNN, the IC3Net family, and all three macro
+MAPPO trainers use this interface.
+
+GIFs are attached to actual saved checkpoints. Configure the number of saved
+checkpoints and the number of GIFs with `NUM_CHECKPOINTS` and
+`ROLLOUT_GIF_COUNT`. The counts must divide evenly: 20 checkpoints and 10 GIFs
+produce GIFs for checkpoints 2, 4, ..., 20, including the final model. See the
+[Overcooked V3 baseline README](baselines/overcooked_v3/README.md) for the model
+adapter contract and configuration details.
 
 <h2 name="install" id="install">Installation 🧗 </h2>
 

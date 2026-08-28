@@ -1,6 +1,6 @@
 """Shared building blocks for the Overcooked V3 macro-action MAPPO baselines.
 
-The three trainers intentionally keep their rollout semantics in separate
+The three trainers intentionally keep their action-selection behavior in separate
 files. This module contains only representation, optimization, and return
 calculation code that should remain identical between experiments.
 """
@@ -490,6 +490,8 @@ def emit_live_metrics(update_index, metrics, steps_per_update: int, config: Dict
 
 
 def _host_save_checkpoint(completed_updates, runner):
+    """Persist one resumable checkpoint and its selected rollout GIF."""
+
     output_dir = _RUN_CONTEXT.get("output_dir")
     if output_dir is None:
         return
@@ -503,6 +505,25 @@ def _host_save_checkpoint(completed_updates, runner):
         {"completed_updates": completed_updates, "path": checkpoint_path.name}
     ).encode("utf-8")
     _atomic_write(checkpoint_dir / "latest.json", latest)
+
+    checkpoint_logging = _RUN_CONTEXT.get("checkpoint_logging")
+    if checkpoint_logging is not None:
+        checkpoint_index = _RUN_CONTEXT["checkpoint_index_by_update"][
+            completed_updates
+        ]
+        config = _RUN_CONTEXT["config"]
+        checkpoint_logging.checkpoint_saved(
+            runner[0].params,
+            checkpoint_index=checkpoint_index,
+            update_step=completed_updates,
+            env_step=(
+                completed_updates
+                * int(config["NUM_STEPS"])
+                * int(config["NUM_ENVS"])
+            ),
+            training_seed=_RUN_CONTEXT["training_seed"],
+            run_name=_RUN_CONTEXT["run_name"],
+        )
 
 
 def maybe_checkpoint(update_index, runner, config: Dict):
@@ -714,6 +735,32 @@ def run_experiment(config: Dict, make_train: Callable, experiment_name: str):
 
     from jaxmarl.wrappers.baselines import save_params
 
+    from baselines.overcooked_v3.models.mappo_macro import (
+        MacroMAPPORolloutPolicy,
+        make_macro_rollout_environment,
+    )
+    from baselines.overcooked_v3.training import OvercookedV3Training
+    from baselines.overcooked_v3.gif_logging import saved_checkpoint_updates
+
+    config = dict(config)
+    steps_per_update = int(config["NUM_STEPS"]) * int(config["NUM_ENVS"])
+    config["NUM_UPDATES"] = int(config["TOTAL_TIMESTEPS"]) // steps_per_update
+    checkpoint_interval = int(config.get("CHECKPOINT_INTERVAL_UPDATES", 0))
+    checkpoint_updates = []
+    if checkpoint_interval > 0 and config.get("SAVE_PATH"):
+        checkpoint_updates = saved_checkpoint_updates(
+            config["NUM_UPDATES"],
+            checkpoint_interval,
+        )
+    config["NUM_CHECKPOINTS"] = len(checkpoint_updates)
+    config.setdefault("ROLLOUT_GIF_ENABLED", bool(checkpoint_updates))
+    config.setdefault("ROLLOUT_GIF_COUNT", 1 if checkpoint_updates else 0)
+    checkpoint_index_by_update = {
+        update: index
+        for index, update in enumerate(checkpoint_updates, start=1)
+    }
+    variant = experiment_name.removeprefix("mappo_macro_")
+
     rngs = jax.random.split(
         jax.random.PRNGKey(int(config["SEED"])), int(config["NUM_SEEDS"])
     )
@@ -743,11 +790,32 @@ def run_experiment(config: Dict, make_train: Callable, experiment_name: str):
             save_code=False,
             reinit=True,
         )
+        checkpoint_logging = OvercookedV3Training(
+            config,
+            lambda rollout_env: MacroMAPPORolloutPolicy.create(
+                rollout_env,
+                config,
+                variant,
+            ),
+            make_macro_rollout_environment,
+        )
         _RUN_CONTEXT.clear()
         _RUN_CONTEXT.update(
             {
                 "wandb": wandb,
                 "output_dir": output_dir,
+                "checkpoint_logging": checkpoint_logging,
+                "checkpoint_index_by_update": checkpoint_index_by_update,
+                "config": config,
+                "training_seed": int(rng[0]),
+                "run_name": (
+                    wandb.run.name
+                    if (
+                        config.get("WANDB_MODE", "disabled") != "disabled"
+                        and wandb.run is not None
+                    )
+                    else f"{experiment_name}_seed_{seed_index}"
+                ),
                 "best_eval_return": _initial_best_eval_return(
                     output_dir, config.get("RESUME_FROM")
                 ),
