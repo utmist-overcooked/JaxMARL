@@ -425,6 +425,26 @@ def main():
     )
     if args.checkpoint_label is None:
         args.checkpoint_label = args.run_dir.name
+
+    # Fail with an explanation rather than a bare KeyError deeper down. Only
+    # mappo_macro_every_step_comm.py produces comm runs, and it requires the
+    # interruptible env -- so a boundary/replan run dir has no VOCAB_SIZE or
+    # FROZEN_ACTOR_PATH and is not a valid target for this script.
+    missing = [k for k in ("VOCAB_SIZE", "FROZEN_ACTOR_PATH") if k not in config]
+    if missing or config.get("ENV_NAME") != "overcooked_v3_macro_interruptible":
+        raise ValueError(
+            f"{args.run_dir} does not look like a comm training run "
+            f"(ENV_NAME={config.get('ENV_NAME')!r}"
+            + (f", missing config keys {missing}" if missing else "")
+            + "). This script only evaluates runs produced by "
+            "mappo_macro_every_step_comm.py, which trains a comm module on top "
+            "of a frozen every_step macro actor and requires "
+            "overcooked_v3_macro_interruptible. There is no comm variant of the "
+            "boundary or replan trainers. For a non-comm run use "
+            "scripts/visualize_macro_mappo_rollout.py with the matching "
+            "--variant instead."
+        )
+
     env = build_env(config)
 
     actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]))

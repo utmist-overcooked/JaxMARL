@@ -350,6 +350,21 @@ def main(config):
     config = OmegaConf.to_container(config, resolve=True)
     if config["ENV_NAME"] != "overcooked_v3_macro":
         raise ValueError("Boundary MAPPO requires the committed macro environment")
+    if config.get("USE_RNN", False):
+        # Fail loudly rather than silently training an MLP: the recurrent path
+        # is implemented only in mappo_macro_every_step.py. Boundary stores
+        # pending["obs"] -- a snapshot held from the step the macro STARTED --
+        # so its trajectory axis is not the real per-step observation stream a
+        # GRU needs. Replaying it through ScannedRNN would produce hidden
+        # states that never occurred during rollout, making the PPO ratio wrong.
+        # Supporting it needs either a stored-carry snapshot in the pending
+        # buffer (no BPTT) or a separate per-step obs stream with advantages
+        # scattered from macro-completion back to macro-start.
+        raise ValueError(
+            "USE_RNN is not supported by Boundary MAPPO -- only "
+            "mappo_macro_every_step.py implements the recurrent path. "
+            "Set USE_RNN=false to run the boundary variant."
+        )
     run_experiment(config, make_train, Path(__file__).stem)
 
 
