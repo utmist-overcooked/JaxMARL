@@ -132,7 +132,26 @@ def swap_two_agent_messages(message):
     return message[::-1]
 
 
-def select_actions_comm(actor, comm_module, actor_params, comm_params, obs, env):
+def select_actions_comm(
+    actor,
+    comm_module,
+    actor_params,
+    comm_params,
+    obs,
+    env,
+    last_message,
+    boundary_gated,
+):
+    """Deterministic comm action selection for both comm variants.
+
+    boundary_gated=False (every_step comm): a message is recomputed every
+        primitive step and the macro may switch every step.
+    boundary_gated=True (boundary comm): a new message is only emitted where
+        the agent is at a macro boundary -- otherwise its previous message
+        persists -- and a new macro is only committed at a boundary. This
+        mirrors mappo_macro_boundary_comm.py's rollout exactly; evaluating a
+        boundary comm run without the gating would not reproduce training.
+    """
     actor_obs = jnp.stack([obs[agent] for agent in env.agents])
     action_mask = obs["action_mask"].astype(jnp.bool_)
 
@@ -140,6 +159,8 @@ def select_actions_comm(actor, comm_module, actor_params, comm_params, obs, env)
         comm_params, actor_obs, method=comm_module.encode_message
     )
     message = jnp.argmax(message_logits, axis=-1)
+    if boundary_gated:
+        message = jnp.where(obs["macro_done"], message, last_message)
     received_message = swap_two_agent_messages(message)
 
     logit_bias = comm_module.apply(
@@ -148,8 +169,9 @@ def select_actions_comm(actor, comm_module, actor_params, comm_params, obs, env)
     base_logits = actor.apply(actor_params, actor_obs)
     final_logits = base_logits + logit_bias
 
-    # Built on the every_step macro variant (no macro_done boundary gating).
     actions = jnp.argmax(jnp.where(action_mask, final_logits, -1e9), axis=-1)
+    if boundary_gated:
+        actions = jnp.where(obs["macro_done"], actions, obs["current_macro"])
     return actions, message
 
 
@@ -234,10 +256,19 @@ def run_episode(
     shaped_return = 0.0
     max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 400))
 
+    # Boundary comm runs use the committed macro env, so both the macro choice
+    # and the outgoing message are gated to macro boundaries (see
+    # select_actions_comm). Detected from the run's own config rather than a
+    # flag so it can't be set inconsistently with the checkpoint.
+    boundary_gated = config["ENV_NAME"] == "overcooked_v3_macro"
+    last_message = jnp.zeros((env.num_agents,), dtype=jnp.int32)
+
     for step in range(max_steps):
         actions, message = select_actions_comm(
-            actor, comm_module, actor_params, comm_params, obs, env
+            actor, comm_module, actor_params, comm_params, obs, env,
+            last_message, boundary_gated,
         )
+        last_message = message
         action_names = tuple(
             env.macro_action_names[int(action)] for action in np.asarray(actions)
         )
@@ -426,23 +457,23 @@ def main():
     if args.checkpoint_label is None:
         args.checkpoint_label = args.run_dir.name
 
-    # Fail with an explanation rather than a bare KeyError deeper down. Only
-    # mappo_macro_every_step_comm.py produces comm runs, and it requires the
-    # interruptible env -- so a boundary/replan run dir has no VOCAB_SIZE or
-    # FROZEN_ACTOR_PATH and is not a valid target for this script.
+    # Fail with an explanation rather than a bare KeyError deeper down. Comm
+    # runs are the ones carrying VOCAB_SIZE/FROZEN_ACTOR_PATH; a plain macro
+    # run dir has neither. Both comm variants are supported here:
+    #   overcooked_v3_macro_interruptible -> mappo_macro_every_step_comm.py
+    #   overcooked_v3_macro               -> mappo_macro_boundary_comm.py
     missing = [k for k in ("VOCAB_SIZE", "FROZEN_ACTOR_PATH") if k not in config]
-    if missing or config.get("ENV_NAME") != "overcooked_v3_macro_interruptible":
+    known_envs = ("overcooked_v3_macro_interruptible", "overcooked_v3_macro")
+    if missing or config.get("ENV_NAME") not in known_envs:
         raise ValueError(
             f"{args.run_dir} does not look like a comm training run "
             f"(ENV_NAME={config.get('ENV_NAME')!r}"
             + (f", missing config keys {missing}" if missing else "")
-            + "). This script only evaluates runs produced by "
-            "mappo_macro_every_step_comm.py, which trains a comm module on top "
-            "of a frozen every_step macro actor and requires "
-            "overcooked_v3_macro_interruptible. There is no comm variant of the "
-            "boundary or replan trainers. For a non-comm run use "
-            "scripts/visualize_macro_mappo_rollout.py with the matching "
-            "--variant instead."
+            + "). This script evaluates runs produced by "
+            "mappo_macro_every_step_comm.py or mappo_macro_boundary_comm.py, "
+            "which train a comm module on top of a frozen macro actor. For a "
+            "non-comm run use scripts/visualize_macro_mappo_rollout.py with the "
+            "matching --variant instead."
         )
 
     env = build_env(config)
