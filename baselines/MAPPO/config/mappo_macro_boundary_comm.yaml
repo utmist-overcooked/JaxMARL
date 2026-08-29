@@ -20,12 +20,18 @@ ANNEAL_LR: true
 USE_RNN: false
 
 ENV_NAME: overcooked_v3_macro
+# IMPORTANT: every obs-affecting entry below (layout, agent_view_size, and
+# anything changing the macro action count) MUST match the frozen run named in
+# FROZEN_ACTOR_PATH. The frozen actor's first Dense layer is sized for that
+# run's observation width; a mismatch is rejected at startup. The safest recipe
+# is to copy ENV_KWARGS verbatim from <frozen run>/config.yaml.
 ENV_KWARGS:
   layout: pressure_gated_circuit
   max_steps: 400
   max_macro_steps: 150  # must exceed pot_cook_time + pot_burn_time (90+60=150 by default) or
                          # wait_for_nearest_pot always times out before the pot is ever ready
-  agent_view_size: 2  # 5x5 window (agent's cell + 2 rings); null/omit for full observability
+  agent_view_size: 1  # 3x3 window -- matches mappo_macro_boundary.yaml, which
+                       # produced the frozen actor this builds on
   dense_task_shaping: true  # TASK_PROGRESS/TASK_FACING/INVALID_MOVE -- dense guidance
                              # toward whatever the current useful target is, on top of
                              # the discrete event rewards in SHAPED_REWARDS
