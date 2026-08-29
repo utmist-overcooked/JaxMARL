@@ -333,6 +333,38 @@ class CriticRNN(nn.Module):
         return hidden, jnp.squeeze(value, axis=-1)
 
 
+def validate_frozen_actor_matches_env(frozen_actor_params, env, config: Dict):
+    """Fail early and legibly when a frozen actor doesn't fit the current env.
+
+    The comm trainers load a macro actor frozen from an earlier run. Its first
+    Dense layer is sized for that run's observation width, which depends on
+    ENV_KWARGS (layout, agent_view_size) and the macro action count. If the comm
+    run's config differs, flax raises a ScopeParamShapeError from deep inside
+    the rollout that says nothing about which setting is wrong -- this turns
+    that into an actionable message naming the mismatch.
+    """
+    try:
+        kernel = frozen_actor_params["params"]["Dense_0"]["kernel"]
+    except (KeyError, TypeError, IndexError):
+        return  # unfamiliar structure: let the normal failure surface instead
+    frozen_obs_size = int(np.shape(kernel)[0])
+    env_obs_size = int(env.observation_space(env.agents[0]).shape[0])
+    if frozen_obs_size == env_obs_size:
+        return
+    raise ValueError(
+        f"Frozen actor expects an observation of width {frozen_obs_size}, but "
+        f"this config's environment produces {env_obs_size}.\n"
+        f"  FROZEN_ACTOR_PATH: {config.get('FROZEN_ACTOR_PATH')}\n"
+        f"  ENV_KWARGS in use: {config.get('ENV_KWARGS')}\n"
+        "Actor observation width is base_obs + num_macro_actions + 2, where "
+        "base_obs is set by ENV_KWARGS.layout and ENV_KWARGS.agent_view_size "
+        "(agent_view_size=v gives a (2v+1)x(2v+1) window; omit it for the full "
+        "grid). Copy ENV_KWARGS verbatim from the frozen run's config.yaml "
+        "(alongside FROZEN_ACTOR_PATH) so the two agree, and make sure "
+        "HIDDEN_SIZE matches that run too."
+    )
+
+
 def build_env(config: Dict):
     env = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
     env = MacroWorldStateWrapper(env)

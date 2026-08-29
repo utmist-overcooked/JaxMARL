@@ -45,6 +45,7 @@ from mappo_macro_common import (
     run_experiment,
     unbatchify,
     update_ppo,
+    validate_frozen_actor_matches_env,
 )
 
 
@@ -164,6 +165,7 @@ def make_train(config):
 
         # Frozen macro policy: loaded once, never updated. Closed over below.
         frozen_actor_params, frozen_critic_params = load_frozen_macro_params(config)
+        validate_frozen_actor_matches_env(frozen_actor_params, env, config)
 
         obs_dim = env.observation_space(env.agents[0]).shape[0]
         rng, comm_rng = jax.random.split(rng)

@@ -49,6 +49,7 @@ from mappo_macro_common import (
     run_experiment,
     unbatchify,
     update_ppo,
+    validate_frozen_actor_matches_env,
 )
 from mappo_macro_every_step_comm import (
     CommModule,
@@ -82,6 +83,7 @@ def make_train(config):
 
         # Frozen boundary macro policy: loaded once, never updated.
         frozen_actor_params, frozen_critic_params = load_frozen_macro_params(config)
+        validate_frozen_actor_matches_env(frozen_actor_params, env, config)
 
         num_actors = config["NUM_ACTORS"]
         num_envs = int(config["NUM_ENVS"])
