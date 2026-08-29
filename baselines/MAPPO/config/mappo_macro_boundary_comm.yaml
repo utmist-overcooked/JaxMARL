@@ -1,0 +1,57 @@
+LR: 0.0003
+NUM_ENVS: 16
+NUM_STEPS: 400        # must be a multiple of ENV_KWARGS.max_steps (boundary requirement)
+TOTAL_TIMESTEPS: 20000000
+REW_SHAPING_HORIZON: 10000000
+HIDDEN_SIZE: 128      # must match the frozen boundary run's HIDDEN_SIZE
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 4
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.05
+VF_COEF: 0.5
+MAX_GRAD_NORM: 0.5
+ANNEAL_LR: true
+
+# Not supported here: the frozen boundary actor is an MLP, and boundary's
+# pending buffer stores a macro-start obs snapshot rather than the per-step
+# observation stream a GRU would need.
+USE_RNN: false
+
+ENV_NAME: overcooked_v3_macro
+ENV_KWARGS:
+  layout: pressure_gated_circuit
+  max_steps: 400
+  max_macro_steps: 150  # must exceed pot_cook_time + pot_burn_time (90+60=150 by default) or
+                         # wait_for_nearest_pot always times out before the pot is ever ready
+  agent_view_size: 2  # 5x5 window (agent's cell + 2 rings); null/omit for full observability
+  dense_task_shaping: true  # TASK_PROGRESS/TASK_FACING/INVALID_MOVE -- dense guidance
+                             # toward whatever the current useful target is, on top of
+                             # the discrete event rewards in SHAPED_REWARDS
+
+SEED: 0
+NUM_SEEDS: 1
+SAVE_PATH: models/mappo_macro
+WANDB_MODE: online
+ENTITY: "zacharytang24-"
+PROJECT: "veer-macro-actions-comm"
+LOG_INTERVAL_UPDATES: 10
+CHECKPOINT_INTERVAL_UPDATES: 100
+EVAL_INTERVAL_UPDATES: 100
+NUM_EVAL_ENVS: 8
+EVAL_SEED: 42
+RESUME_FROM: null
+
+VOCAB_SIZE: 2              # 2 discrete message symbols per macro boundary
+MESSAGE_EMBED_DIM: 2       # tiny vocab -> tiny embedding table
+COMM_HIDDEN_SIZE: 64       # comm module is a thin side-network
+
+MESSAGE_ENT_COEF: 0.05     # extra entropy pressure so a small vocab doesn't
+                            # collapse onto a single symbol early
+MESSAGE_LOSS_COEF: 1.0     # equal weight to the action loss to start
+
+# Point these at a COMPLETED mappo_macro_boundary.py run (not an every_step
+# one -- the env and macro semantics differ). HIDDEN_SIZE above must match it.
+FROZEN_ACTOR_PATH: models/mappo_macro/mappo_macro_boundary/seed_0/final_actor.safetensors
+FROZEN_CRITIC_PATH: models/mappo_macro/mappo_macro_boundary/seed_0/final_critic.safetensors
