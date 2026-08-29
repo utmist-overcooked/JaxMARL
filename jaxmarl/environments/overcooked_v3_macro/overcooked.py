@@ -387,7 +387,7 @@ class OvercookedV3Macro(OvercookedV3):
         )
         target_mask = jnp.where(
             macro_action == MacroActions.get_soup_from_nearest_pot,
-            self._ready_recipe_pot_mask(state),
+            self._ready_recipe_pot_mask(state, agent),
             target_mask,
         )
         target_mask = jnp.where(
@@ -602,7 +602,7 @@ class OvercookedV3Macro(OvercookedV3):
             macro_action == MacroActions.get_soup_from_nearest_pot,
             ((inventory & DynamicObject.COOKED) != 0)
             | (inventory != DynamicObject.PLATE)
-            | ~jnp.any(self._ready_recipe_pot_mask(state)),
+            | ~jnp.any(self._ready_recipe_pot_mask(state, agent)),
             done,
         )
         done = jnp.where(
@@ -646,8 +646,8 @@ class OvercookedV3Macro(OvercookedV3):
             )
         done = jnp.where(
             macro_action == MacroActions.wait_for_nearest_pot,
-            jnp.any(self._ready_recipe_pot_mask(state))
-            | ~jnp.any(state.pot_cooking_timer > 0),
+            jnp.any(self._ready_recipe_pot_mask(state, agent))
+            | ~self._any_pot_cooking_visible(state, agent),
             done,
         )
         return done | ~macro_reachable
@@ -818,11 +818,62 @@ class OvercookedV3Macro(OvercookedV3):
             & pot_not_finished
         )
 
-    def _ready_recipe_pot_mask(self, state: State) -> chex.Array:
+    def _agent_visible_cell_mask(self, agent: Agent) -> chex.Array:
+        """Grid cells inside this agent's observation window.
+
+        Mirrors the cropping in observations.get_obs_for_type: agent_view_size=v
+        yields a (2v+1)x(2v+1) window centred on the agent. With agent_view_size
+        unset the agent observes the whole grid, so everything is visible.
+        """
+        if self.agent_view_size is None:
+            return jnp.ones((self.height, self.width), dtype=jnp.bool_)
+        yy, xx = jnp.meshgrid(
+            jnp.arange(self.height), jnp.arange(self.width), indexing="ij"
+        )
+        return (jnp.abs(yy - agent.pos.y) <= self.agent_view_size) & (
+            jnp.abs(xx - agent.pos.x) <= self.agent_view_size
+        )
+
+    def _visible_pot_slot_mask(self, state: State, agent: Agent) -> chex.Array:
+        """Which pot slots (not grid cells) this agent can currently see."""
+        if self.agent_view_size is None:
+            return state.pot_active_mask
+        dy = jnp.abs(state.pot_positions[:, 0] - agent.pos.y)
+        dx = jnp.abs(state.pot_positions[:, 1] - agent.pos.x)
+        return (
+            state.pot_active_mask
+            & (dy <= self.agent_view_size)
+            & (dx <= self.agent_view_size)
+        )
+
+    def _any_pot_cooking_visible(self, state: State, agent: Agent) -> chex.Array:
+        """Is a pot the agent can actually see still counting down?
+
+        Used instead of a global `state.pot_cooking_timer > 0` check so
+        wait_for_nearest_pot cannot terminate on knowledge of pots elsewhere.
+        """
+        return jnp.any(
+            (state.pot_cooking_timer > 0) & self._visible_pot_slot_mask(state, agent)
+        )
+
+    def _ready_recipe_pot_mask(
+        self, state: State, agent: Optional[Agent] = None
+    ) -> chex.Array:
+        """Pots holding the finished recipe.
+
+        When `agent` is given the result is restricted to pots inside that
+        agent's observation window, so macros cannot use pot readiness the
+        agent has no way of perceiving. Passing agent=None keeps the original
+        ground-truth behaviour and is only appropriate where a privileged view
+        is intended.
+        """
         pot_mask = state.grid[:, :, 0] == StaticObject.POT
         pot_contents = state.grid[:, :, 1]
         plated_recipe = state.recipe | DynamicObject.PLATE | DynamicObject.COOKED
-        return pot_mask & ((pot_contents | DynamicObject.PLATE) == plated_recipe)
+        ready = pot_mask & ((pot_contents | DynamicObject.PLATE) == plated_recipe)
+        if agent is None:
+            return ready
+        return ready & self._agent_visible_cell_mask(agent)
 
     def _agent_on_static_object(
         self, state: State, agent: Agent, static_object: int
@@ -853,6 +904,10 @@ class OvercookedV3Macro(OvercookedV3):
         def agent_mask(agent_idx):
             inventory = state.agents.inventory[agent_idx]
             inventory_empty = inventory == DynamicObject.EMPTY
+            # Pot-state availability is judged from this agent's own view, so
+            # the mask never advertises a macro whose trigger the agent cannot
+            # perceive (see _ready_recipe_pot_mask / _any_pot_cooking_visible).
+            mask_agent = self._agent_at(state, agent_idx)
             mask = jnp.zeros((self.num_macro_actions,), dtype=jnp.bool_)
             mask = mask.at[MacroActions.wait].set(True)
             for action in (
@@ -884,7 +939,7 @@ class OvercookedV3Macro(OvercookedV3):
             )
             mask = mask.at[MacroActions.get_soup_from_nearest_pot].set(
                 (inventory == DynamicObject.PLATE)
-                & jnp.any(self._ready_recipe_pot_mask(state))
+                & jnp.any(self._ready_recipe_pot_mask(state, mask_agent))
             )
             mask = mask.at[MacroActions.deliver].set(
                 ((inventory & DynamicObject.COOKED) != 0)
@@ -906,7 +961,7 @@ class OvercookedV3Macro(OvercookedV3):
                     state.pressure_plate_active_mask[plate_idx]
                 )
             mask = mask.at[MacroActions.wait_for_nearest_pot].set(
-                jnp.any(state.pot_cooking_timer > 0)
+                self._any_pot_cooking_visible(state, mask_agent)
             )
             return mask.astype(jnp.uint8)
 
