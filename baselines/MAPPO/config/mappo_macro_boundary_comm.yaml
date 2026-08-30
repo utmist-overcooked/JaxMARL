@@ -17,7 +17,7 @@ ANNEAL_LR: true
 # Not supported here: the frozen boundary actor is an MLP, and boundary's
 # pending buffer stores a macro-start obs snapshot rather than the per-step
 # observation stream a GRU would need.
-USE_RNN: false
+USE_RNN: true
 
 ENV_NAME: overcooked_v3_macro
 # IMPORTANT: every obs-affecting entry below (layout, agent_view_size, and

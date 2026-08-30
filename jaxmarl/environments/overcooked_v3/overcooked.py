@@ -105,6 +105,7 @@ class OvercookedV3(MultiAgentEnv):
         delivery_reward: float = DELIVERY_REWARD,
         shaped_rewards: bool = True,
         dense_task_shaping: bool = False,
+        resample_recipe_on_delivery: bool = False,
         # Random initialization
         random_reset: bool = False,
         random_agent_positions: bool = False,
@@ -139,6 +140,10 @@ class OvercookedV3(MultiAgentEnv):
             shaped_rewards: Whether to use shaped intermediate rewards
             dense_task_shaping: Whether to add per-step distance/facing/
                 invalid-move shaping toward each agent's current subtask
+            resample_recipe_on_delivery: Draw a new recipe after every correct
+                delivery instead of once per episode. Turns one recipe draw
+                per episode into one per delivery, so a partner must be told
+                the recipe repeatedly rather than only at reset.
             random_reset: Randomize state on reset
             random_agent_positions: Randomize agent positions only
         """
@@ -277,6 +282,7 @@ class OvercookedV3(MultiAgentEnv):
         self.delivery_reward = delivery_reward
         self.shaped_rewards_enabled = shaped_rewards
         self.dense_task_shaping = dense_task_shaping
+        self.resample_recipe_on_delivery = resample_recipe_on_delivery
 
         # Random reset
         self.random_reset = random_reset
@@ -457,6 +463,7 @@ class OvercookedV3(MultiAgentEnv):
             delivery_reward=self.delivery_reward,
             shaped_rewards_enabled=self.shaped_rewards_enabled,
             dense_task_shaping=self.dense_task_shaping,
+            resample_recipe_on_delivery=self.resample_recipe_on_delivery,
             random_reset=self.random_reset,
             random_agent_positions=self.random_agent_positions,
             possible_recipes=self.possible_recipes,

@@ -9,6 +9,7 @@ from jax import lax
 
 from jaxmarl.environments.overcooked_v3.agent_step import run_agent_action_phase
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
+from jaxmarl.environments.overcooked_v3.initialization import sample_recipe
 from jaxmarl.environments.overcooked_v3.observations import get_obs
 from jaxmarl.environments.overcooked_v3.state import State
 from jaxmarl.environments.overcooked_v3.systems.barriers import (
@@ -31,11 +32,18 @@ def step_overcooked_v3(
 ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
     """Run one environment timestep as a sequence of explicit state transforms."""
     agent_actions = translate_action_dict_to_ordered_action_array(actions, config)
+    # Split off the recipe key only when the feature is on, so runs with it
+    # disabled keep exactly the RNG stream they had before.
+    if config.resample_recipe_on_delivery:
+        key, recipe_key = jax.random.split(key)
+    else:
+        recipe_key = None
     agent_key, order_key = partition_step_key(key, config)
 
     state, reward, shaped_rewards, reward_breakdown = run_agent_action_phase(
         agent_key, state, agent_actions, config
     )
+    state = resample_recipe_after_correct_delivery(recipe_key, state, config)
     state = advance_dynamic_environment_systems(state, config)
     state, reward, reward_breakdown = advance_order_queue_and_add_queue_reward(
         order_key, state, reward, reward_breakdown, config
@@ -64,6 +72,29 @@ def partition_step_key(
         return agent_key, order_key
 
     return key, None
+
+def resample_recipe_after_correct_delivery(
+    key: Optional[chex.PRNGKey], state: State, config: OvercookedV3Config
+) -> State:
+    """Draw a new recipe once a correct delivery lands.
+
+    Without this the recipe is drawn once at reset and fixed for the whole
+    episode, so every soup in an episode is the same order and the episode
+    carries a single recipe's worth of information. Re-drawing per delivery
+    means a partner has to be told the current order repeatedly.
+
+    Runs after the agent phase, so the delivery that triggered it was already
+    scored against the recipe it satisfied; the new recipe applies from here
+    on and is visible in this step's returned observation.
+    """
+    if not config.resample_recipe_on_delivery:
+        return state
+
+    new_recipe = sample_recipe(key, config)
+    return state.replace(
+        recipe=jnp.where(state.new_correct_delivery, new_recipe, state.recipe)
+    )
+
 
 def advance_dynamic_environment_systems(
     state: State, config: OvercookedV3Config

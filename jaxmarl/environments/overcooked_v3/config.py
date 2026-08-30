@@ -32,6 +32,7 @@ class OvercookedV3Config:
     delivery_reward: float
     shaped_rewards_enabled: bool
     dense_task_shaping: bool
+    resample_recipe_on_delivery: bool
     random_reset: bool
     random_agent_positions: bool
     possible_recipes: Any
