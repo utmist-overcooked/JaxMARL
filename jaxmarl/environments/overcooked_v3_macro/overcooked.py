@@ -387,7 +387,7 @@ class OvercookedV3Macro(OvercookedV3):
         )
         target_mask = jnp.where(
             macro_action == MacroActions.get_soup_from_nearest_pot,
-            self._ready_recipe_pot_mask(state, agent),
+            self._cooked_pot_mask(state, agent),
             target_mask,
         )
         target_mask = jnp.where(
@@ -602,7 +602,7 @@ class OvercookedV3Macro(OvercookedV3):
             macro_action == MacroActions.get_soup_from_nearest_pot,
             ((inventory & DynamicObject.COOKED) != 0)
             | (inventory != DynamicObject.PLATE)
-            | ~jnp.any(self._ready_recipe_pot_mask(state, agent)),
+            | ~jnp.any(self._cooked_pot_mask(state, agent)),
             done,
         )
         done = jnp.where(
@@ -646,7 +646,14 @@ class OvercookedV3Macro(OvercookedV3):
             )
         done = jnp.where(
             macro_action == MacroActions.wait_for_nearest_pot,
-            jnp.any(self._ready_recipe_pot_mask(state, agent))
+            # Completes once ANY visible pot has finished cooking, right or
+            # wrong recipe -- that is what an agent watching the pot would
+            # actually perceive. Gating this on the correct recipe instead made
+            # the macro sit through the whole burn window whenever a pot was
+            # cooking the wrong order, terminating only when it burned and
+            # cleared. Correctness stays a reward question, not a perception
+            # one (see _cooked_pot_mask).
+            jnp.any(self._cooked_pot_mask(state, agent))
             | ~self._any_pot_cooking_visible(state, agent),
             done,
         )
@@ -875,6 +882,34 @@ class OvercookedV3Macro(OvercookedV3):
             return ready
         return ready & self._agent_visible_cell_mask(agent)
 
+    def _cooked_pot_mask(
+        self, state: State, agent: Optional[Agent] = None
+    ) -> chex.Array:
+        """Pots holding a finished soup, whether or not it is the right recipe.
+
+        Distinct from _ready_recipe_pot_mask, which additionally requires the
+        contents to match the current order. Macro *targeting* uses this looser
+        notion so an agent can act on a cooked pot it can plainly see -- the
+        base env already permits picking up any cooked soup
+        (pot_is_ready = pot_is_cooked in interactions.py). Correctness is
+        enforced by the rewards, not by hiding the pot: SOUP_IN_DISH is gated on
+        is_dish_pickup_useful and DELIVERY on is_correct_recipe, so collecting
+        the wrong soup is possible but pays nothing.
+
+        Burned pots are excluded -- their contents are cleared, so there is
+        nothing to collect.
+        """
+        pot_mask = state.grid[:, :, 0] == StaticObject.POT
+        pot_contents = state.grid[:, :, 1]
+        cooked = (
+            pot_mask
+            & ((pot_contents & DynamicObject.COOKED) != 0)
+            & ((pot_contents & DynamicObject.BURNED) == 0)
+        )
+        if agent is None:
+            return cooked
+        return cooked & self._agent_visible_cell_mask(agent)
+
     def _agent_on_static_object(
         self, state: State, agent: Agent, static_object: int
     ) -> chex.Array:
@@ -939,7 +974,7 @@ class OvercookedV3Macro(OvercookedV3):
             )
             mask = mask.at[MacroActions.get_soup_from_nearest_pot].set(
                 (inventory == DynamicObject.PLATE)
-                & jnp.any(self._ready_recipe_pot_mask(state, mask_agent))
+                & jnp.any(self._cooked_pot_mask(state, mask_agent))
             )
             mask = mask.at[MacroActions.deliver].set(
                 ((inventory & DynamicObject.COOKED) != 0)
