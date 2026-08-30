@@ -188,6 +188,18 @@ W     WW
 WWWWWWWW
 """
 
+
+follow_the_leader_nerfed = """
+WWWWWWWW
+WWWW  1W
+WRAWA PW
+W  W  XW
+WWWW  BW
+W     0W
+WWWWWWWW
+"""
+
+
 around_the_island = """
 WW0W1WWWWW
 B        W
@@ -1520,6 +1532,10 @@ overcooked_v3_layouts = {
     "follow_the_leader": Layout.from_string(
         follow_the_leader, possible_recipes=[[0, 0, 0]],
     ),
+
+    "follow_the_leader_nerfed": Layout.from_string(
+        follow_the_leader_nerfed, possible_recipes=[[0, 0, 0], [1, 1, 1]],
+    ),    
 
     "around_the_island": Layout.from_string(
         around_the_island, possible_recipes=[[0, 0, 0]],
