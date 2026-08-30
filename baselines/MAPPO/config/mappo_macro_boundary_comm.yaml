@@ -14,9 +14,6 @@ VF_COEF: 0.5
 MAX_GRAD_NORM: 0.5
 ANNEAL_LR: true
 
-# Not supported here: the frozen boundary actor is an MLP, and boundary's
-# pending buffer stores a macro-start obs snapshot rather than the per-step
-# observation stream a GRU would need.
 USE_RNN: true
 
 ENV_NAME: overcooked_v3_macro
@@ -35,6 +32,7 @@ ENV_KWARGS:
   dense_task_shaping: true  # TASK_PROGRESS/TASK_FACING/INVALID_MOVE -- dense guidance
                              # toward whatever the current useful target is, on top of
                              # the discrete event rewards in SHAPED_REWARDS
+  resample_recipe_on_delivery: true  # after a delivery, pick a new recipe at random (default: false)
 
 SEED: 0
 NUM_SEEDS: 1

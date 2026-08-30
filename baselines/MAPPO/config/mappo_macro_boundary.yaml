@@ -14,6 +14,8 @@ VF_COEF: 0.5
 MAX_GRAD_NORM: 0.5
 ANNEAL_LR: true
 
+USE_RNN: true
+
 ENV_NAME: overcooked_v3_macro
 ENV_KWARGS:
   layout: cramped_room
@@ -24,6 +26,7 @@ ENV_KWARGS:
   dense_task_shaping: true  # TASK_PROGRESS/TASK_FACING/INVALID_MOVE -- dense guidance
                              # toward whatever the current useful target is, on top of
                              # the discrete event rewards in SHAPED_REWARDS
+  resample_recipe_on_delivery: true  # after a delivery, pick a new recipe at random (default: false)
 
 SEED: 0
 NUM_SEEDS: 1
