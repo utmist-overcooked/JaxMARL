@@ -66,7 +66,7 @@ from jaxmarl.environments.overcooked_v3.settings import REWARD_COMPONENT_KEYS
 from jaxmarl.wrappers.baselines import load_params
 from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 
-from mappo_macro_common import Actor, build_env
+from mappo_macro_common import Actor, ActorRNN, ScannedRNN, build_env
 
 # Adjust this import if your local training script filename differs.
 from mappo_macro_every_step_comm import CommModule
@@ -141,6 +141,11 @@ def select_actions_comm(
     env,
     last_message,
     boundary_gated,
+    use_rnn=False,
+    comm_use_memory=False,
+    actor_hidden=None,
+    comm_hidden=None,
+    last_done=None,
 ):
     """Deterministic comm action selection for both comm variants.
 
@@ -151,28 +156,66 @@ def select_actions_comm(
         persists -- and a new macro is only committed at a boundary. This
         mirrors mappo_macro_boundary_comm.py's rollout exactly; evaluating a
         boundary comm run without the gating would not reproduce training.
+
+    use_rnn / comm_use_memory mirror the run's USE_RNN / COMM_USE_MEMORY. Both
+    change the parameter shapes, so they must match how the run was trained --
+    they are read from the run's own config.yaml in main(), never guessed.
+
+    Returns (actions, message, actor_hidden, comm_hidden); the carries are
+    passed straight back in for MLP runs.
     """
     actor_obs = jnp.stack([obs[agent] for agent in env.agents])
     action_mask = obs["action_mask"].astype(jnp.bool_)
 
-    message_logits = comm_module.apply(
-        comm_params, actor_obs, method=comm_module.encode_message
-    )
+    # --- outgoing message ---
+    if comm_use_memory:
+        comm_hidden, summary, message_logits = comm_module.apply(
+            comm_params,
+            comm_hidden,
+            actor_obs[None, :],
+            last_done[None, :],
+            method=comm_module.encode_message_recurrent,
+        )
+        message_logits = message_logits.squeeze(0)
+    else:
+        summary = None
+        message_logits = comm_module.apply(
+            comm_params, actor_obs, method=comm_module.encode_message
+        )
+
     message = jnp.argmax(message_logits, axis=-1)
     if boundary_gated:
         message = jnp.where(obs["macro_done"], message, last_message)
     received_message = swap_two_agent_messages(message)
 
-    logit_bias = comm_module.apply(
-        comm_params, actor_obs, received_message, method=comm_module.correction
-    )
-    base_logits = actor.apply(actor_params, actor_obs)
-    final_logits = base_logits + logit_bias
+    # --- frozen macro logits ---
+    if use_rnn:
+        actor_hidden, base_logits = actor.apply(
+            actor_params, actor_hidden, (actor_obs[None, :], last_done[None, :])
+        )
+        base_logits = base_logits.squeeze(0)
+    else:
+        base_logits = actor.apply(actor_params, actor_obs)
 
+    # --- comm correction ---
+    if comm_use_memory:
+        logit_bias = comm_module.apply(
+            comm_params,
+            summary,
+            actor_obs[None, :],
+            received_message[None, :],
+            method=comm_module.correction_recurrent,
+        ).squeeze(0)
+    else:
+        logit_bias = comm_module.apply(
+            comm_params, actor_obs, received_message, method=comm_module.correction
+        )
+
+    final_logits = base_logits + logit_bias
     actions = jnp.argmax(jnp.where(action_mask, final_logits, -1e9), axis=-1)
     if boundary_gated:
         actions = jnp.where(obs["macro_done"], actions, obs["current_macro"])
-    return actions, message
+    return actions, message, actor_hidden, comm_hidden
 
 
 def add_header(
@@ -263,10 +306,28 @@ def run_episode(
     boundary_gated = config["ENV_NAME"] == "overcooked_v3_macro"
     last_message = jnp.zeros((env.num_agents,), dtype=jnp.int32)
 
+    # Architecture is taken from the run's own config so it cannot disagree
+    # with the checkpoint (both flags change parameter shapes).
+    use_rnn = bool(config.get("USE_RNN", False))
+    comm_use_memory = bool(config.get("COMM_USE_MEMORY", False))
+    comm_hidden_size = int(config.get("COMM_HIDDEN_SIZE", config["HIDDEN_SIZE"]))
+    actor_hidden = (
+        ScannedRNN.initialize_carry(env.num_agents, int(config["HIDDEN_SIZE"]))
+        if use_rnn else None
+    )
+    comm_hidden = (
+        ScannedRNN.initialize_carry(env.num_agents, comm_hidden_size)
+        if comm_use_memory else None
+    )
+    last_done = jnp.zeros((env.num_agents,), dtype=jnp.bool_)
+
     for step in range(max_steps):
-        actions, message = select_actions_comm(
+        actions, message, actor_hidden, comm_hidden = select_actions_comm(
             actor, comm_module, actor_params, comm_params, obs, env,
             last_message, boundary_gated,
+            use_rnn=use_rnn, comm_use_memory=comm_use_memory,
+            actor_hidden=actor_hidden, comm_hidden=comm_hidden,
+            last_done=last_done,
         )
         last_message = message
         action_names = tuple(
@@ -281,6 +342,11 @@ def run_episode(
             step_key, state, env_actions
         )
         obs = env._env._augment(raw_obs, state)
+        # Feeds the GRUs on the next step so their carries reset at episode
+        # ends, matching how the trainers thread prev_done.
+        last_done = jnp.full(
+            (env.num_agents,), bool(np.asarray(done["__all__"])), dtype=jnp.bool_
+        )
         total_return += float(
             np.mean([np.asarray(reward[agent]) for agent in env.agents])
         )
@@ -478,13 +544,22 @@ def main():
 
     env = build_env(config)
 
-    actor = Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
+    # Both flags change parameter shapes, so they must mirror the run that
+    # produced the checkpoint. Read from its config.yaml, never assumed.
+    use_rnn = bool(config.get("USE_RNN", False))
+    comm_use_memory = bool(config.get("COMM_USE_MEMORY", False))
+    actor = (
+        ActorRNN(env.num_actions, int(config["HIDDEN_SIZE"]))
+        if use_rnn
+        else Actor(env.num_actions, int(config["HIDDEN_SIZE"]))
+    )
     vocab_size = int(config["VOCAB_SIZE"])
     comm_module = CommModule(
         hidden_size=int(config.get("COMM_HIDDEN_SIZE", config["HIDDEN_SIZE"])),
         vocab_size=vocab_size,
         action_dim=env.num_actions,
         message_embed_dim=int(config.get("MESSAGE_EMBED_DIM", 8)),
+        use_memory=comm_use_memory,
     )
 
     actor_params = load_params(Path(config["FROZEN_ACTOR_PATH"]))
