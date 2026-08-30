@@ -445,15 +445,26 @@ class OvercookedV3Visualizer:
         # Build result: expand counts into positions
         result = jnp.array([-1, -1, -1])
 
-        # Simple expansion for up to 3 total ingredients
+        # Expand up to 3 total ingredients, draining slot 0, then 1, then 2.
+        # (Previously this only ever consumed count0, so anything without
+        # ingredient 0 -- an all-tomato recipe, say -- rendered with no
+        # ingredients at all, and mixed recipes showed only their onions.)
         def add_ingredient(carry, _):
             result, pos, idx0, idx1, idx2, count0, count1, count2 = carry
 
-            # Add from idx0 if count > 0
             use_idx0 = count0 > 0
-            result = jax.lax.select(use_idx0, result.at[pos].set(idx0), result)
-            pos = jax.lax.select(use_idx0, pos + 1, pos)
+            use_idx1 = ~use_idx0 & (count1 > 0)
+            use_idx2 = ~use_idx0 & ~use_idx1 & (count2 > 0)
+            any_use = use_idx0 | use_idx1 | use_idx2
+
+            chosen = jnp.where(
+                use_idx0, idx0, jnp.where(use_idx1, idx1, jnp.where(use_idx2, idx2, -1))
+            )
+            result = jax.lax.select(any_use, result.at[pos].set(chosen), result)
+            pos = jax.lax.select(any_use, pos + 1, pos)
             count0 = jax.lax.select(use_idx0, count0 - 1, count0)
+            count1 = jax.lax.select(use_idx1, count1 - 1, count1)
+            count2 = jax.lax.select(use_idx2, count2 - 1, count2)
 
             return (result, pos, idx0, idx1, idx2, count0, count1, count2), None
 

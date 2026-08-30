@@ -294,12 +294,19 @@ def process_interact(
         successful_drop * merged_ingredients + no_effect * interact_ingredients
     )
 
-    # Start cooking when pot becomes full
+    # Start cooking when pot becomes full. The pot cooks whatever it is given
+    # -- that stays true regardless of the recipe -- but the REWARD is gated on
+    # the contents actually matching the current recipe. Without that gate an
+    # agent collects POT_START_COOKING for filling a pot with the wrong
+    # ingredients, which pays just as well as cooking the right thing and so
+    # removes any pressure to act on a communicated/observed recipe.
+    # (PLACEMENT_IN_POT is already gated this way via is_pot_placement_useful.)
     pot_full_after_drop = DynamicObject.ingredient_count(new_ingredients) == 3
     auto_cook = pot_is_idle & pot_full_after_drop
+    cooks_current_recipe = new_ingredients == recipe
     if config.shaped_rewards_enabled:
         reward_breakdown["POT_START_COOKING"] = (
-            auto_cook * SHAPED_REWARDS["POT_START_COOKING"]
+            auto_cook * cooks_current_recipe * SHAPED_REWARDS["POT_START_COOKING"]
         )
         shaped_reward += reward_breakdown["POT_START_COOKING"]
     initial_pot_timer = pot_cook_time + config.pot_burn_time

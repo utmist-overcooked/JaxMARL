@@ -53,6 +53,14 @@ VOCAB_SIZE: 2              # 2 discrete message symbols per macro boundary
 MESSAGE_EMBED_DIM: 2       # tiny vocab -> tiny embedding table
 COMM_HIDDEN_SIZE: 64       # comm module is a thin side-network
 
+# Give the comm module its own GRU over the observation stream, so an agent can
+# keep transmitting something it saw earlier (a recipe indicator it has since
+# walked away from) instead of only describing its current view. Deliberately
+# separate from the frozen actor's memory, which encodes what was useful for
+# ACTING without communication -- not necessarily what is worth saying.
+# Requires USE_RNN: true.
+COMM_USE_MEMORY: true
+
 MESSAGE_ENT_COEF: 0.05     # extra entropy pressure so a small vocab doesn't
                             # collapse onto a single symbol early
 MESSAGE_LOSS_COEF: 1.0     # equal weight to the action loss to start
