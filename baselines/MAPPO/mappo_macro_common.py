@@ -347,6 +347,23 @@ def validate_frozen_actor_matches_env(frozen_actor_params, env, config: Dict):
         kernel = frozen_actor_params["params"]["Dense_0"]["kernel"]
     except (KeyError, TypeError, IndexError):
         return  # unfamiliar structure: let the normal failure surface instead
+    # Architecture check first: an MLP/RNN mismatch otherwise surfaces as an
+    # opaque flax structure error deep in the rollout. ActorRNN carries a
+    # ScannedRNN_0 subtree; the memoryless Actor does not.
+    frozen_params = frozen_actor_params.get("params", frozen_actor_params)
+    frozen_is_rnn = any("ScannedRNN" in str(key) for key in frozen_params)
+    config_is_rnn = bool(config.get("USE_RNN", False))
+    if frozen_is_rnn != config_is_rnn:
+        raise ValueError(
+            f"Frozen actor architecture does not match USE_RNN.\n"
+            f"  FROZEN_ACTOR_PATH: {config.get('FROZEN_ACTOR_PATH')}\n"
+            f"  frozen actor is:   {'recurrent (ActorRNN)' if frozen_is_rnn else 'memoryless (Actor)'}\n"
+            f"  this config wants: {'recurrent (USE_RNN=true)' if config_is_rnn else 'memoryless (USE_RNN=false)'}\n"
+            "The two parameter trees are different and cannot be loaded into "
+            "each other. Either set USE_RNN to match the frozen run, or point "
+            "FROZEN_ACTOR_PATH at a run trained with this USE_RNN setting."
+        )
+
     frozen_obs_size = int(np.shape(kernel)[0])
     env_obs_size = int(env.observation_space(env.agents[0]).shape[0])
     if frozen_obs_size == env_obs_size:

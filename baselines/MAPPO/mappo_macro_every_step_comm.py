@@ -28,6 +28,7 @@ from safetensors.flax import load_file as load_safetensors
 
 from mappo_macro_common import (
     Actor,
+    ScannedRNN,
     Critic,
     add_annealed_shaped_reward,
     batchify,
@@ -55,10 +56,32 @@ from mappo_macro_common import (
 # actor's macro-action logits). Both trained jointly, one param tree.
 # --------------------------------------------------------------------------
 class CommModule(nn.Module):
+    """Message encoder + correction head, optionally with its own memory.
+
+    use_memory=False (default): both heads are memoryless functions of the
+        current observation. An agent can only talk about what it sees right
+        now -- so under partial observability it cannot, for example, keep
+        transmitting a recipe after walking away from the recipe indicator.
+
+    use_memory=True: a GRU owned by THIS module summarises the observation
+        stream, and both heads consume [obs, summary]. Deliberately a separate
+        GRU from the frozen actor's: the actor was trained without
+        communication, so its carry encodes what is useful for acting, not
+        necessarily what is worth saying. A comm-owned recurrence is trained on
+        the comm objective and can learn to retain exactly the transmittable
+        information.
+
+        The recurrent methods are time-major, like ScannedRNN: obs/dones are
+        (time, batch, ...), time is 1 during rollout and NUM_STEPS in the PPO
+        update. encode_message_recurrent returns the summary so
+        correction_recurrent can reuse it instead of re-running the GRU.
+    """
+
     hidden_size: int
     vocab_size: int
     action_dim: int
     message_embed_dim: int
+    use_memory: bool = False
 
     def setup(self):
         self.msg_dense1 = nn.Dense(
@@ -82,7 +105,15 @@ class CommModule(nn.Module):
             kernel_init=orthogonal(0.0),
             bias_init=constant(0.0),
         )
+        if self.use_memory:
+            self.mem_dense = nn.Dense(
+                self.hidden_size,
+                kernel_init=orthogonal(np.sqrt(2)),
+                bias_init=constant(0.0),
+            )
+            self.memory = ScannedRNN()
 
+    # --- memoryless interface (unchanged; used by the MLP comm paths) ---
     def encode_message(self, obs):
         x = nn.tanh(self.msg_dense1(obs))
         return self.msg_dense2(x)
@@ -93,8 +124,36 @@ class CommModule(nn.Module):
         x = nn.tanh(self.corr_dense1(x))
         return self.corr_dense2(x)
 
-    def __call__(self, obs, received_message):
-        # Only used at init time so both branches get params created.
+    # --- recurrent interface (use_memory=True) ---
+    def summarize(self, carry, obs_seq, dones_seq):
+        """Run the comm GRU over the observation stream."""
+        x = nn.relu(self.mem_dense(obs_seq))
+        return self.memory(carry, (x, dones_seq))
+
+    def encode_message_recurrent(self, carry, obs_seq, dones_seq):
+        """Returns (new_carry, summary, message_logits)."""
+        carry, summary = self.summarize(carry, obs_seq, dones_seq)
+        x = nn.tanh(self.msg_dense1(jnp.concatenate([obs_seq, summary], axis=-1)))
+        return carry, summary, self.msg_dense2(x)
+
+    def correction_recurrent(self, summary, obs_seq, received_message):
+        """Correction bias reusing the summary from encode_message_recurrent."""
+        embed = self.msg_embed(received_message)
+        x = jnp.concatenate([obs_seq, summary, embed], axis=-1)
+        x = nn.tanh(self.corr_dense1(x))
+        return self.corr_dense2(x)
+
+    def __call__(self, obs, received_message, carry=None, dones=None):
+        # Only used at init time, so every branch's params get created. The
+        # memoryless and recurrent heads have different input widths, so init
+        # must go through the same branch the caller will actually use.
+        if self.use_memory:
+            carry, summary, message_logits = self.encode_message_recurrent(
+                carry, obs, dones
+            )
+            return message_logits, self.correction_recurrent(
+                summary, obs, received_message
+            )
         return self.encode_message(obs), self.correction(obs, received_message)
 
 
