@@ -82,6 +82,16 @@ class CommModule(nn.Module):
     action_dim: int
     message_embed_dim: int
     use_memory: bool = False
+    # Init scale of the message-logit head. At exactly 0.0 the head emits
+    # uniform messages, which is good exploration -- but because
+    # d(logits)/d(msg_dense1 output) IS this kernel, a zero kernel also blocks
+    # gradient to the ENTIRE speaker encoder (msg_dense1, mem_dense and the
+    # comm GRU all measured exactly 0 at init). The speaker then cannot learn
+    # to condition its symbol on its observation until the head grows away from
+    # zero on its own. A small non-zero scale keeps messages near-uniform while
+    # letting the encoder train from the first step. Defaults to 0.0 so the
+    # two-stage trainers that already use this module are unchanged.
+    message_head_scale: float = 0.0
 
     def setup(self):
         self.msg_dense1 = nn.Dense(
@@ -91,7 +101,7 @@ class CommModule(nn.Module):
         )
         self.msg_dense2 = nn.Dense(
             self.vocab_size,
-            kernel_init=orthogonal(0.0),
+            kernel_init=orthogonal(self.message_head_scale),
             bias_init=constant(0.0),
         )
         self.msg_embed = nn.Embed(self.vocab_size, self.message_embed_dim)
@@ -123,6 +133,18 @@ class CommModule(nn.Module):
         x = jnp.concatenate([obs, embed], axis=-1)
         x = nn.tanh(self.corr_dense1(x))
         return self.corr_dense2(x)
+
+    def embed_message(self, received_message):
+        """Trainable embedding of a received symbol, on its own.
+
+        Used by COMM_INJECTION="concat" in the joint trainer, which feeds the
+        embedding into the ACTOR'S INPUT rather than adding a bias to its
+        output. Gradients from the action loss then reach this table (and,
+        through the sampled symbol, the speaker) via the actor trunk, so the
+        policy learns to condition on the message instead of having a confident
+        decision corrected after the fact.
+        """
+        return self.msg_embed(received_message)
 
     # --- recurrent interface (use_memory=True) ---
     def summarize(self, carry, obs_seq, dones_seq):

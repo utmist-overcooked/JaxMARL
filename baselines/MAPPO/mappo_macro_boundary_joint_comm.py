@@ -29,6 +29,23 @@ only in the information the channel carries:
 
 Reporting "normal" against "self"/"shuffled" attributes any gain to the
 information transferred, not to the extra parameters.
+
+COMM_INJECTION selects HOW a received message reaches the policy:
+
+  "concat" (default) the message embedding is concatenated onto the
+      observation and fed to the actor's INPUT, so the trunk conditions on it
+      from the first layer and the action-loss gradient flows back through the
+      actor into the embedding table and the speaker.
+  "bias"   the two-stage trainer's additive correction head, which adds to the
+      actor's OUTPUT logits. Kept only as an ablation.
+
+"bias" exists because a frozen trunk's input could not be changed. Carrying it
+into joint training reproduced the same failure it was meant to fix: measured
+on a jointly trained checkpoint, the speaker encoded the recipe well
+(mutual information 0.58 bits) while the listener's logit swing between symbols
+was 0.023 and it chose get_ingredient_1 on 15/15 decisions -- the additive head
+never overcame the trunk's own confident, message-independent output. Under
+"concat" the trunk has no message-independent output to overcome.
 """
 
 from pathlib import Path
@@ -70,6 +87,12 @@ from jaxmarl.environments.overcooked_v3.settings import REWARD_COMPONENT_KEYS
 
 
 COMM_MODES = ("normal", "self", "shuffled", "constant")
+
+# How a received message reaches the policy. "concat" feeds its embedding into
+# the actor's INPUT so the trunk conditions on it directly; "bias" adds a
+# correction to the actor's OUTPUT logits, which is the two-stage trainer's
+# design and is kept only as an ablation. See policy_logits().
+COMM_INJECTIONS = ("concat", "bias")
 
 
 def route_messages(message, rng, num_envs: int, mode: str):
@@ -120,6 +143,11 @@ def make_train(config):
 
     use_rnn = bool(config.get("USE_RNN", False))
     comm_use_memory = bool(config.get("COMM_USE_MEMORY", False))
+    comm_injection = config.get("COMM_INJECTION", "concat")
+    if comm_injection not in COMM_INJECTIONS:
+        raise ValueError(
+            f"COMM_INJECTION must be one of {COMM_INJECTIONS}, got {comm_injection!r}"
+        )
     hidden_size = int(config["HIDDEN_SIZE"])
     comm_hidden_size = int(config.get("COMM_HIDDEN_SIZE", config["HIDDEN_SIZE"]))
     num_actors = int(config["NUM_ACTORS"])
@@ -145,9 +173,22 @@ def make_train(config):
             action_dim=env.num_actions,
             message_embed_dim=int(config.get("MESSAGE_EMBED_DIM", 8)),
             use_memory=comm_use_memory,
+            # Non-zero by default here (unlike the two-stage trainers): a zero
+            # message head blocks gradient to the speaker's encoder and GRU
+            # entirely, so the agent that can see the recipe cannot learn to
+            # talk about it. Small enough that initial messages stay near
+            # uniform.
+            message_head_scale=float(config.get("MESSAGE_HEAD_INIT_SCALE", 0.01)),
         )
 
         obs_size = env.observation_space(env.agents[0]).shape[0]
+        # Under "concat" the actor consumes [obs, message_embedding], so its
+        # first layer is wider than the raw observation. This is why a concat
+        # checkpoint and a bias checkpoint are not interchangeable.
+        actor_input_size = obs_size + (
+            int(config.get("MESSAGE_EMBED_DIM", 8))
+            if comm_injection == "concat" else 0
+        )
         world_state_size = env.world_state_size()
         init_actor_hidden = ScannedRNN.initialize_carry(num_actors, hidden_size)
         init_critic_hidden = ScannedRNN.initialize_carry(num_actors, hidden_size)
@@ -158,14 +199,14 @@ def make_train(config):
             dummy_dones = jnp.zeros((1, num_actors), dtype=jnp.bool_)
             actor_params = actor.init(
                 actor_rng, init_actor_hidden,
-                (jnp.zeros((1, num_actors, obs_size)), dummy_dones),
+                (jnp.zeros((1, num_actors, actor_input_size)), dummy_dones),
             )
             critic_params = critic.init(
                 critic_rng, init_critic_hidden,
                 (jnp.zeros((1, num_actors, world_state_size)), dummy_dones),
             )
         else:
-            actor_params = actor.init(actor_rng, jnp.zeros((1, obs_size)))
+            actor_params = actor.init(actor_rng, jnp.zeros((1, actor_input_size)))
             critic_params = critic.init(critic_rng, jnp.zeros((1, world_state_size)))
 
         if comm_use_memory:
@@ -209,16 +250,42 @@ def make_train(config):
             )
             return comm_hidden, None, logits
 
-        def biased_logits(
+        def policy_logits(
             params, actor_hidden, summary, obs_seq, dones_seq, received_seq
         ):
-            """Macro logits plus comm correction; both halves are trainable."""
+            """Macro logits conditioned on the received message.
+
+            COMM_INJECTION="concat" (default): the trainable embedding of the
+            received symbol is concatenated onto the observation and fed to the
+            ACTOR'S INPUT, so the trunk conditions on the message from its very
+            first layer and the action-loss gradient reaches the embedding
+            table through the actor.
+
+            COMM_INJECTION="bias": the legacy additive correction head. It adds
+            a separately-computed bias to the actor's OUTPUT logits. That design
+            only ever existed because the two-stage trainer could not modify a
+            frozen trunk's input; kept here purely as an ablation, since it
+            makes the channel fight the trunk's own confident output instead of
+            informing it.
+            """
+            if comm_injection == "concat":
+                embed = comm_module.apply(
+                    params["comm"], received_seq, method=comm_module.embed_message
+                )
+                actor_input = jnp.concatenate((obs_seq, embed), axis=-1)
+            else:
+                actor_input = obs_seq
+
             if use_rnn:
-                actor_hidden, base_logits = actor.apply(
-                    params["actor"], actor_hidden, (obs_seq, dones_seq)
+                actor_hidden, logits = actor.apply(
+                    params["actor"], actor_hidden, (actor_input, dones_seq)
                 )
             else:
-                base_logits = actor.apply(params["actor"], obs_seq)
+                logits = actor.apply(params["actor"], actor_input)
+
+            if comm_injection == "concat":
+                return actor_hidden, logits
+
             if comm_use_memory:
                 logit_bias = comm_module.apply(
                     params["comm"], summary, obs_seq, received_seq,
@@ -229,7 +296,7 @@ def make_train(config):
                     params["comm"], obs_seq, received_seq,
                     method=comm_module.correction,
                 )
-            return actor_hidden, base_logits + logit_bias
+            return actor_hidden, logits + logit_bias
 
         def evaluate(params, completed_updates):
             """Deterministic eval carrying carries, held messages and dones."""
@@ -265,7 +332,7 @@ def make_train(config):
                 rng, route_rng = jax.random.split(rng)
                 received = route_messages(message, route_rng, num_eval_envs, mode)
 
-                actor_hidden, final_logits = biased_logits(
+                actor_hidden, final_logits = policy_logits(
                     params, actor_hidden, summary, obs_batch[None, :],
                     last_done[None, :], received[None, :],
                 )
@@ -347,7 +414,7 @@ def make_train(config):
                 message_log_prob = message_policy.log_prob(message)
                 received = route_messages(message, route_rng, num_envs, mode)
 
-                actor_hidden, final_logits = biased_logits(
+                actor_hidden, final_logits = policy_logits(
                     policy_state.params, actor_hidden, summary,
                     obs_batch[None, :], last_done[None, :], received[None, :],
                 )
@@ -559,7 +626,7 @@ def make_train(config):
                 _, summary, message_logits = encode(
                     params, comm_carry, minibatch["obs"], prev_done
                 )
-                _, final_logits = biased_logits(
+                _, final_logits = policy_logits(
                     params,
                     minibatch["init_actor_hidden"][0] if use_rnn else None,
                     summary, minibatch["obs"], prev_done,

@@ -76,3 +76,22 @@ MESSAGE_LOSS_COEF: 1.0     # equal weight to the action loss to start
 #              env's recipe while preserving message statistics)
 #   constant - fixed symbol (channel fully severed)
 COMM_MODE: normal
+
+# How a received message reaches the policy.
+#   concat - embed the symbol and concatenate it onto the actor's observation,
+#            so the trunk conditions on it from its first layer and the action
+#            loss trains the embedding (and, through it, the speaker)
+#   bias   - the two-stage trainer's additive correction on the actor's output
+#            logits; kept only as an ablation, since it makes the channel fight
+#            the trunk's own confident output rather than inform it
+# These produce different actor input widths, so their checkpoints are NOT
+# interchangeable.
+COMM_INJECTION: concat
+
+# Init scale of the speaker's message-logit head. 0.0 gives uniform initial
+# messages but blocks gradient to the speaker's encoder and GRU entirely (that
+# kernel IS the Jacobian into them), so the informed agent cannot learn to
+# encode what it sees. Small non-zero keeps messages near-uniform -- so no
+# premature commitment to one symbol -- while letting the encoder train from
+# step 0. Raise toward 1.0 only if the speaker stays uninformative.
+MESSAGE_HEAD_INIT_SCALE: 0.01
