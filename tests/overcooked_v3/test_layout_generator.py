@@ -382,6 +382,63 @@ def test_shared_barrier_placement_requires_two_regions():
         )
 
 
+@pytest.mark.parametrize(
+    "barrier_placement",
+    ["anywhere", "action_adjacent", "shared_or_action_adjacent"],
+)
+def test_generator_rejects_barriers_that_leave_too_few_floor_tiles(
+    barrier_placement,
+):
+    """Validation accounts for barriers forced onto otherwise walkable tiles."""
+    with pytest.raises(ValueError, match="pressure plates and 2 agent spawns"):
+        validate_config(
+            _config(
+                width=5,
+                height=5,
+                ingredient_piles=[9],
+                possible_recipes=[[0, 0, 0]],
+                counter_density=0,
+                barriers=4,
+                barrier_placement=barrier_placement,
+                pressure_plates_per_barrier=1,
+            )["generator"]
+        )
+
+
+def test_single_region_barrier_placement_requires_two_spawn_tiles():
+    """A single floor component still reserves space for both generated agents."""
+    config = validate_config(
+        _config(
+            width=5,
+            height=5,
+            ingredient_piles=[1],
+            possible_recipes=[[0, 0, 0]],
+            barriers=1,
+            barrier_placement="action_adjacent",
+        )["generator"]
+    )
+    grid = [
+        list("W0WWW"),
+        list("W   W"),
+        list("WWWWW"),
+        list("WWWWW"),
+        list("WWWWW"),
+    ]
+    region = {(1, 1), (1, 2), (1, 3)}
+
+    with pytest.raises(
+        layout_generator.CandidateGenerationError,
+        match="two agent spawns",
+    ):
+        layout_generator._place_barriers_and_controls(
+            grid,
+            config,
+            [region],
+            [],
+            random.Random(0),
+        )
+
+
 @pytest.mark.parametrize("plates_per_barrier", [1, 2])
 def test_generator_spawns_exact_barriers_with_single_or_paired_reachable_plates(
     plates_per_barrier,
@@ -665,6 +722,26 @@ def test_accessibility_rejects_disconnected_floor_and_workstations():
     assert any("walkable tile" in error for error in errors)
     assert any("inaccessible" in error for error in errors)
     assert any("cannot be completed" in error for error in errors)
+
+
+def test_accessibility_accepts_floor_reachable_through_controlled_barrier():
+    """A reachable pressure plate makes the floor beyond its barrier reachable."""
+    grid = "\n".join(
+        [
+            "WWPWWWW",
+            "0A_#  X",
+            "WA WWWW",
+            "WWBWWWW",
+        ]
+    )
+    layout = Layout.from_string(
+        grid,
+        possible_recipes=[[0, 0, 0]],
+        barrier_config=[True],
+        pressure_plate_config=[(0, layout_generator.ButtonAction.TOGGLE_BARRIER)],
+    )
+
+    assert validate_generated_layout(layout) == (True, [])
 
 
 def test_loader_rejects_invalid_map_even_if_validation_metadata_says_valid(tmp_path):

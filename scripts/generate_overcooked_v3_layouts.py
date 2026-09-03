@@ -47,8 +47,7 @@ DEFAULTS = {
     # Exact number of counters accessible from both regions. None leaves the
     # number unconstrained (except that shared workflows still require one).
     "num_shared_tiles": None,
-    "
-  ": "single_region",
+    "workflow_mode": "single_region",
     # Barriers start active and are opened by generated plates or buttons.
     "barriers": 0,
     "barrier_placement": "anywhere",
@@ -294,11 +293,6 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
             "generator.num_shared_tiles cannot exceed the number of interior "
             f"counters ({counter_count})"
         )
-    if num_shared_tiles is not None and num_shared_tiles > counter_count:
-        raise ValueError(
-            "generator.num_shared_tiles cannot exceed the number of interior "
-            f"counters ({counter_count})"
-        )
     if (
         barriers > 0
         and config["barrier_placement"] == "shared"
@@ -376,10 +370,14 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
             0,
             workstation_count - boundary_slots,
         )
+    barrier_placement = config["barrier_placement"]
+    floor_barrier_count = 0 if barrier_placement == "shared" else barriers
+
     maximum_floor_tiles = (
         interior_tiles
         - counter_count
         - minimum_interior_workstations
+        - floor_barrier_count
     )
     if pressure_plate_count + 2 > maximum_floor_tiles:
         raise ValueError(
@@ -704,17 +702,23 @@ def _place_barriers_and_controls(
     plates_per_barrier = config["pressure_plates_per_barrier"]
     pressure_plate_count = barrier_count * plates_per_barrier
     available_plate_positions = set().union(*floor_components)
-    if len(available_plate_positions) < pressure_plate_count + len(floor_components):
+    required_spawn_count = 2
+    if len(available_plate_positions) < pressure_plate_count + required_spawn_count:
         raise CandidateGenerationError(
-            "too few floor tiles remain for pressure plates and one agent "
-            "spawn per region"
+            "too few floor tiles remain for pressure plates and two agent spawns"
         )
 
-    # Reserve one ordinary floor tile in every component for its agent spawn.
-    reserved_spawns = {
-        rng.choice(sorted(component))
-        for component in floor_components
-    }
+    # Two-region layouts need one spawn in each component. A single-region
+    # layout still needs two distinct spawn tiles in its sole component.
+    if len(floor_components) == 1:
+        reserved_spawns = set(
+            rng.sample(sorted(floor_components[0]), required_spawn_count)
+        )
+    else:
+        reserved_spawns = {
+            rng.choice(sorted(component))
+            for component in floor_components
+        }
     plate_positions = rng.sample(
         sorted(available_plate_positions - reserved_spawns),
         pressure_plate_count,
@@ -923,31 +927,10 @@ def _generate_candidate(
                 f"layout has {len(shared_tiles)} shared tiles; "
                 f"requested exactly {requested_shared_tiles}"
             )
-    if config["workflow_mode"] == "shared":
-        all_positions = {
-            (row, col)
-            for row in range(height)
-            for col in range(width)
-        }
-        shared_tiles = _shared_tiles(
-            grid,
-            regions,
-            interior,
-            all_positions,
+    if config["workflow_mode"] == "shared" and not shared_tiles:
+        raise CandidateGenerationError(
+            "shared workflow has no counter accessible from both regions"
         )
-        requested_shared_tiles = config["num_shared_tiles"]
-        if (
-            requested_shared_tiles is not None
-            and len(shared_tiles) != requested_shared_tiles
-        ):
-            raise CandidateGenerationError(
-                f"layout has {len(shared_tiles)} shared tiles; "
-                f"requested exactly {requested_shared_tiles}"
-            )
-        if config["workflow_mode"] == "shared" and not shared_tiles:
-            raise CandidateGenerationError(
-                "shared workflow has no counter accessible from both regions"
-            )
 
     barrier_config, button_config, pressure_plate_config = (
         _place_barriers_and_controls(

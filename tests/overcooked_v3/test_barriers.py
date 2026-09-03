@@ -386,6 +386,39 @@ class TestPressurePlates:
         assert not active[shared].any(), "shared barriers stay open while plate 1 held"
         assert active[only0].all(), "barriers unique to plate 0 re-close on its release"
 
+    def test_timed_plate_rearm_keeps_toggle_controlled_barrier_open(self):
+        """A timed press is visible to a toggle branch in the same plate update."""
+        layout = Layout.from_string(
+            "\n".join(
+                [
+                    "WWPWWW",
+                    "0A_# X",
+                    "WA_  W",
+                    "WWBWWW",
+                ]
+            ),
+            possible_recipes=[[0, 0, 0]],
+            barrier_config=[True],
+            pressure_plate_config=[
+                (0, ButtonAction.TOGGLE_BARRIER),
+                (0, ButtonAction.TIMED_BARRIER),
+            ],
+        )
+        env, state = self._make(layout, barrier_duration=5)
+        timed_y, timed_x = (
+            int(value) for value in np.array(state.pressure_plate_positions[1])
+        )
+        state = self._place(state, 0, timed_y, timed_x)
+
+        rearmed = env._process_pressure_plates(state)
+
+        assert int(rearmed.barrier_timer[0]) == 5
+        assert not bool(rearmed.barrier_active[0])
+
+        advanced = env._process_barrier_timers(rearmed)
+        assert int(advanced.barrier_timer[0]) == 4
+        assert not bool(advanced.barrier_active[0])
+
     def test_plates_inert_when_disabled(self):
         """With pressure plates disabled, standing on a plate does nothing."""
         with pytest.warns(UserWarning, match="Pressure plates will be inert"):

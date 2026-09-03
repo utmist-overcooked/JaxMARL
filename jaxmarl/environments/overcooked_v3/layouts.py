@@ -1021,6 +1021,24 @@ class Layout:
                 if 0 <= adjacent[0] < self.height and 0 <= adjacent[1] < self.width:
                     yield adjacent
 
+        pressure_plate_positions = {
+            (y, x): target_idxs
+            for y, x, target_idxs, _ in self.pressure_plate_info
+        }
+        button_positions = {
+            (y, x): target_idxs
+            for y, x, target_idxs, action_type in self.button_info
+            if action_type
+            in (
+                int(ButtonAction.TOGGLE_BARRIER),
+                int(ButtonAction.TIMED_BARRIER),
+            )
+        }
+        barrier_index_by_position = {
+            (y, x): index
+            for index, (y, x, _) in enumerate(self.barrier_info)
+        }
+
         for agent_x, agent_y in self.agent_positions:
             start = (agent_y, agent_x)
             if (
@@ -1048,6 +1066,66 @@ class Layout:
                         component_by_position[adjacent] = component
                         queue.append(adjacent)
 
+        # Opening a reachable control can expose an otherwise disconnected
+        # floor component. Expand reachability through those barriers until no
+        # newly reached plate or button can unlock another component.
+        controllable_barriers = set()
+        while True:
+            controllable_barriers.update(
+                int(target_idx)
+                for position, target_idxs in pressure_plate_positions.items()
+                if position in component_by_position
+                for target_idx in target_idxs
+            )
+            controllable_barriers.update(
+                int(target_idx)
+                for position, target_idxs in button_positions.items()
+                if any(
+                    adjacent in component_by_position
+                    for adjacent in neighbours(*position)
+                )
+                for target_idx in target_idxs
+            )
+
+            expanded = False
+            for barrier_position, barrier_idx in barrier_index_by_position.items():
+                if barrier_idx not in controllable_barriers:
+                    continue
+                adjacent_components = [
+                    component_by_position[adjacent]
+                    for adjacent in neighbours(*barrier_position)
+                    if adjacent in component_by_position
+                ]
+                if not adjacent_components:
+                    continue
+
+                component = min(adjacent_components)
+                newly_reachable = [
+                    adjacent
+                    for adjacent in neighbours(*barrier_position)
+                    if adjacent not in component_by_position
+                    and self._is_agent_walkable_tile(self.static_objects[adjacent])
+                ]
+                for position in newly_reachable:
+                    component_by_position[position] = component
+                    expanded = True
+
+                queue = deque(newly_reachable)
+                while queue:
+                    position = queue.popleft()
+                    for adjacent in neighbours(*position):
+                        if (
+                            adjacent not in component_by_position
+                            and self._is_agent_walkable_tile(
+                                self.static_objects[adjacent]
+                            )
+                        ):
+                            component_by_position[adjacent] = component
+                            queue.append(adjacent)
+
+            if not expanded:
+                break
+
         walkable_positions = {
             (y, x)
             for y in range(self.height)
@@ -1061,38 +1139,6 @@ class Layout:
                 f"agent; first inaccessible tile: {unreachable[0]}"
             )
 
-        pressure_plate_positions = {
-            (y, x): target_idxs
-            for y, x, target_idxs, _ in self.pressure_plate_info
-        }
-        button_positions = {
-            (y, x): target_idxs
-            for y, x, target_idxs, action_type in self.button_info
-            if action_type
-            in (
-                int(ButtonAction.TOGGLE_BARRIER),
-                int(ButtonAction.TIMED_BARRIER),
-            )
-        }
-        controllable_barriers = {
-            int(target_idx)
-            for position, target_idxs in pressure_plate_positions.items()
-            if position in component_by_position
-            for target_idx in target_idxs
-        }
-        controllable_barriers.update(
-            int(target_idx)
-            for position, target_idxs in button_positions.items()
-            if any(
-                adjacent in component_by_position
-                for adjacent in neighbours(*position)
-            )
-            for target_idx in target_idxs
-        )
-        barrier_index_by_position = {
-            (y, x): index
-            for index, (y, x, _) in enumerate(self.barrier_info)
-        }
         reachable_barrier_components = {
             position: {
                 component_by_position[adjacent]

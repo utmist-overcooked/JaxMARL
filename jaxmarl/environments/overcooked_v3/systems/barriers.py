@@ -109,26 +109,29 @@ def update_pressure_plates(state: State, config: OvercookedV3Config) -> State:
         agent_ys, agent_xs, state.barrier_positions, state.barrier_active_mask
     )
 
-    # TOGGLE_BARRIER: a linked barrier is open while one of its plates is
-    # pressed, a timed control is still armed, or an agent stands on it. It
-    # closes once all three conditions clear.
+    # TIMED_BARRIER: pressing opens the barrier and (re)arms its timer. Compute
+    # the timer first so the toggle branch below observes a re-arm performed by
+    # this same pressure-plate update.
+    timed_open = jnp.any(linked & is_timed[:, None] & pressed[:, None], axis=0)
+    new_barrier_timer = jnp.where(
+        timed_open, state.barrier_duration, state.barrier_timer
+    )
+
+    # A toggle-controlled barrier is open while one of its plates is pressed,
+    # a timed control is still armed, or an agent stands on it.
     toggle_links = linked & is_toggle[:, None]
     toggle_controlled = jnp.any(toggle_links, axis=0)  # [num_barriers]
     toggle_open = jnp.any(toggle_links & pressed[:, None], axis=0)  # [num_barriers]
-    timer_open = state.barrier_timer > 0
+    timer_open = new_barrier_timer > 0
     new_barrier_active = jnp.where(
         toggle_controlled,
         ~toggle_open & ~timer_open & ~barrier_occupied,
         state.barrier_active,
     )
 
-    # TIMED_BARRIER: pressing opens the barrier and (re)arms its timer; the
-    # barrier reactivates on its own in _process_barrier_timers.
-    timed_open = jnp.any(linked & is_timed[:, None] & pressed[:, None], axis=0)
+    # Barriers without a toggle plate still need to open on a timed press; the
+    # barrier timer processor handles their eventual reactivation.
     new_barrier_active = jnp.where(timed_open, False, new_barrier_active)
-    new_barrier_timer = jnp.where(
-        timed_open, state.barrier_duration, state.barrier_timer
-    )
 
     return state.replace(
         barrier_active=new_barrier_active,
