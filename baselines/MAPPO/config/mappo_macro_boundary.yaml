@@ -40,3 +40,11 @@ EVAL_INTERVAL_UPDATES: 100
 NUM_EVAL_ENVS: 8
 EVAL_SEED: 42
 RESUME_FROM: null
+
+# Oracle control: append the true recipe to EVERY agent's observation, removing
+# the information asymmetry the comm channel exists to bridge. This is the
+# upper bound for any protocol -- if a policy handed the recipe outright still
+# will not condition its ingredient choice on it, the blocker is the task/RL
+# setup, not the channel. Widens the actor observation, so oracle and non-oracle
+# checkpoints are not interchangeable.
+ORACLE_RECIPE_OBS: false

@@ -23,6 +23,7 @@ import jaxmarl
 from jaxmarl.environments import spaces
 from jaxmarl.environments.overcooked_v3.observations import calculate_observation_shape
 from jaxmarl.wrappers.baselines import JaxMARLWrapper, LogWrapper
+from jaxmarl.environments.overcooked_v3.common import DynamicObject
 
 
 _RUN_CONTEXT = {}
@@ -41,11 +42,43 @@ def _initial_best_eval_return(output_dir, resume_from):
 class MacroWorldStateWrapper(JaxMARLWrapper):
     """Add macro context for actors and a global state for the MAPPO critic."""
 
-    def __init__(self, env):
+    def __init__(self, env, oracle_recipe_obs: bool = False):
         super().__init__(env)
         base_shape = env.observation_space(env.agents[0]).shape
         self.base_obs_size = int(np.prod(base_shape))
-        self.actor_obs_size = self.base_obs_size + env.num_macro_actions + 2
+
+        # ORACLE CONTROL. Normally the recipe reaches an agent only through a
+        # visible RECIPE_INDICATOR tile (see overcooked_v3/observations.py), so
+        # on an asymmetric layout the agent that does the cooking may have zero
+        # recipe information and MUST be told over the comm channel. Setting
+        # this appends a one-hot of the current recipe to EVERY agent's
+        # observation, which removes the information asymmetry entirely.
+        #
+        # It is the upper bound for any communication scheme: if a policy given
+        # the recipe outright still will not condition its ingredient choice on
+        # it, then no protocol can help and the blocker is the task/RL setup
+        # rather than the channel. Deliberately implemented here rather than in
+        # the environment so overcooked_v3 stays untouched.
+        self.oracle_recipe_obs = bool(oracle_recipe_obs)
+        if self.oracle_recipe_obs:
+            # Static (host-side) list of the encodings sample_recipe can draw,
+            # so the one-hot below is a fixed-width comparison and stays jittable.
+            self._recipe_encodings = jnp.asarray(
+                [
+                    int(DynamicObject.get_recipe_encoding(recipe))
+                    for recipe in np.asarray(env.config.possible_recipes)
+                ],
+                dtype=jnp.int32,
+            )
+        else:
+            self._recipe_encodings = None
+        recipe_obs_size = 0 if self._recipe_encodings is None else int(
+            self._recipe_encodings.shape[0]
+        )
+
+        self.actor_obs_size = (
+            self.base_obs_size + env.num_macro_actions + 2 + recipe_obs_size
+        )
 
         # The critic input is built from get_obs_default(state) below, which
         # always returns the full (uncropped) grid regardless of
@@ -74,16 +107,25 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
         )
         identity = jnp.eye(self._env.num_agents, dtype=jnp.float32)
 
+        # Oracle control: hand every agent the true recipe, bypassing the
+        # RECIPE_INDICATOR visibility that normally creates the asymmetry.
+        recipe_one_hot = (
+            (state.recipe == self._recipe_encodings).astype(jnp.float32)
+            if self._recipe_encodings is not None
+            else None
+        )
+
         augmented = {}
         for index, agent in enumerate(self._env.agents):
-            augmented[agent] = jnp.concatenate(
-                (
-                    obs[agent].reshape(-1).astype(jnp.float32),
-                    macro_one_hot[index],
-                    macro_done[index, None],
-                    macro_progress[index, None],
-                )
+            actor_obs = (
+                obs[agent].reshape(-1).astype(jnp.float32),
+                macro_one_hot[index],
+                macro_done[index, None],
+                macro_progress[index, None],
             )
+            if recipe_one_hot is not None:
+                actor_obs = actor_obs + (recipe_one_hot,)
+            augmented[agent] = jnp.concatenate(actor_obs)
 
         # Privileged critic input, built from the true state rather than
         # each actor's (possibly partially observed) obs -- see __init__.
@@ -383,8 +425,16 @@ def validate_frozen_actor_matches_env(frozen_actor_params, env, config: Dict):
 
 
 def build_env(config: Dict):
+    """Build the macro env with the MAPPO actor/critic observation wrappers.
+
+    ORACLE_RECIPE_OBS appends the true recipe to every actor observation; see
+    MacroWorldStateWrapper. It widens the actor observation, so a checkpoint
+    trained with it set cannot be evaluated with it unset.
+    """
     env = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
-    env = MacroWorldStateWrapper(env)
+    env = MacroWorldStateWrapper(
+        env, oracle_recipe_obs=bool(config.get("ORACLE_RECIPE_OBS", False))
+    )
     return LogWrapper(env)
 
 

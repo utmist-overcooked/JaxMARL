@@ -95,3 +95,11 @@ COMM_INJECTION: concat
 # premature commitment to one symbol -- while letting the encoder train from
 # step 0. Raise toward 1.0 only if the speaker stays uninformative.
 MESSAGE_HEAD_INIT_SCALE: 0.01
+
+# Oracle control: append the true recipe to EVERY agent's observation, removing
+# the information asymmetry the comm channel exists to bridge. This is the
+# upper bound for any protocol -- if a policy handed the recipe outright still
+# will not condition its ingredient choice on it, the blocker is the task/RL
+# setup, not the channel. Widens the actor observation, so oracle and non-oracle
+# checkpoints are not interchangeable.
+ORACLE_RECIPE_OBS: false
