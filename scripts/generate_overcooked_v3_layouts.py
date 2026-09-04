@@ -17,12 +17,17 @@ import random
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from jaxmarl.environments.overcooked_v3.common import MAX_INGREDIENTS
+from jaxmarl.environments.overcooked_v3.common import ButtonAction, MAX_INGREDIENTS
 from jaxmarl.environments.overcooked_v3.layouts import (
     Layout,
     validate_generated_layout,
 )
-from jaxmarl.environments.overcooked_v3.settings import MAX_POTS
+from jaxmarl.environments.overcooked_v3.settings import (
+    MAX_BARRIERS,
+    MAX_BUTTONS,
+    MAX_POTS,
+    MAX_PRESSURE_PLATES,
+)
 
 
 DEFAULTS = {
@@ -43,10 +48,22 @@ DEFAULTS = {
     # number unconstrained (except that shared workflows still require one).
     "num_shared_tiles": None,
     "workflow_mode": "single_region",
+    # Barriers start active and are opened by generated plates or buttons.
+    "barriers": 0,
+    "barrier_placement": "anywhere",
+    "pressure_plates_per_barrier": 1,
+    "buttons_per_barrier": 0,
     "max_attempts": 1000,
 }
 
 WORKFLOW_MODES = {"complete_each", "single_region", "shared"}
+BARRIER_PLACEMENTS = {
+    "anywhere",
+    "shared",
+    "action_adjacent",
+    "shared_or_action_adjacent",
+}
+ACTION_ITEM_SYMBOLS = set("0123456789PBX")
 NEIGHBOUR_DELTAS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 
 
@@ -127,6 +144,13 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
     _integer(config, "plate_piles", 1)
     _integer(config, "depots", 1)
     num_regions = _integer(config, "num_regions", 1)
+    barriers = _integer(config, "barriers", 0)
+    pressure_plates_per_barrier = _integer(
+        config,
+        "pressure_plates_per_barrier",
+        0,
+    )
+    buttons_per_barrier = _integer(config, "buttons_per_barrier", 0)
     _integer(config, "max_attempts", 1)
     num_shared_tiles = config["num_shared_tiles"]
     if num_shared_tiles is not None and (
@@ -142,6 +166,56 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
         raise ValueError(
             "generator.num_regions cannot exceed 2 because generated layouts "
             "currently contain exactly two agents"
+        )
+    if barriers > MAX_BARRIERS:
+        raise ValueError(
+            f"generator.barriers cannot exceed MAX_BARRIERS ({MAX_BARRIERS})"
+        )
+    if pressure_plates_per_barrier not in {0, 1, 2}:
+        raise ValueError(
+            "generator.pressure_plates_per_barrier must be 0 (none), "
+            "1 (single), or 2 (paired)"
+        )
+    if buttons_per_barrier > MAX_BUTTONS:
+        raise ValueError(
+            "generator.buttons_per_barrier cannot exceed "
+            f"MAX_BUTTONS ({MAX_BUTTONS})"
+        )
+    if barriers > 0 and pressure_plates_per_barrier + buttons_per_barrier < 1:
+        raise ValueError(
+            "each barrier requires at least one pressure plate or button; "
+            "set generator.pressure_plates_per_barrier or "
+            "generator.buttons_per_barrier to at least 1"
+        )
+    pressure_plate_count = barriers * pressure_plates_per_barrier
+    if pressure_plate_count > MAX_PRESSURE_PLATES:
+        raise ValueError(
+            f"{barriers} barriers with {pressure_plates_per_barrier} pressure "
+            f"plate(s) each require {pressure_plate_count} pressure plates, "
+            f"but MAX_PRESSURE_PLATES is {MAX_PRESSURE_PLATES}"
+        )
+    button_count = barriers * buttons_per_barrier
+    if button_count > MAX_BUTTONS:
+        raise ValueError(
+            f"{barriers} barriers with {buttons_per_barrier} button(s) each "
+            f"require {button_count} buttons, but MAX_BUTTONS is {MAX_BUTTONS}"
+        )
+    if (
+        not isinstance(config["barrier_placement"], str)
+        or config["barrier_placement"] not in BARRIER_PLACEMENTS
+    ):
+        raise ValueError(
+            "generator.barrier_placement must be 'anywhere', 'shared', "
+            "'action_adjacent', or 'shared_or_action_adjacent'"
+        )
+    if (
+        barriers > 0
+        and config["barrier_placement"] == "shared"
+        and num_regions != 2
+    ):
+        raise ValueError(
+            f"generator.barrier_placement {config['barrier_placement']!r} "
+            "requires generator.num_regions = 2"
         )
     if num_shared_tiles is not None and num_regions != 2:
         raise ValueError(
@@ -219,6 +293,16 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
             "generator.num_shared_tiles cannot exceed the number of interior "
             f"counters ({counter_count})"
         )
+    if (
+        barriers > 0
+        and config["barrier_placement"] == "shared"
+        and num_shared_tiles is not None
+        and barriers > num_shared_tiles
+    ):
+        raise ValueError(
+            "generator.barriers cannot exceed generator.num_shared_tiles "
+            "when barrier_placement is 'shared'"
+        )
     if config["workflow_mode"] == "shared" and counter_count == 0:
         raise ValueError(
             "generator.workflow_mode 'shared' requires an interior counter for "
@@ -254,6 +338,7 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
         + config["plate_piles"]
         + config["depots"]
         + (len(config["possible_recipes"]) > 1)
+        + button_count
     )
     boundary_slots = 2 * (width - 2) + 2 * (height - 2)
     max_interior_workstations = interior_tiles - counter_count - 2
@@ -275,6 +360,29 @@ def validate_config(raw_config: Any) -> dict[str, Any]:
         raise ValueError(
             f"{workstation_count} workstations do not fit in the available "
             "boundary and interior positions"
+        )
+    if placement == "boundary":
+        minimum_interior_workstations = 0
+    elif placement == "interior":
+        minimum_interior_workstations = workstation_count
+    else:
+        minimum_interior_workstations = max(
+            0,
+            workstation_count - boundary_slots,
+        )
+    barrier_placement = config["barrier_placement"]
+    floor_barrier_count = 0 if barrier_placement == "shared" else barriers
+
+    maximum_floor_tiles = (
+        interior_tiles
+        - counter_count
+        - minimum_interior_workstations
+        - floor_barrier_count
+    )
+    if pressure_plate_count + 2 > maximum_floor_tiles:
+        raise ValueError(
+            f"{pressure_plate_count} pressure plates and 2 agent spawns do not "
+            f"fit in at most {maximum_floor_tiles} walkable interior tiles"
         )
     return config
 
@@ -309,6 +417,9 @@ def _station_symbols(config: dict[str, Any]) -> list[str]:
     stations.extend(["X"] * config["depots"])
     if len(config["possible_recipes"]) > 1:
         stations.append("R")
+    stations.extend(
+        ["!"] * (config["barriers"] * config["buttons_per_barrier"])
+    )
     return stations
 
 
@@ -351,6 +462,8 @@ def _allocate_stations_to_regions(
             allocations[target].extend(stage)
         if len(config["possible_recipes"]) > 1:
             allocations[rng.randrange(num_regions)].append("R")
+        for _ in range(config["barriers"] * config["buttons_per_barrier"]):
+            allocations[rng.randrange(num_regions)].append("!")
         return allocations
 
     # complete_each: reserve one complete workflow in every region, then
@@ -483,6 +596,179 @@ def _shared_tiles(
     ]
 
 
+def _connected_floor_components(
+    grid: list[list[str]],
+) -> list[set[tuple[int, int]]]:
+    """Return four-connected walkable floor/pressure-plate components."""
+    all_positions = {
+        (row, col)
+        for row in range(len(grid))
+        for col in range(len(grid[0]))
+    }
+    floor = {
+        (row, col)
+        for row, line in enumerate(grid)
+        for col, symbol in enumerate(line)
+        if symbol in {" ", "_"}
+    }
+    components = []
+    while floor:
+        start = min(floor)
+        floor.remove(start)
+        component = {start}
+        frontier = [start]
+        while frontier:
+            position = frontier.pop()
+            for adjacent in _neighbours(position, all_positions):
+                if adjacent in floor:
+                    floor.remove(adjacent)
+                    component.add(adjacent)
+                    frontier.append(adjacent)
+        components.append(component)
+    return components
+
+
+def _place_barriers_and_controls(
+    grid: list[list[str]],
+    config: dict[str, Any],
+    regions: list[set[tuple[int, int]]],
+    shared_tiles: list[tuple[int, int]],
+    rng: random.Random,
+) -> tuple[
+    list[bool],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+]:
+    """Place active barriers and wire generated buttons and pressure plates.
+
+    Control targets are returned in row-major tile order, matching
+    ``Layout.from_string`` parsing for ``button_config`` and
+    ``pressure_plate_config``.
+    """
+    barrier_count = config["barriers"]
+    if barrier_count == 0:
+        return [], [], []
+
+    height, width = config["height"], config["width"]
+    all_positions = {
+        (row, col)
+        for row in range(height)
+        for col in range(width)
+    }
+    floor = set().union(*regions)
+    shared_candidates = set(shared_tiles)
+    action_adjacent_candidates = {
+        position
+        for position in floor
+        if any(
+            grid[adjacent[0]][adjacent[1]] in ACTION_ITEM_SYMBOLS
+            for adjacent in _neighbours(position, all_positions)
+        )
+    }
+    anywhere_candidates = floor | {
+        position
+        for position in all_positions
+        if grid[position[0]][position[1]] == "W"
+        and _adjacent_regions(position, regions, all_positions)
+    }
+
+    placement = config["barrier_placement"]
+    if placement == "shared":
+        candidates = shared_candidates
+    elif placement == "action_adjacent":
+        candidates = action_adjacent_candidates
+    elif placement == "shared_or_action_adjacent":
+        candidates = shared_candidates | action_adjacent_candidates
+    else:
+        candidates = anywhere_candidates
+
+    if len(candidates) < barrier_count:
+        raise CandidateGenerationError(
+            f"only {len(candidates)} legal {placement!r} barrier position(s) "
+            f"exist; requested {barrier_count}"
+        )
+
+    barrier_positions = rng.sample(sorted(candidates), barrier_count)
+    for row, col in barrier_positions:
+        grid[row][col] = "#"
+
+    floor_components = _connected_floor_components(grid)
+    if len(floor_components) != config["num_regions"]:
+        raise CandidateGenerationError(
+            "barrier placement split a walkable region; retrying with "
+            "non-separating barrier positions"
+        )
+
+    plates_per_barrier = config["pressure_plates_per_barrier"]
+    pressure_plate_count = barrier_count * plates_per_barrier
+    available_plate_positions = set().union(*floor_components)
+    required_spawn_count = 2
+    if len(available_plate_positions) < pressure_plate_count + required_spawn_count:
+        raise CandidateGenerationError(
+            "too few floor tiles remain for pressure plates and two agent spawns"
+        )
+
+    # Two-region layouts need one spawn in each component. A single-region
+    # layout still needs two distinct spawn tiles in its sole component.
+    if len(floor_components) == 1:
+        reserved_spawns = set(
+            rng.sample(sorted(floor_components[0]), required_spawn_count)
+        )
+    else:
+        reserved_spawns = {
+            rng.choice(sorted(component))
+            for component in floor_components
+        }
+    plate_positions = rng.sample(
+        sorted(available_plate_positions - reserved_spawns),
+        pressure_plate_count,
+    )
+
+    barrier_positions = sorted(barrier_positions)
+    barrier_index = {
+        position: index for index, position in enumerate(barrier_positions)
+    }
+    target_assignments = [
+        barrier_index[position]
+        for position in barrier_positions
+        for _ in range(plates_per_barrier)
+    ]
+    rng.shuffle(target_assignments)
+    target_by_plate_position = dict(zip(plate_positions, target_assignments))
+    for row, col in plate_positions:
+        grid[row][col] = "_"
+
+    pressure_plate_targets = [
+        (target_by_plate_position[position], int(ButtonAction.TOGGLE_BARRIER))
+        for position in sorted(plate_positions)
+    ]
+
+    buttons_per_barrier = config["buttons_per_barrier"]
+    button_positions = sorted(
+        (row, col)
+        for row, line in enumerate(grid)
+        for col, symbol in enumerate(line)
+        if symbol == "!"
+    )
+    expected_button_count = barrier_count * buttons_per_barrier
+    if len(button_positions) != expected_button_count:
+        raise CandidateGenerationError(
+            f"layout has {len(button_positions)} buttons; expected "
+            f"{expected_button_count}"
+        )
+    button_target_assignments = [
+        barrier_idx
+        for barrier_idx in range(barrier_count)
+        for _ in range(buttons_per_barrier)
+    ]
+    rng.shuffle(button_target_assignments)
+    button_targets = [
+        (target_idx, int(ButtonAction.TIMED_BARRIER))
+        for target_idx in button_target_assignments
+    ]
+    return [True] * barrier_count, button_targets, pressure_plate_targets
+
+
 def _place_region_stations(
     grid: list[list[str]],
     config: dict[str, Any],
@@ -566,7 +852,15 @@ def _place_region_stations(
         grid[position[0]][position[1]] = symbol
 
 
-def _generate_candidate(config: dict[str, Any], rng: random.Random) -> str:
+def _generate_candidate(
+    config: dict[str, Any],
+    rng: random.Random,
+) -> tuple[
+    str,
+    list[bool],
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+]:
     width, height = config["width"], config["height"]
     grid = [["W"] * width for _ in range(height)]
     interior = {
@@ -608,18 +902,22 @@ def _generate_candidate(config: dict[str, Any], rng: random.Random) -> str:
         rng,
     )
 
-    if config["num_regions"] == 2:
-        all_positions = {
-            (row, col)
-            for row in range(height)
-            for col in range(width)
-        }
-        shared_tiles = _shared_tiles(
+    all_positions = {
+        (row, col)
+        for row in range(height)
+        for col in range(width)
+    }
+    shared_tiles = (
+        _shared_tiles(
             grid,
             regions,
             interior,
             all_positions,
         )
+        if config["num_regions"] == 2
+        else []
+    )
+    if config["num_regions"] == 2:
         requested_shared_tiles = config["num_shared_tiles"]
         if (
             requested_shared_tiles is not None
@@ -629,19 +927,53 @@ def _generate_candidate(config: dict[str, Any], rng: random.Random) -> str:
                 f"layout has {len(shared_tiles)} shared tiles; "
                 f"requested exactly {requested_shared_tiles}"
             )
-        if config["workflow_mode"] == "shared" and not shared_tiles:
-            raise CandidateGenerationError(
-                "shared workflow has no counter accessible from both regions"
-            )
+    if config["workflow_mode"] == "shared" and not shared_tiles:
+        raise CandidateGenerationError(
+            "shared workflow has no counter accessible from both regions"
+        )
 
+    barrier_config, button_config, pressure_plate_config = (
+        _place_barriers_and_controls(
+            grid,
+            config,
+            regions,
+            shared_tiles,
+            rng,
+        )
+    )
+
+    final_regions = _connected_floor_components(grid)
     if config["num_regions"] == 1:
-        spawn_positions = rng.sample(sorted(regions[0]), 2)
+        spawn_candidates = sorted(
+            position
+            for position in final_regions[0]
+            if grid[position[0]][position[1]] == " "
+        )
+        if len(spawn_candidates) < 2:
+            raise CandidateGenerationError(
+                "too few ordinary floor tiles remain for two agent spawns"
+            )
+        spawn_positions = rng.sample(spawn_candidates, 2)
     else:
-        spawn_positions = [rng.choice(sorted(region)) for region in regions]
+        spawn_positions = [
+            rng.choice(
+                sorted(
+                    position
+                    for position in region
+                    if grid[position[0]][position[1]] == " "
+                )
+            )
+            for region in final_regions
+        ]
     for row, col in spawn_positions:
         grid[row][col] = "A"
 
-    return "\n".join("".join(row) for row in grid)
+    return (
+        "\n".join("".join(row) for row in grid),
+        barrier_config,
+        button_config,
+        pressure_plate_config,
+    )
 
 
 def generate_layout(
@@ -652,13 +984,21 @@ def generate_layout(
     last_errors = []
     for attempt in range(1, config["max_attempts"] + 1):
         try:
-            grid = _generate_candidate(config, rng)
+            (
+                grid,
+                barrier_config,
+                button_config,
+                pressure_plate_config,
+            ) = _generate_candidate(config, rng)
         except CandidateGenerationError as exc:
             last_errors = [str(exc)]
             continue
         layout = Layout.from_string(
             grid,
             possible_recipes=config["possible_recipes"],
+            button_config=button_config,
+            barrier_config=barrier_config,
+            pressure_plate_config=pressure_plate_config,
         )
         valid, last_errors = validate_generated_layout(layout)
         if valid:
@@ -667,6 +1007,26 @@ def generate_layout(
         f"Could not generate a valid layout after {config['max_attempts']} "
         f"attempts. Last validation error(s): {'; '.join(last_errors)}"
     )
+
+
+def _layout_entry(grid: str, layout: Layout, config: dict[str, Any]) -> dict[str, Any]:
+    """Serialize a generated layout, including barrier control metadata."""
+    return {
+        "ascii": grid,
+        "possible_recipes": config["possible_recipes"],
+        "button_config": [
+            [list(target_idxs), int(action_type)]
+            for _, _, target_idxs, action_type in layout.button_info
+        ],
+        "barrier_config": [
+            bool(active) for _, _, active in layout.barrier_info
+        ],
+        "pressure_plate_config": [
+            [list(target_idxs), int(action_type)]
+            for _, _, target_idxs, action_type in layout.pressure_plate_info
+        ],
+        "validation": {"valid": True, "errors": []},
+    }
 
 
 def generate_document(document: Any) -> dict[str, Any]:
@@ -681,11 +1041,7 @@ def generate_document(document: Any) -> dict[str, Any]:
     for index in range(config["count"]):
         name = f"{config['name_prefix']}_{index:0{digits}d}"
         grid, layout, _ = generate_layout(config, rng)
-        generated[name] = {
-            "ascii": grid,
-            "possible_recipes": config["possible_recipes"],
-            "validation": {"valid": True, "errors": []},
-        }
+        generated[name] = _layout_entry(grid, layout, config)
 
     result = dict(document)
     result["generator"] = config
@@ -753,11 +1109,7 @@ def generate_to_file(
                 )
             continue
 
-        result["layouts"][name] = {
-            "ascii": grid,
-            "possible_recipes": config["possible_recipes"],
-            "validation": {"valid": True, "errors": []},
-        }
+        result["layouts"][name] = _layout_entry(grid, layout, config)
         result["generation_progress"]["completed"] += 1
         _write_json_checkpoint(result, output_path)
         if emit is not None:

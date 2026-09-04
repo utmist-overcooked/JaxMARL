@@ -3,21 +3,26 @@
     "seed": 7,
     "count": 1000,
     "name_prefix": "random_kitchen",
-    "width": 20,
+    "width": 10,
     "height": 10,
-    "ingredient_piles": [2, 2],
+    "ingredient_piles": [2, 1],
     "possible_recipes": [
       [0, 0, 0],
       [1, 1, 1]
     ],
-    "pots": 2,
-    "plate_piles": 2,
-    "depots": 2,
+    "pots": 1,
+    "plate_piles": 1,
+    "depots": 1,
     "object_placement": "anywhere",
-    "counter_density": 0.6,
+    "counter_density": 0.4,
     "num_regions": 2,
-    "workflow_mode": "complete_each",
-    "max_attempts": 100000
+    "num_shared_tiles": 4,
+    "workflow_mode": "shared",
+    "barriers": 2,
+    "barrier_placement": "shared",
+    "pressure_plates_per_barrier": 2,
+    "buttons_per_barrier": 2,
+    "max_attempts": 1000
   },
   "layouts": {}
 }
