@@ -47,3 +47,5 @@ slurm-*.out
 slurm_logs/
 artifacts/macro_mappo_rollouts/
 artifacts/overcooked_v3_macro_cooperative_barrier_flood_fill.gif
+artifacts/overcooked_v3_macro_walk_up_empty_pot.gif
+artifacts/overcooked_v3_macro_walk_up_barrier_closes.gif
