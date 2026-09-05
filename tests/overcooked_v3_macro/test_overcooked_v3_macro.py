@@ -275,7 +275,8 @@ def test_macro_navigation_retargets_when_nearest_target_is_blocked():
     assert not next_state.macro_action_done[0]
 
 
-def test_macro_terminates_when_barrier_makes_every_target_unreachable():
+def test_macro_waits_when_target_transiently_blocked_by_barrier():
+    """A closed barrier is transient: the agent holds and the macro stays alive."""
     env = _barrier_macro_env(
         [
             "WWWWWWW",
@@ -292,6 +293,74 @@ def test_macro_terminates_when_barrier_makes_every_target_unreachable():
         {"agent_0": int(MacroActions.get_ingredient_0)},
     )
 
+    # The barrier sits directly beside the agent, so it cannot advance yet, but
+    # the target still exists behind a transient block: it waits instead of
+    # aborting.
+    assert info["primitive_action"]["agent_0"] == Actions.stay
+    assert not next_state.macro_action_done[0]
+    assert jnp.array_equal(next_state.agents.pos.x, state.agents.pos.x)
+    assert jnp.array_equal(next_state.agents.pos.y, state.agents.pos.y)
+
+
+def test_macro_approaches_then_waits_and_completes_when_barrier_opens():
+    """Agent walks up to a barrier, waits, then finishes once it opens."""
+    env = _barrier_macro_env(
+        [
+            "WWWWWWW",
+            "WA #0 W",
+            "WWWWWWW",
+        ]
+    )
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+    actions = {"agent_0": int(MacroActions.get_ingredient_0)}
+
+    # Step 1: one open cell separates the agent from the barrier, so it advances.
+    _, state, _, _, info = env.step_env(key, state, actions)
+    assert info["primitive_action"]["agent_0"] == Actions.right
+    assert state.agents.pos.x[0] == 2
+    assert not state.macro_action_done[0]
+
+    # Step 2: now adjacent to the closed barrier -> hold, macro still alive.
+    _, blocked_state, _, _, info = env.step_env(key, state, actions)
+    assert info["primitive_action"]["agent_0"] == Actions.stay
+    assert blocked_state.agents.pos.x[0] == 2
+    assert not blocked_state.macro_action_done[0]
+
+    # Open the barrier and let the agent finish reaching and picking up.
+    open_state = blocked_state.replace(
+        barrier_active=jnp.zeros_like(blocked_state.barrier_active)
+    )
+    for _ in range(4):
+        key, subkey = jax.random.split(key)
+        _, open_state, _, _, _ = env.step_env(subkey, open_state, actions)
+        if bool(open_state.macro_action_done[0]):
+            break
+
+    assert open_state.agents.inventory[0] == DynamicObject.ingredient(0)
+    assert open_state.macro_action_done[0]
+
+
+def test_macro_terminates_when_permanent_wall_makes_target_unreachable():
+    """A permanent wall (not a barrier) is genuinely unreachable: abort at once."""
+    env = _barrier_macro_env(
+        [
+            "WWWWWWW",
+            "WA#W 0W",
+            "WWWWWWW",
+        ]
+    )
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+
+    _, next_state, _, _, info = env.step_env(
+        key,
+        state,
+        {"agent_0": int(MacroActions.get_ingredient_0)},
+    )
+
+    # Even ignoring the transient barrier, the wall seals the target off, so the
+    # macro is not statically reachable and terminates immediately.
     assert info["primitive_action"]["agent_0"] == Actions.stay
     assert next_state.macro_action_done[0]
     assert jnp.array_equal(next_state.agents.pos.x, state.agents.pos.x)
@@ -405,3 +474,114 @@ def test_interruptible_interface_repeating_macro_continues_without_reset():
         state.macro_action_done[0], 0, first_count + 1
     )
     assert state.macro_step_count[0] == expected_count
+
+
+def test_available_actions_mask_ignores_dynamic_state():
+    """Availability uses inventory + static existence only, never dynamic state.
+
+    At reset no pot is cooking and every counter is empty, yet the macros that
+    used to read that (possibly out-of-view) dynamic state are still available.
+    """
+    env = OvercookedV3Macro(layout="cramped_room")
+    _, state = env.reset(jax.random.PRNGKey(0))
+
+    empty_inv_mask = env.get_avail_actions(state)["agent_0"]
+    assert empty_inv_mask[MacroActions.wait_for_nearest_pot]  # a pot exists
+    assert empty_inv_mask[MacroActions.pickup_from_nearest_counter]  # counters exist
+
+    plate_mask = env.get_avail_actions(
+        state.replace(
+            agents=state.agents.replace(
+                inventory=state.agents.inventory.at[0].set(DynamicObject.PLATE)
+            )
+        )
+    )["agent_0"]
+    # No pot is ready, but holding a plate while a pot exists is enough.
+    assert plate_mask[MacroActions.get_soup_from_nearest_pot]
+
+    # A finished (cooked) pot would fail the old valid-placement check; holding an
+    # ingredient while a pot exists still makes the placement macro available.
+    pot_y, pot_x = int(state.pot_positions[0, 0]), int(state.pot_positions[0, 1])
+    full_pot_mask = env.get_avail_actions(
+        state.replace(
+            agents=state.agents.replace(
+                inventory=state.agents.inventory.at[0].set(
+                    DynamicObject.ingredient(0)
+                )
+            ),
+            grid=state.grid.at[pot_y, pot_x, 1].set(int(DynamicObject.COOKED)),
+        )
+    )["agent_0"]
+    assert full_pot_mask[MacroActions.put_ingredient_in_nearest_pot]
+    assert full_pot_mask[MacroActions.drop_on_nearest_counter]
+
+
+def test_macro_arrives_and_finishes_at_invalid_object():
+    """Nearest counter is empty: the agent goes, attempts once, macro ends."""
+    env = OvercookedV3Macro(layout="cramped_room", max_macro_steps=20)
+    key = jax.random.PRNGKey(0)
+    _, state = env.reset(key)
+    actions = {
+        "agent_0": int(MacroActions.pickup_from_nearest_counter),
+        "agent_1": int(MacroActions.wait),
+    }
+
+    interacted = False
+    for _ in range(20):
+        key, subkey = jax.random.split(key)
+        _, state, _, _, info = env.step_env(subkey, state, actions)
+        if int(info["primitive_action"]["agent_0"]) == int(Actions.interact):
+            interacted = True
+        if bool(state.macro_action_done[0]):
+            break
+
+    # It attempted the pickup once (found the counter empty) and terminated,
+    # still empty-handed rather than looping forever.
+    assert interacted
+    assert state.macro_action_done[0]
+    assert state.agents.inventory[0] == DynamicObject.EMPTY
+
+
+def test_wait_for_nearest_pot_only_reacts_to_pots_in_view():
+    """With a view radius, the wait macro only reacts to cooking pots in view."""
+    env = OvercookedV3Macro(layout="cramped_room", agent_view_size=1)
+    _, state = env.reset(jax.random.PRNGKey(0))
+    state = state.replace(
+        pot_active_mask=state.pot_active_mask.at[0].set(True),
+        pot_cooking_timer=state.pot_cooking_timer.at[0].set(5),
+    )
+    pot_y, pot_x = int(state.pot_positions[0, 0]), int(state.pot_positions[0, 1])
+
+    def wait_done(agent_state):
+        """Whether wait_for_nearest_pot would complete for agent 0 right now."""
+        return bool(
+            env._macro_done_for_agent(
+                agent_state,
+                0,
+                jnp.array(MacroActions.wait_for_nearest_pot, dtype=jnp.int32),
+                jnp.array(Actions.stay, dtype=jnp.int32),
+                jnp.array(True),
+            )
+        )
+
+    # Adjacent to the cooking pot (Chebyshev radius 1 -> in view): keep waiting.
+    near = state.replace(
+        agents=state.agents.replace(
+            pos=state.agents.pos.replace(
+                y=state.agents.pos.y.at[0].set(pot_y + 1),
+                x=state.agents.pos.x.at[0].set(pot_x),
+            )
+        )
+    )
+    assert not wait_done(near)
+
+    # Far corner (outside the view window): nothing worth waiting for -> noop.
+    far = state.replace(
+        agents=state.agents.replace(
+            pos=state.agents.pos.replace(
+                y=state.agents.pos.y.at[0].set(env.height - 1),
+                x=state.agents.pos.x.at[0].set(env.width - 1),
+            )
+        )
+    )
+    assert wait_done(far)
