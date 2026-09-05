@@ -74,10 +74,12 @@ from mappo_macro_common import (
     initialize_config,
     make_train_state,
     masked_categorical,
+    masked_mean,
     maybe_checkpoint,
     maybe_evaluate_and_save_best,
     metadata_batch,
     run_experiment,
+    paired_sequence_minibatches,
     sequence_minibatches,
     unbatchify,
     update_ppo,
@@ -94,6 +96,20 @@ COMM_MODES = ("normal", "self", "shuffled", "constant")
 # design and is kept only as an ablation. See policy_logits().
 COMM_INJECTIONS = ("concat", "bias")
 
+# How the speaker is trained.
+#   "reinforce" (RIAL) the symbol is sampled and the message head is trained by
+#       policy gradient on the SAME advantage as the action. The channel is not
+#       differentiable, so the speaker's only signal is a delayed, high-variance
+#       scalar shared across every message it emitted in the episode.
+#   "dial"      the symbol is a straight-through Gumbel-softmax sample, so it is
+#       still discrete on the forward pass but the LISTENER'S action-loss
+#       gradient flows straight back into the speaker's encoder. This is the
+#       standard fix for the failure "reinforce" produces here (Foerster et al.
+#       2016): with agent_0 hitting a macro boundary nearly every primitive step
+#       it emits ~400 messages per episode, only a handful of which precede an
+#       ingredient choice, yet all receive the same advantage.
+COMM_CHANNELS = ("reinforce", "dial")
+
 
 def route_messages(message, rng, num_envs: int, mode: str):
     """Map sent messages to received messages according to COMM_MODE.
@@ -108,7 +124,11 @@ def route_messages(message, rng, num_envs: int, mode: str):
         # only itself: capacity is unchanged, transfer is zero.
         return message
     if mode == "constant":
-        return jnp.zeros_like(message)
+        # For integer symbols this is symbol 0; for one-hot/soft messages it
+        # must stay a valid distribution, so pin all the mass on symbol 0.
+        if message.ndim == 1:
+            return jnp.zeros_like(message)
+        return jnp.zeros_like(message).at[..., 0].set(1.0)
     if mode == "shuffled":
         # Partner's message, but from a randomly chosen environment. The batch
         # is agent-major, so permute WITHIN each agent block: the listener
@@ -116,12 +136,31 @@ def route_messages(message, rng, num_envs: int, mode: str):
         # marginal distribution -- only the link to THIS env's recipe is cut.
         swapped = swap_two_agent_messages(message, num_envs)
         num_agents = swapped.shape[0] // num_envs
-        per_agent = swapped.reshape(num_agents, num_envs)
+        trailing = swapped.shape[1:]
+        per_agent = swapped.reshape((num_agents, num_envs) + trailing)
         permutations = jax.vmap(jax.random.permutation, in_axes=(0, None))(
             jax.random.split(rng, num_agents), num_envs
         )
-        return jnp.take_along_axis(per_agent, permutations, axis=1).reshape(-1)
+        # broadcast the gather index over any trailing (e.g. vocab) dimensions
+        index = permutations.reshape(permutations.shape + (1,) * len(trailing))
+        index = jnp.broadcast_to(index, (num_agents, num_envs) + trailing)
+        return jnp.take_along_axis(per_agent, index, axis=1).reshape(swapped.shape)
     raise ValueError(f"Unknown COMM_MODE {mode!r}; expected one of {COMM_MODES}")
+
+
+def gumbel_straight_through(logits, gumbel_noise, tau: float):
+    """Discrete forward, differentiable backward (DIAL's channel).
+
+    The forward value is a hard one-hot, so the channel really does carry one
+    discrete symbol. The backward value is the softmax relaxation, so the
+    listener's gradient reaches the speaker's logits. `gumbel_noise` is passed
+    in rather than drawn here because the PPO update must reproduce the exact
+    symbol the rollout sent -- otherwise the importance ratio would compare two
+    different messages.
+    """
+    soft = jax.nn.softmax((logits + gumbel_noise) / tau, axis=-1)
+    hard = jax.nn.one_hot(jnp.argmax(soft, axis=-1), logits.shape[-1])
+    return hard + (soft - jax.lax.stop_gradient(soft))
 
 
 def make_train(config):
@@ -143,11 +182,30 @@ def make_train(config):
 
     use_rnn = bool(config.get("USE_RNN", False))
     comm_use_memory = bool(config.get("COMM_USE_MEMORY", False))
+    num_minibatches_cfg = int(config["NUM_MINIBATCHES"])
     comm_injection = config.get("COMM_INJECTION", "concat")
     if comm_injection not in COMM_INJECTIONS:
         raise ValueError(
             f"COMM_INJECTION must be one of {COMM_INJECTIONS}, got {comm_injection!r}"
         )
+    comm_channel = config.get("COMM_CHANNEL", "reinforce")
+    if comm_channel not in COMM_CHANNELS:
+        raise ValueError(
+            f"COMM_CHANNEL must be one of {COMM_CHANNELS}, got {comm_channel!r}"
+        )
+    if comm_channel == "dial" and comm_injection != "concat":
+        raise ValueError(
+            "COMM_CHANNEL=dial requires COMM_INJECTION=concat: the gradient "
+            "reaches the speaker through the actor's input, which the 'bias' "
+            "correction head does not provide."
+        )
+    if comm_channel == "dial" and int(config["NUM_ENVS"]) % num_minibatches_cfg != 0:
+        raise ValueError(
+            f"COMM_CHANNEL=dial splits minibatches by ENVIRONMENT to keep agent "
+            f"pairs together, so NUM_ENVS ({config['NUM_ENVS']}) must be "
+            f"divisible by NUM_MINIBATCHES ({num_minibatches_cfg})."
+        )
+    gumbel_tau = float(config.get("COMM_GUMBEL_TAU", 1.0))
     hidden_size = int(config["HIDDEN_SIZE"])
     comm_hidden_size = int(config.get("COMM_HIDDEN_SIZE", config["HIDDEN_SIZE"]))
     num_actors = int(config["NUM_ACTORS"])
@@ -269,9 +327,18 @@ def make_train(config):
             informing it.
             """
             if comm_injection == "concat":
-                embed = comm_module.apply(
-                    params["comm"], received_seq, method=comm_module.embed_message
-                )
+                # Integer symbols during rollout (no gradient needed); under
+                # DIAL the loss passes a (..., vocab) straight-through vector
+                # instead, which must be embedded differentiably.
+                if jnp.issubdtype(received_seq.dtype, jnp.integer):
+                    embed = comm_module.apply(
+                        params["comm"], received_seq, method=comm_module.embed_message
+                    )
+                else:
+                    embed = comm_module.apply(
+                        params["comm"], received_seq,
+                        method=comm_module.embed_message_soft,
+                    )
                 actor_input = jnp.concatenate((obs_seq, embed), axis=-1)
             else:
                 actor_input = obs_seq
@@ -408,7 +475,15 @@ def make_train(config):
                 message_logits = message_logits.squeeze(0)
                 rng, msg_rng, act_rng, route_rng, step_rng = jax.random.split(rng, 5)
                 message_policy = categorical(message_logits)
-                sampled_message = message_policy.sample(seed=msg_rng)
+                # Drawn every step even under DIAL so the RNG stream (and hence
+                # the rest of the rollout) does not depend on COMM_CHANNEL.
+                gumbel_noise = jax.random.gumbel(
+                    msg_rng, message_logits.shape, dtype=message_logits.dtype
+                )
+                if comm_channel == "dial":
+                    sampled_message = jnp.argmax(message_logits + gumbel_noise, axis=-1)
+                else:
+                    sampled_message = message_policy.sample(seed=msg_rng)
                 # Speak only at a macro boundary; hold otherwise.
                 message = jnp.where(macro_done, sampled_message, last_message)
                 message_log_prob = message_policy.log_prob(message)
@@ -506,6 +581,11 @@ def make_train(config):
                     "step_message": message,
                     "step_old_message_log_prob": message_log_prob,
                     "step_received_message": received,
+                    # DIAL re-derives the message inside the loss; replaying the
+                    # same noise makes that reproduce the symbol actually sent.
+                    "step_gumbel_noise": gumbel_noise,
+                    "step_macro_done": macro_done,
+                    "step_last_message": last_message,
                     # macro-start snapshots (used by the MLP path)
                     "pending_obs": pending["obs"],
                     "pending_world_state": pending["world_state"],
@@ -584,6 +664,9 @@ def make_train(config):
                     "message": trajectory["step_message"],
                     "old_message_log_prob": trajectory["step_old_message_log_prob"],
                     "received_message": trajectory["step_received_message"],
+                    "gumbel_noise": trajectory["step_gumbel_noise"],
+                    "macro_done": trajectory["step_macro_done"],
+                    "last_message": trajectory["step_last_message"],
                     "advantage": zeros.at[scatter_rows, actor_index].set(
                         advantage, mode="drop"),
                     "target": zeros.at[scatter_rows, actor_index].set(
@@ -594,9 +677,16 @@ def make_train(config):
                     "init_critic_hidden": rollout_start_hidden[1][None, :],
                     "init_comm_hidden": rollout_start_hidden[2][None, :],
                 }
-                minibatch_fn = lambda r, b: sequence_minibatches(
-                    r, b, num_minibatches, num_actors
-                )
+                if comm_channel == "dial":
+                    # Routing inside the loss needs both agents of an env in the
+                    # same minibatch, so split by environment, not by actor.
+                    minibatch_fn = lambda r, b: paired_sequence_minibatches(
+                        r, b, num_minibatches, num_envs, env.num_agents
+                    )
+                else:
+                    minibatch_fn = lambda r, b: sequence_minibatches(
+                        r, b, num_minibatches, num_actors
+                    )
             else:
                 batch = jax.tree.map(
                     lambda x: x.reshape((-1,) + x.shape[2:]),
@@ -626,11 +716,41 @@ def make_train(config):
                 _, summary, message_logits = encode(
                     params, comm_carry, minibatch["obs"], prev_done
                 )
+
+                if comm_channel == "dial":
+                    # Re-derive the message HERE, from params, so that the
+                    # action loss below differentiates through the channel into
+                    # the speaker. Replaying the rollout's gumbel noise makes
+                    # this reproduce the symbol that was actually sent, keeping
+                    # the PPO importance ratio meaningful.
+                    sent = gumbel_straight_through(
+                        message_logits, minibatch["gumbel_noise"], gumbel_tau
+                    )
+                    # Outside a macro boundary the agent holds its previous
+                    # message. That was emitted at an earlier boundary, so its
+                    # gradient belongs to that step; using the stored symbol
+                    # here truncates the path rather than double-counting it.
+                    held = jax.nn.one_hot(
+                        minibatch["last_message"], int(config["VOCAB_SIZE"])
+                    )
+                    sent = jnp.where(minibatch["macro_done"][..., None], sent, held)
+                    # Route along the ACTOR axis (axis 1 of this time-major
+                    # batch); paired_sequence_minibatches guarantees both agents
+                    # of an environment are present and agent-major.
+                    actors_in_minibatch = sent.shape[1]
+                    envs_in_minibatch = actors_in_minibatch // env.num_agents
+                    routed = route_messages(
+                        jnp.moveaxis(sent, 1, 0),
+                        jax.random.PRNGKey(0), envs_in_minibatch, mode,
+                    )
+                    received = jnp.moveaxis(routed, 0, 1)
+                else:
+                    received = minibatch["received_message"]
+
                 _, final_logits = policy_logits(
                     params,
                     minibatch["init_actor_hidden"][0] if use_rnn else None,
-                    summary, minibatch["obs"], prev_done,
-                    minibatch["received_message"],
+                    summary, minibatch["obs"], prev_done, received,
                 )
                 policy = masked_categorical(final_logits, minibatch["action_mask"])
                 action_loss, action_metrics = clipped_actor_loss(
@@ -639,14 +759,28 @@ def make_train(config):
                     policy.entropy(), minibatch["loss_mask"],
                     config["CLIP_EPS"], config["ENT_COEF"],
                 )
+
                 message_policy = categorical(message_logits)
-                message_loss, message_metrics = clipped_actor_loss(
-                    message_policy.log_prob(minibatch["message"]),
-                    minibatch["old_message_log_prob"], minibatch["advantage"],
-                    message_policy.entropy(), minibatch["loss_mask"],
-                    config["CLIP_EPS"],
-                    config.get("MESSAGE_ENT_COEF", config["ENT_COEF"]),
+                message_entropy = masked_mean(
+                    message_policy.entropy(), minibatch["loss_mask"]
                 )
+                if comm_channel == "dial":
+                    # No REINFORCE term: the speaker is already trained by the
+                    # gradient flowing back through `received` above. Entropy is
+                    # kept as the only pressure against symbol collapse.
+                    message_loss = -config.get(
+                        "MESSAGE_ENT_COEF", config["ENT_COEF"]
+                    ) * message_entropy
+                    message_metrics = {"entropy": message_entropy}
+                else:
+                    message_loss, message_metrics = clipped_actor_loss(
+                        message_policy.log_prob(minibatch["message"]),
+                        minibatch["old_message_log_prob"], minibatch["advantage"],
+                        message_policy.entropy(), minibatch["loss_mask"],
+                        config["CLIP_EPS"],
+                        config.get("MESSAGE_ENT_COEF", config["ENT_COEF"]),
+                    )
+
                 total = action_loss + config.get("MESSAGE_LOSS_COEF", 1.0) * message_loss
                 metrics = {
                     **{f"action_{k}": v for k, v in action_metrics.items()},

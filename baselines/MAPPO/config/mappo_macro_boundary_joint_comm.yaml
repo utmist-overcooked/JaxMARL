@@ -103,3 +103,16 @@ MESSAGE_HEAD_INIT_SCALE: 0.01
 # setup, not the channel. Widens the actor observation, so oracle and non-oracle
 # checkpoints are not interchangeable.
 ORACLE_RECIPE_OBS: false
+
+# How the speaker is trained.
+#   reinforce - RIAL: sample the symbol, train the message head by policy
+#               gradient on the same advantage as the action. The channel is
+#               not differentiable, so the speaker's only signal is a delayed,
+#               high-variance scalar shared across every message in the episode.
+#   dial      - straight-through Gumbel-softmax: still one discrete symbol on
+#               the forward pass, but the LISTENER'S action-loss gradient flows
+#               back into the speaker's encoder. Requires COMM_INJECTION=concat,
+#               and NUM_ENVS divisible by NUM_MINIBATCHES (minibatches are split
+#               by environment so agent pairs stay together).
+COMM_CHANNEL: dial
+COMM_GUMBEL_TAU: 1.0

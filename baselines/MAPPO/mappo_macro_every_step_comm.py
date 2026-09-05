@@ -134,6 +134,19 @@ class CommModule(nn.Module):
         x = nn.tanh(self.corr_dense1(x))
         return self.corr_dense2(x)
 
+    def embed_message_soft(self, message_weights):
+        """Differentiable embedding of a message given as weights over symbols.
+
+        `embed_message` takes an integer symbol, so gradient stops at the
+        channel. This takes a (..., vocab_size) vector instead and contracts it
+        against the same embedding table, so d(embedding)/d(message_weights)
+        exists. With a straight-through Gumbel-softmax that vector is a hard
+        one-hot in the forward pass -- the channel stays genuinely discrete --
+        while the backward pass carries the listener's gradient into the
+        speaker's encoder (DIAL, Foerster et al. 2016).
+        """
+        return jnp.einsum("...v,ve->...e", message_weights, self.msg_embed.embedding)
+
     def embed_message(self, received_message):
         """Trainable embedding of a received symbol, on its own.
 

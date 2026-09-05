@@ -1002,6 +1002,42 @@ def sequence_minibatches(rng, batch, num_minibatches: int, num_actors: int):
     )
 
 
+def paired_sequence_minibatches(
+    rng, batch, num_minibatches: int, num_envs: int, num_agents: int
+):
+    """Like `sequence_minibatches`, but keeps an environment's agents together.
+
+    `sequence_minibatches` shuffles the actor axis freely, which scatters the
+    two agents of one environment into different minibatches. Differentiable
+    communication cannot tolerate that: to backpropagate the listener's loss
+    into the speaker, the loss has to re-route messages between partners, and
+    routing assumes batchify's agent-major layout
+    [agent0_env0..agent0_envN, agent1_env0..agent1_envN].
+
+    So shuffle ENVIRONMENTS and take every agent of each chosen environment.
+    Each minibatch is then itself agent-major over its own environment subset,
+    and `swap_two_agent_messages(msg, envs_per_minibatch)` works inside it.
+
+    Returns leaves shaped (num_minibatches, time, actors_per_minibatch, ...).
+    """
+    env_permutation = jax.random.permutation(rng, num_envs)
+    # agent-major actor index for (agent a, env e) is a * num_envs + e
+    actor_index = (
+        jnp.arange(num_agents)[:, None] * num_envs + env_permutation[None, :]
+    )  # (num_agents, num_envs)
+    envs_per_minibatch = num_envs // num_minibatches
+    # -> (num_minibatches, num_agents * envs_per_minibatch), agent-major within
+    actor_index = jnp.concatenate(
+        [
+            actor_index[:, m * envs_per_minibatch : (m + 1) * envs_per_minibatch]
+            .reshape(-1)[None, :]
+            for m in range(num_minibatches)
+        ],
+        axis=0,
+    )
+    return jax.tree.map(lambda x: jnp.take(x, actor_index, axis=1).swapaxes(0, 1), batch)
+
+
 def update_ppo(
     rng,
     actor_state,
