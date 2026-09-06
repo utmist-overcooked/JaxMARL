@@ -1,0 +1,177 @@
+# Protein sweep-space for mappo_macro_boundary_joint_comm (actor + critic + comm
+# trained together, DIAL channel). Consumed by protein_sweep.py --target joint_comm.
+#
+# See protein.yaml for the reserved keys and the `fixed` convention.
+#
+# EVERY key below is verified to be READ by the trainer. protein_comm.yaml sweeps
+# ADAM_B1 / ADAM_B2 / ADAM_EPS and protein.yaml sweeps REW_SHAPING_FRACTION, none
+# of which any trainer reads -- make_train_state hardcodes
+# `optax.adam(learning_rate, eps=1e-5)` and the shaping key is REW_SHAPING_HORIZON.
+# Inert dimensions are not free: Protein spends trials exploring them and its GP
+# fits noise along those axes.
+#
+# STARTING POINT. The known-good configuration is TOTAL_TIMESTEPS=8000000 with
+# REW_SHAPING_HORIZON=4000000 (2 of 5 seeds reached 75% protocol accuracy;
+# Stage 2 separation 1.000). Ranges below bracket that point rather than
+# exploring blind -- the aim is to raise 75% toward 100%, not to rediscover the
+# working region.
+
+method: protein
+metric: eval_return
+goal: maximize
+metric_distribution: linear
+downsample: 1
+early_stop_quantile: 0.3
+prune_pareto: true
+max_runs: 30
+
+# --- Sweep-time fixed overrides ---------------------------------------------
+# NUM_ENVS is deliberately NOT raised the way protein.yaml raises it (1028).
+# Boundary trainers force NUM_STEPS to a multiple of ENV_KWARGS.max_steps (400),
+# so a batch is NUM_ENVS*400 steps. At NUM_ENVS=1028 an 8M budget buys only ~19
+# gradient updates and nothing can learn; at NUM_ENVS=16 it buys 1250, which is
+# the regime the working run used. Raise this only together with
+# TOTAL_TIMESTEPS.
+#
+# NUM_MINIBATCHES is fixed because two startup checks constrain it:
+#   USE_RNN            requires NUM_ACTORS (= 2*NUM_ENVS) % NUM_MINIBATCHES == 0
+#   COMM_CHANNEL=dial  requires NUM_ENVS % NUM_MINIBATCHES == 0
+# 16 % 4 == 0 satisfies both. A swept value would fail those checks on most
+# suggestions and burn trials as structural failures.
+fixed:
+  NUM_ENVS: 16
+  NUM_STEPS: 400
+  NUM_MINIBATCHES: 4
+  USE_RNN: true
+  COMM_USE_MEMORY: true
+  COMM_INJECTION: concat     # required by COMM_CHANNEL=dial
+  COMM_CHANNEL: dial
+  COMM_MODE: normal          # the treatment; run `self` separately as the control
+  VOCAB_SIZE: 2              # protocol capacity is the scientific claim, not a knob
+  ORACLE_RECIPE_OBS: false
+
+# --- Cost lever: training budget --------------------------------------------
+# Searched and wired up as Protein's cost_param. The driver snaps each
+# suggestion to a whole number of NUM_STEPS*NUM_ENVS batches.
+TOTAL_TIMESTEPS:
+  distribution: log_normal
+  min: 6000000
+  max: 24000000
+  scale: time
+
+# --- Reward shaping ----------------------------------------------------------
+# Genuinely consequential here, not a minor knob: shaped rewards decay to zero
+# over this horizon and the burn penalty ramps in over it. The working run used
+# 4M against an 8M budget (shaping gone by the halfway point). Leaving it at the
+# config default of 10M against an 8M budget means shaping never fully decays,
+# which measurably changed the outcome.
+REW_SHAPING_HORIZON:
+  distribution: log_normal
+  min: 2000000
+  max: 12000000
+  scale: auto
+
+# --- Communication-module hyperparameters ------------------------------------
+# Entropy pressure on the message policy. Under DIAL this is the ONLY term
+# resisting symbol collapse -- there is no REINFORCE term on the message -- so
+# too low collapses the channel and too high keeps it uniform and uninformative.
+MESSAGE_ENT_COEF:
+  distribution: log_normal
+  min: 0.005
+  max: 0.2
+  scale: auto
+
+MESSAGE_LOSS_COEF:
+  distribution: uniform
+  min: 0.25
+  max: 2.0
+  scale: auto
+
+# Straight-through Gumbel temperature. Lower sharpens the relaxation toward the
+# hard one-hot (less biased gradient, higher variance); 1.0 is the current value.
+COMM_GUMBEL_TAU:
+  distribution: log_normal
+  min: 0.2
+  max: 2.0
+  scale: auto
+
+# Init scale of the message-logit head. At exactly 0.0 this kernel IS the
+# Jacobian into the speaker's encoder, so a zero head blocks gradient to
+# msg_dense1, mem_dense and the comm GRU entirely; the range stays strictly
+# positive for that reason. Larger values make the speaker commit to an
+# arbitrary mapping earlier.
+MESSAGE_HEAD_INIT_SCALE:
+  distribution: log_normal
+  min: 0.001
+  max: 0.3
+  scale: auto
+
+# Width of the message embedding concatenated onto the observation. At the
+# default of 2 the message is 2 dims of a 1022-dim actor input (0.2%), which is
+# a plausible reason the LISTENER under-uses a channel the speaker encodes
+# perfectly. Widening the representation does not widen the channel -- VOCAB_SIZE
+# stays 2 -- so the protocol claim is unaffected.
+MESSAGE_EMBED_DIM:
+  distribution: int_uniform
+  min: 2
+  max: 32
+  scale: auto
+
+COMM_HIDDEN_SIZE:
+  distribution: int_uniform
+  min: 16
+  max: 128
+  scale: auto
+
+# --- PPO knobs ---------------------------------------------------------------
+LR:
+  distribution: log_normal
+  min: 0.00005
+  max: 0.003
+  scale: 0.5
+
+# Entropy on the ACTION policy. Directly in tension with the listener sharpening
+# onto the message: too much keeps the macro distribution flat so the message
+# cannot move the argmax, too little makes the listener commit to a
+# message-independent policy before the speaker becomes informative.
+ENT_COEF:
+  distribution: log_normal
+  min: 0.005
+  max: 0.15
+  scale: auto
+
+CLIP_EPS:
+  distribution: uniform
+  min: 0.05
+  max: 0.3
+  scale: auto
+
+UPDATE_EPOCHS:
+  distribution: int_uniform
+  min: 1
+  max: 8
+  scale: auto
+
+GAE_LAMBDA:
+  distribution: logit_normal
+  min: 0.8
+  max: 0.99
+  scale: auto
+
+VF_COEF:
+  distribution: uniform
+  min: 0.25
+  max: 1.0
+  scale: auto
+
+MAX_GRAD_NORM:
+  distribution: uniform
+  min: 0.2
+  max: 2.0
+  scale: auto
+
+HIDDEN_SIZE:
+  distribution: int_uniform
+  min: 64
+  max: 256
+  scale: auto

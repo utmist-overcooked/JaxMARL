@@ -58,4 +58,218 @@ The macro trainers also:
 
 Set `RESUME_FROM` to either a checkpoint `.npz` file or a `checkpoints` directory
 containing `latest.json` to continue a stopped run. Checkpoints include optimizer,
-environment, RNG, and policy state.
+environment, RNG, and policy state. Note that `mappo_macro_boundary_joint_comm.py`
+does **not** implement resuming — it accepts the key but ignores it, so a
+"continued" run silently starts from scratch.
+
+
+## Learned Communication
+
+Three further trainers add a discrete communication channel between the two
+agents, for layouts where one agent can observe something the other needs (the
+recipe indicator in `follow_the_leader_nerfed`, say) but cannot act on it.
+
+- `mappo_macro_every_step_comm.py` and `mappo_macro_boundary_comm.py` are
+  **two-stage**: they train a comm module on top of a FROZEN macro actor named by
+  `FROZEN_ACTOR_PATH`. Their own `best_actor.safetensors` holds the comm module,
+  not a macro actor.
+- `mappo_macro_boundary_joint_comm.py` is **joint**: actor, critic and comm
+  module train together from scratch, and its checkpoint holds actor and comm in
+  one `{"actor", "comm"}` tree.
+
+The two-stage design is a poor fit for information asymmetry, and measurably so:
+a policy trained without communication on an unobservable recipe converges to
+marginalising over it ("always fetch tomato") with a large logit margin, and the
+additive correction head cannot overcome it. On a real checkpoint the frozen
+actor's onion-vs-tomato logit gap was 7.68 while the correction head's swing
+between symbols was 0.037. Prefer the joint trainer for new work.
+
+The joint trainer has three axes worth knowing:
+
+| Key | Values | Meaning |
+| --- | --- | --- |
+| `COMM_CHANNEL` | `reinforce`, `dial` | How the SPEAKER is trained |
+| `COMM_INJECTION` | `concat`, `bias` | How the message reaches the LISTENER |
+| `COMM_MODE` | `normal`, `self`, `shuffled`, `constant` | What crosses the wire |
+
+`COMM_CHANNEL=reinforce` (RIAL) samples the symbol and trains the message head by
+policy gradient on the same advantage as the action. The channel is not
+differentiable, so the speaker's only signal is a delayed scalar shared across
+every message in the episode — with ~400 messages emitted per episode and ~3
+preceding an ingredient choice, that is ~130x credit dilution, and in practice the
+speaker collapses to a constant symbol.
+
+`COMM_CHANNEL=dial` replaces the sample with a straight-through Gumbel-softmax:
+still one discrete symbol on the forward pass, but the listener's action-loss
+gradient flows back into the speaker's encoder. Measured on this architecture, the
+listener's loss contributes **exactly zero** gradient to every speaker parameter
+under `reinforce`, and non-zero under `dial`. It requires `COMM_INJECTION=concat`
+(the gradient path runs through the actor's input, which the `bias` head does not
+provide) and `NUM_ENVS` divisible by `NUM_MINIBATCHES` (minibatches are split by
+environment so an environment's agents stay together for message routing).
+
+```bash
+python baselines/MAPPO/mappo_macro_boundary_joint_comm.py \
+    ENV_KWARGS.layout=follow_the_leader_nerfed \
+    COMM_CHANNEL=dial COMM_INJECTION=concat COMM_MODE=normal \
+    TOTAL_TIMESTEPS=8000000 REW_SHAPING_HORIZON=4000000 \
+    SAVE_PATH=models/dial_normal
+```
+
+`SAVE_PATH` plus the trainer name fixes the output directory, so two runs of the
+same trainer **overwrite each other** — give every experiment its own path.
+
+### Controls and diagnostics
+
+`COMM_MODE` holds architecture, parameter count and training budget fixed and
+varies only the information carried, so a gain can be attributed to the message
+rather than to the extra capacity. Run `normal` against `self` (the listener
+hears itself: same capacity, zero transfer); the difference is the causal
+estimate. `ORACLE_RECIPE_OBS=true` appends the true recipe to every agent's
+observation — the upper bound for any protocol, and the check that the task is
+learnable at all. Run it on `mappo_macro_boundary.py`; on a comm trainer it makes
+the message redundant and the protocol correctly collapses, which tests nothing.
+
+Two metrics are logged every update, both purely observational:
+
+- `protocol_accuracy` — of the ingredient decisions taken at macro boundaries,
+  the fraction matching the live recipe. 0.5 is chance with two equally likely
+  recipes. This is the DELIVERY reward with the delivery *rate* divided out; the
+  reward itself is `rate x accuracy` and cannot distinguish the two.
+- `message_nonzero_fraction` — pinned at 0.0 or 1.0 means the channel collapsed
+  to a constant and carries nothing, whatever the return curve shows.
+
+`scripts/trace_macro_comm_rollout.py` dumps every internal quantity per step to a
+CSV aligned frame-for-frame with a GIF, and runs a five-stage check of the
+protocol in causal order (speaker can see the recipe -> message depends on it ->
+routing intact -> listener responds -> ingredient matches). Fix the first failing
+stage; later ones are meaningless while an earlier link is broken.
+
+Outcomes are **bimodal across seeds** — a protocol either forms or does not. On
+the reference configuration 2 of 5 seeds reached 75% accuracy and 3 stayed at
+chance, so single-seed comparisons are not informative.
+
+
+## Protein Hyperparameter Sweep
+
+`protein_sweep.py` runs [PufferLib's Protein](https://github.com/PufferAI/PufferLib/blob/4.0/pufferlib/sweep.py)
+Bayesian-optimization sweep over any of the four macro trainers. Protein keeps
+two Gaussian Processes — one over score, one over log-cost — and proposes points
+around the Pareto frontier of past trials, trading predicted evaluation return
+against predicted wall-clock cost (bounded by `--max-suggestion-cost` seconds).
+
+The optimizer itself is vendored, single-file and dependency-free of PufferLib,
+in `protein.py` (a near-verbatim copy of their `sweep.py`, MIT-licensed). Install
+its extra dependencies with:
+
+```bash
+pip install -e '.[sweep]'   # torch, gpytorch, scikit-learn (scipy is already core)
+```
+
+All four trainers share the `run_experiment(config, make_train, name)` entry
+point, so one driver targets any of them via `--target`:
+
+```bash
+cd baselines/MAPPO
+python protein_sweep.py --target every_step --max-runs 30
+python protein_sweep.py --target boundary  --max-runs 30
+python protein_sweep.py --target replan    --max-runs 30
+python protein_sweep.py --target every_step_comm --max-runs 30
+python protein_sweep.py --target joint_comm --max-runs 30 --seeds-per-trial 3
+```
+
+`--seeds-per-trial` trains N seeds per trial and scores their **mean** best eval
+return. Use it (>=3) whenever the outcome is bimodal, as emergent communication
+is: if 2 of 5 seeds reach the good mode, *any* hyperparameter setting scores well
+40% of the time and the GP fits seed noise rather than hyperparameters. Ten trials
+of three seeds beat thirty trials of one.
+
+Each trial merges Protein's suggestion into the trainer's base config, runs a
+single-seed `run_experiment`, reads the best evaluation return from the run's
+`best_eval.json`, measures wall-clock cost, and feeds both back with
+`observe(...)`. Structurally invalid suggestions (e.g. a `NUM_MINIBATCHES` that
+breaks `BATCH_SIZE` divisibility) are caught and reported as failed trials rather
+than aborting the sweep.
+
+### Search space (mirrors PufferLib's `default.ini`)
+
+The search space and optimizer settings live in `config/sweep/protein.yaml`
+(`config/sweep/protein_comm.yaml` for `every_step_comm`,
+`config/sweep/protein_joint_comm.yaml` for `joint_comm`). The design follows
+PufferLib's own sweep config:
+
+- **`TOTAL_TIMESTEPS` is the searched cost lever** (`log_normal`, `scale=time`),
+  wired up as Protein's `cost_param` so the cost GP is anchored to it. The driver
+  snaps each suggestion to a whole number of `NUM_STEPS*NUM_ENVS` batches so the
+  divisibility check always passes, and feeds the snapped value back to `observe`.
+- **`NUM_ENVS` is fixed, not swept** (default 4096) — like PufferLib's
+  `vec.total_agents`, it is a throughput/batch-size knob. A big fixed batch gives
+  the most stable gradient updates; sweeping the budget then finds how many steps
+  that regime needs. It is set via a `fixed:` block in the sweep YAML (a
+  `protein_sweep.py` convention, not part of Protein) so the committed training
+  configs are left untouched.
+- **Algorithmic ranges are kept wide** (`LR` 1e-5–1e-2, `GAE_LAMBDA` 0.5–0.995,
+  `HIDDEN_SIZE` 64–512, …) — Protein's GP narrows in, so a broad box is cheap.
+- **Model size and Adam internals are searched too** — `NUM_LAYERS`
+  (PufferLib's `policy.num_layers`) and `ADAM_B1` / `ADAM_B2` / `ADAM_EPS`
+  (their `beta1` / `beta2` / `eps`). The GP's per-dimension (ARD) lengthscales
+  suppress whichever of these don't matter for a given layout, which is what
+  makes sweeping ~14 dimensions viable. The only PufferLib knobs left out are its
+  V-trace / prioritized-replay parameters, which have no analogue in this
+  synchronous on-policy MAPPO.
+- **`NUM_STEPS`** (PufferLib's `horizon`) is provided commented-out; safe to
+  enable for `every_step`/`replan`, but for `boundary` it is coupled to episode
+  length, so leave it fixed there.
+
+> **Inert search dimensions.** `NUM_LAYERS` and `ADAM_B1` / `ADAM_B2` / `ADAM_EPS`
+> are **not** read by any trainer. `make_train_state` builds the optimizer as
+> `optax.chain(clip_by_global_norm(MAX_GRAD_NORM), adam(learning_rate, eps=1e-5))`
+> with the betas and epsilon hardcoded, and the networks have fixed depth. Any
+> sweep dimension over them does nothing except consume trials and give the GP a
+> noise axis to fit — `protein_comm.yaml` currently spends 3 of its 9 dimensions
+> this way, and `protein.yaml` sweeps `REW_SHAPING_FRACTION`, which is likewise
+> unread (the consumed key is `REW_SHAPING_HORIZON`). `protein_joint_comm.yaml`
+> was written against the trainer source and every one of its 16 dimensions is
+> verified to be consumed. Wire these knobs into `make_train_state` before
+> sweeping them, or drop them from the sweep YAMLs.
+
+`config/sweep/protein_joint_comm.yaml` also fixes rather than sweeps
+`NUM_ENVS` / `NUM_STEPS` / `NUM_MINIBATCHES`. Boundary trainers force `NUM_STEPS`
+to a multiple of the environment's `max_steps`, so a batch is `NUM_ENVS *
+max_steps`; at the `NUM_ENVS=1028` used by `protein.yaml` an 8M budget buys ~19
+gradient updates and nothing can learn, against 1250 at `NUM_ENVS=16`. Two startup
+checks also constrain `NUM_MINIBATCHES` (`USE_RNN` needs `NUM_ACTORS %
+NUM_MINIBATCHES == 0`, `dial` needs `NUM_ENVS % NUM_MINIBATCHES == 0`), so a
+swept value would fail most suggestions as structural failures.
+
+Reserved keys (`method`, `metric`, `goal`, `metric_distribution`, `downsample`,
+`early_stop_quantile`, `prune_pareto`, `max_runs`) configure Protein; `fixed:`
+holds sweep-time base-config overrides; every other top-level key is a searchable
+hyperparameter. Override base-config entries per sweep with `--override`:
+
+```bash
+python protein_sweep.py --target every_step --max-runs 40 \
+    --max-suggestion-cost 1800 \
+    --override WANDB_MODE=offline NUM_ENVS=2048
+```
+
+(`--override` pins a base-config value for the whole sweep and wins over the
+`fixed:` block; it also overrides a searched key if you name one, effectively
+removing it from the search.)
+
+Per-trial checkpoints, a `sweep_results.jsonl` log, and the winning `best.json`
+are written under `--save-path` (default `models/protein_sweep/<target>/`).
+
+Notes:
+
+- Observed cost is wall-clock **seconds**, while the *searched* cost dimension is
+  `TOTAL_TIMESTEPS` — the two are monotonically related (more steps → more
+  seconds), so Protein trades return against real runtime while still steering the
+  training budget. Cost includes JAX compilation time; structural changes
+  (`HIDDEN_SIZE`, `USE_RNN`) trigger recompilation and are billed accordingly.
+- Protein's cost-aware `early_stop` is **not** wired into the scanned JAX
+  training loop (that would require host callbacks mid-`lax.scan`); the sweep
+  observes only completed-run score and cost.
+- Set `method: random` or `method: pareto_genetic` in the sweep YAML to use a
+  cheaper baseline optimizer (no torch/gpytorch GP dependency) instead of
+  `method: protein`.

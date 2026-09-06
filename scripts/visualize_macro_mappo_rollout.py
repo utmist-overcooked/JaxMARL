@@ -260,7 +260,8 @@ def run_episode(
         shaped_return += float(
             np.mean([np.asarray(info["shaped_reward"][agent]) for agent in env.agents])
         )
-        if step % 50 == 0:
+        # Also fire on the LAST step
+        if step % 50 == 0 or step == max_steps - 1 or bool(np.asarray(done["__all__"])):
             print(
                 f"Step {step}: [sparse] return={total_return:.1f}  "
                 f"[shaped] return={shaped_return:.1f}"
