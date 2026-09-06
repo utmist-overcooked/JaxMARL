@@ -1008,8 +1008,8 @@ class Layout:
         Every walkable tile must be reachable from at least one agent spawn.
         Every generated-layout workstation (ingredients, pots, plates, and
         delivery zones) must be interactable from a reachable tile. Finally,
-        every configured recipe must be completable inside one agent-connected
-        region or a group of regions joined by shared handoff counters.
+        every configured recipe must have a complete interaction path through
+        one reachable pot, including pots interactable from multiple regions.
         """
         errors = []
         component_by_position = {}
@@ -1150,6 +1150,7 @@ class Layout:
         }
 
         station_components = {}
+        station_component_instances = {}
         station_labels = {
             StaticObject.POT: "pot",
             StaticObject.PLATE_PILE: "plate pile",
@@ -1179,6 +1180,7 @@ class Layout:
                         f"{label.capitalize()} at {(y, x)} is inaccessible to both agents"
                     )
                 station_components.setdefault(station, set()).update(components)
+                station_component_instances.setdefault(station, []).append(components)
 
         # Disconnected agents can cooperate through a counter that is
         # interactable from both regions. Collapse floor components connected
@@ -1225,30 +1227,44 @@ class Layout:
             station: {find_component(component) for component in components}
             for station, components in station_components.items()
         }
-
-        required_objects = {
-            ("object", int(StaticObject.POT)),
-            ("object", int(StaticObject.PLATE_PILE)),
-            ("object", int(StaticObject.GOAL)),
+        station_workflow_group_instances = {
+            station: [
+                {find_component(component) for component in components}
+                for components in component_instances
+            ]
+            for station, component_instances in station_component_instances.items()
         }
+
+        pot_station = ("object", int(StaticObject.POT))
+        plate_station = ("object", int(StaticObject.PLATE_PILE))
+        goal_station = ("object", int(StaticObject.GOAL))
+        plate_groups = station_workflow_groups.get(plate_station, set())
+        goal_groups = station_workflow_groups.get(goal_station, set())
         for recipe in self.possible_recipes or []:
             if not isinstance(recipe, list) or len(recipe) != 3:
                 continue
-            required_stations = required_objects | {
-                ("ingredient", int(ingredient_idx)) for ingredient_idx in recipe
-            }
-            feasible_components = None
-            for station in required_stations:
-                components = station_workflow_groups.get(station, set())
-                feasible_components = (
-                    set(components)
-                    if feasible_components is None
-                    else feasible_components & components
+            ingredient_groups = [
+                station_workflow_groups.get(
+                    ("ingredient", int(ingredient_idx)), set()
                 )
-            if not feasible_components:
+                for ingredient_idx in set(recipe)
+            ]
+
+            # Ingredients can be inserted from any side of one shared pot,
+            # while a single side must be able to fetch a plate, collect the
+            # soup, and reach a depot. Checking each physical pot separately
+            # avoids combining unrelated exclusive pots into a false path.
+            recipe_is_feasible = any(
+                bool(pot_groups & plate_groups & goal_groups)
+                and all(pot_groups & groups for groups in ingredient_groups)
+                for pot_groups in station_workflow_group_instances.get(
+                    pot_station, []
+                )
+            )
+            if not recipe_is_feasible:
                 errors.append(
                     f"Recipe {recipe} cannot be completed within one "
-                    "agent-accessible region or counter-connected region group"
+                    "agent-accessible pot workflow"
                 )
 
         return len(errors) == 0, errors
@@ -1642,9 +1658,9 @@ def load_layouts_from_json(
 
     Each value in the top-level ``layouts`` object must contain an ``ascii``
     string (or the legacy ``grid`` key). A ``possible_recipes`` field is required unless the grid contains an ``R`` recipe indicator.
-    Optional ``button_config``, ``barrier_config``, and
-    ``pressure_plate_config`` fields preserve control links and barrier
-    activation. This is the format written by
+    Optional ``button_config``, ``barrier_config``, ``pressure_plate_config``,
+    and ``swap_agents`` fields preserve control links, barrier activation, and
+    generated role ordering. This is the format written by
     ``scripts/generate_overcooked_v3_layouts.py``.
     """
     json_path = Path(path)
@@ -1669,6 +1685,7 @@ def load_layouts_from_json(
         button_config = entry.get("button_config")
         barrier_config = entry.get("barrier_config")
         pressure_plate_config = entry.get("pressure_plate_config")
+        swap_agents = entry.get("swap_agents", False)
         if not isinstance(grid, str):
             raise ValueError(
                 f"Layout {name!r} must contain an 'ascii' or 'grid' string"
@@ -1678,6 +1695,8 @@ def load_layouts_from_json(
                 f"Layout {name!r} must contain 'possible_recipes' when it has "
                 "no recipe indicator"
             )
+        if not isinstance(swap_agents, bool):
+            raise ValueError(f"Layout {name!r} swap_agents must be a boolean")
 
         try:
             layout = Layout.from_string(
@@ -1686,6 +1705,7 @@ def load_layouts_from_json(
                 button_config=button_config,
                 barrier_config=barrier_config,
                 pressure_plate_config=pressure_plate_config,
+                swap_agents=swap_agents,
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid layout {name!r}: {exc}") from exc

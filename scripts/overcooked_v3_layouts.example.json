@@ -2,27 +2,70 @@
   "generator": {
     "seed": 7,
     "count": 1000,
-    "name_prefix": "random_kitchen",
-    "width": 10,
-    "height": 10,
-    "ingredient_piles": [2, 1],
+    "name_prefix": "kitchen",
+    "width": 15,
+    "height": 11,
+    "counter_density": 0.45,
+    "randomize_agents": true,
+    "max_attempts": 1000,
     "possible_recipes": [
-      [0, 0, 0],
-      [1, 1, 1]
+      [
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        1,
+        1
+      ]
     ],
-    "pots": 1,
-    "plate_piles": 1,
-    "depots": 1,
-    "object_placement": "anywhere",
-    "counter_density": 0.4,
-    "num_regions": 2,
-    "num_shared_tiles": 4,
-    "workflow_mode": "shared",
-    "barriers": 2,
-    "barrier_placement": "shared",
-    "pressure_plates_per_barrier": 2,
-    "buttons_per_barrier": 2,
-    "max_attempts": 1000
+    "map_type": "selection",
+    "regions": [
+      {
+        "ingredient_piles": [
+          0,
+          0
+        ],
+        "pots": 0,
+        "plate_piles": 0,
+        "depots": 1,
+        "recipe_indicators": 0
+      },
+      {
+        "ingredient_piles": [
+          0,
+          0
+        ],
+        "pots": 1,
+        "plate_piles": 1,
+        "depots": 0,
+        "recipe_indicators": 1
+      },
+      {
+        "ingredient_piles": [
+          1,
+          0
+        ],
+        "pots": 0,
+        "plate_piles": 0,
+        "depots": 0,
+        "recipe_indicators": 0
+      },
+      {
+        "ingredient_piles": [
+          0,
+          1
+        ],
+        "pots": 0,
+        "plate_piles": 0,
+        "depots": 0,
+        "recipe_indicators": 0
+      }
+    ],
+    "control_handoff_tiles": 1,
+    "pressure_plates_per_barrier": 1,
+    "buttons_per_barrier": 0
   },
   "layouts": {}
 }
