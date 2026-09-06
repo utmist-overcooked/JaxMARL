@@ -224,9 +224,24 @@ truncating a run.
 
 ## Writing PRs
 
-In the PR description, first describe the previous code path and behavior, then explain how the PR changes it. Follow with bullet points describing the concrete behavioral impact: what agents, gameplay, training, evaluation, or artifacts did before and what they do after the change.
+IMPORTANT: The aim of a PR is for human readability. At the very top of the PR,
+you should have these two titles:
+
+1. **What changed** — short, succinct, to-the-point bullet points on the
+   FUNCTIONAL HIGH-LEVEL changes made (e.g. "we changed how the pot/counter
+   macro actions are masked and navigated so they no longer read hidden world
+   state"). Do NOT list which files were changed.
+2. **Why?** — short, succinct, to-the-point bullet points explaining the
+   motivation (e.g. "the prior implementation of the macro actions violated
+   partial observability by leaking off-screen state through the action mask").
+
+After those, describe the previous code path and behavior, then explain how the PR changes it. Follow with bullet points describing the concrete behavioral impact: what agents, gameplay, training, evaluation, or artifacts did before and what they do after the change.
 
 If the PR affects gameplay, make a gif with a scripted policy that you code up to show the functionality difference between the old gameplay and the new gameplay, and then put this at the VERY TOP of the PR description.
 
 Agents are also encouraged to create and add more GIFs whenever they are relevant
 and help reviewers understand the impact of the PR.
+
+Always write generated GIFs (and other rendered PR artifacts) into the
+`artifacts/` folder, commit them there, and embed them in the PR by their raw
+GitHub URL so they render inline. Do not add these GIFs to `.gitignore`.
