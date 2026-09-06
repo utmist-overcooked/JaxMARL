@@ -1,0 +1,160 @@
+# Protein sweep-space for the Overcooked V3 macro-action MAPPO baselines
+# (boundary / every_step / replan). Consumed by protein_sweep.py.
+#
+# Layout mirrors PufferLib's own default.ini [sweep] block: TOTAL_TIMESTEPS is
+# the searched cost lever (their train.total_timesteps, scale=time), the batch
+# throughput knob (NUM_ENVS / their vec.total_agents) is FIXED rather than swept,
+# and the algorithmic ranges are kept wide -- Protein's GP narrows in, so a broad
+# box costs little and a narrow one can miss the optimum.
+#
+# Reserved keys (method, metric, goal, metric_distribution, downsample,
+# early_stop_quantile, prune_pareto, max_runs) configure the optimizer.
+# `fixed` is a protein_sweep.py convention (not Protein's): sweep-time base-config
+# overrides that are applied but NOT searched.
+# Every other top-level key is a searchable hyperparameter.
+#
+# `use_gpu` and `max_suggestion_cost` are omitted so the CLI flags
+# (--no-gpu / --max-suggestion-cost) stay authoritative.
+
+method: protein
+metric: eval_return          # matches best_eval.json written by run_experiment
+goal: maximize
+metric_distribution: linear  # raw returns (NOT 'percentile', which expects [0,1])
+downsample: 1                # each trial is one full training run
+early_stop_quantile: 0.3
+prune_pareto: true
+max_runs: 30
+
+# --- Sweep-time fixed overrides (applied to the base training config) --------
+# NUM_ENVS is fixed high, not swept: like PufferLib's vec.total_agents it is a
+# throughput/batch-size knob, and a big fixed batch gives the most stable
+# gradient updates. Sweeping the training budget (below) then lets Protein find
+# how many steps that stable-but-fewer-updates regime actually needs.
+fixed:
+  NUM_ENVS: 1028
+
+# --- Cost lever: training budget --------------------------------------------
+# Searched, and wired up as Protein's cost_param by the driver. The driver snaps
+# each suggestion to a whole number of NUM_STEPS*NUM_ENVS batches so the
+# divisibility check in initialize_config always passes.
+TOTAL_TIMESTEPS:
+  distribution: log_normal
+  min: 5000000        # 5e6 -- partially-trained floor; cheap early probes
+  max: 50000000       # 5e7 -- convergence ceiling
+  scale: time         # PufferLib's time-scaling for the cost dimension
+
+# --- Searchable hyperparameters ---------------------------------------------
+# distribution: uniform | int_uniform | uniform_pow2 | log_normal | logit_normal
+LR:
+  distribution: log_normal
+  min: 0.00001        # 1e-5 .. 1e-2, wide like PufferLib (their upper bound is 0.1)
+  max: 0.01
+  scale: 0.5
+
+ENT_COEF:
+  distribution: log_normal
+  min: 0.0001
+  max: 0.2
+  scale: auto
+
+GAMMA:
+  distribution: logit_normal   # fine resolution near 1
+  min: 0.9
+  max: 0.9999
+  scale: auto
+
+GAE_LAMBDA:
+  distribution: logit_normal
+  min: 0.5
+  max: 0.995
+  scale: auto
+
+CLIP_EPS:
+  distribution: uniform
+  min: 0.05
+  max: 0.3
+  scale: auto
+
+VF_COEF:
+  distribution: uniform
+  min: 0.1
+  max: 2.0
+  scale: auto
+
+MAX_GRAD_NORM:
+  distribution: uniform
+  min: 0.2
+  max: 2.0
+  scale: auto
+
+UPDATE_EPOCHS:
+  distribution: int_uniform
+  min: 1
+  max: 8
+  scale: auto
+
+HIDDEN_SIZE:
+  distribution: uniform_pow2   # -> 64 / 128 / 256 / 512
+  min: 64
+  max: 512
+  scale: auto
+
+# Reward-shaping anneal length, as a FRACTION of the training budget (the
+# trainer derives REW_SHAPING_HORIZON = REW_SHAPING_FRACTION * TOTAL_TIMESTEPS
+# in initialize_config). Swept as a fraction rather than absolute steps so it
+# scales with the swept budget. 1.0 => dense shaping decays across the whole run
+# (present throughout, hits 0 only at the end); 0.1 => fully annealed to sparse
+# by 10% of the run.
+REW_SHAPING_FRACTION:
+  distribution: uniform
+  min: 0.1
+  max: 1.0
+  scale: auto
+
+# Frozen (not swept) to keep the search space at ~10 dims so 30 trials cover it
+# well. The trainer falls back to the base-config values (NUM_LAYERS=2,
+# ADAM_B1=0.9, ADAM_B2=0.999, ADAM_EPS=1e-5). Uncomment to search them again.
+# NUM_LAYERS:
+#   distribution: int_uniform    # feedforward depth (PufferLib's policy.num_layers)
+#   min: 1
+#   max: 4                       # PufferLib sweeps 1-8; capped lower for this small-obs env
+#   scale: auto
+
+# Adam optimizer internals -- rarely tuned by hand, but PufferLib sweeps them and
+# the GP's per-dimension (ARD) lengthscales suppress whichever ones don't matter.
+# ADAM_B1:
+#   distribution: logit_normal
+#   min: 0.5
+#   max: 0.999
+#   scale: auto
+
+# ADAM_B2:
+#   distribution: logit_normal
+#   min: 0.9
+#   max: 0.99999
+#   scale: auto
+
+# ADAM_EPS:
+#   distribution: log_normal
+#   min: 0.0000000001            # 1e-10
+#   max: 0.0001                  # 1e-4
+#   scale: auto
+
+# --- Optional knobs (enable per target, at your own risk) --------------------
+# NUM_STEPS is the rollout horizon (PufferLib's train.horizon, which they DO
+# sweep as pow2). Safe to enable for every_step / replan. For the `boundary`
+# trainer it is coupled to the episode length (rollouts end on episode
+# boundaries), so sweeping it there changes rollout semantics -- leave it fixed
+# for boundary. When enabled, the driver re-snaps TOTAL_TIMESTEPS accordingly.
+#
+# NUM_STEPS:
+#   distribution: uniform_pow2
+#   min: 64
+#   max: 512
+#   scale: auto
+#
+# NUM_MINIBATCHES:
+#   distribution: uniform_pow2
+#   min: 1
+#   max: 8
+#   scale: auto
