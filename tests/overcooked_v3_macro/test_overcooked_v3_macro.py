@@ -275,8 +275,8 @@ def test_macro_navigation_retargets_when_nearest_target_is_blocked():
     assert not next_state.macro_action_done[0]
 
 
-def test_macro_waits_when_target_transiently_blocked_by_barrier():
-    """A closed barrier is transient: the agent holds and the macro stays alive."""
+def test_macro_gives_up_when_stuck_at_block():
+    """Stuck at a block right away: emit stay and hand control back at once."""
     env = _barrier_macro_env(
         [
             "WWWWWWW",
@@ -293,56 +293,59 @@ def test_macro_waits_when_target_transiently_blocked_by_barrier():
         {"agent_0": int(MacroActions.get_ingredient_0)},
     )
 
-    # The barrier sits directly beside the agent, so it cannot advance yet, but
-    # the target still exists behind a transient block: it waits instead of
-    # aborting.
+    # The barrier sits directly beside the agent, so it cannot advance at all: it
+    # is stuck at the block, so the macro ends (hands control back) rather than
+    # waiting for the barrier to open.
     assert info["primitive_action"]["agent_0"] == Actions.stay
-    assert not next_state.macro_action_done[0]
+    assert next_state.macro_action_done[0]
     assert jnp.array_equal(next_state.agents.pos.x, state.agents.pos.x)
     assert jnp.array_equal(next_state.agents.pos.y, state.agents.pos.y)
 
 
-def test_macro_approaches_then_waits_and_completes_when_barrier_opens():
-    """Agent walks up to a barrier, waits, then finishes once it opens."""
+def test_macro_walks_up_to_block_then_gives_up():
+    """Agent walks toward a closed barrier, then gives up once stuck at it."""
     env = _barrier_macro_env(
         [
-            "WWWWWWW",
-            "WA #0 W",
-            "WWWWWWW",
+            "W    WWW",
+            "WA   #0W",
+            "W    WWW",
+            "WWWWWWWW",
         ]
     )
     key = jax.random.PRNGKey(0)
     _, state = env.reset(key)
+    # Freeze the timer so the (closed) barrier stays closed for the whole test.
+    state = state.replace(barrier_timer=jnp.zeros_like(state.barrier_timer))
     actions = {"agent_0": int(MacroActions.get_ingredient_0)}
+    start_x = int(state.agents.pos.x[0])
+    barrier_x = int(state.barrier_positions[0, 1])
 
-    # Step 1: one open cell separates the agent from the barrier, so it advances.
-    _, state, _, _, info = env.step_env(key, state, actions)
-    assert info["primitive_action"]["agent_0"] == Actions.right
-    assert state.agents.pos.x[0] == 2
-    assert not state.macro_action_done[0]
-
-    # Step 2: now adjacent to the closed barrier -> hold, macro still alive.
-    _, blocked_state, _, _, info = env.step_env(key, state, actions)
-    assert info["primitive_action"]["agent_0"] == Actions.stay
-    assert blocked_state.agents.pos.x[0] == 2
-    assert not blocked_state.macro_action_done[0]
-
-    # Open the barrier and let the agent finish reaching and picking up.
-    open_state = blocked_state.replace(
-        barrier_active=jnp.zeros_like(blocked_state.barrier_active)
-    )
-    for _ in range(4):
+    positions = []
+    primitives = []
+    dones = []
+    for _ in range(8):
         key, subkey = jax.random.split(key)
-        _, open_state, _, _, _ = env.step_env(subkey, open_state, actions)
-        if bool(open_state.macro_action_done[0]):
+        _, state, _, _, info = env.step_env(subkey, state, actions)
+        positions.append(int(state.agents.pos.x[0]))
+        primitives.append(int(info["primitive_action"]["agent_0"]))
+        dones.append(bool(state.macro_action_done[0]))
+        if dones[-1]:
             break
 
-    assert open_state.agents.inventory[0] == DynamicObject.ingredient(0)
-    assert open_state.macro_action_done[0]
+    # It advances toward the barrier first (moves right, macro still running)...
+    assert primitives[0] == Actions.right
+    assert positions[0] == start_x + 1
+    assert not dones[0]
+    # ...then, once it is stuck one tile short of the closed barrier, it emits
+    # stay and the macro ends, handing control back to the policy.
+    assert dones[-1]
+    assert primitives[-1] == Actions.stay
+    assert positions[-1] == barrier_x - 1
+    assert state.agents.inventory[0] == DynamicObject.EMPTY
 
 
 def test_macro_terminates_when_permanent_wall_makes_target_unreachable():
-    """A permanent wall (not a barrier) is genuinely unreachable: abort at once."""
+    """A permanent wall seals the target off: stuck immediately, so it gives up."""
     env = _barrier_macro_env(
         [
             "WWWWWWW",
@@ -360,7 +363,7 @@ def test_macro_terminates_when_permanent_wall_makes_target_unreachable():
     )
 
     # Even ignoring the transient barrier, the wall seals the target off, so the
-    # macro is not statically reachable and terminates immediately.
+    # agent is stuck at the block from the first tick and the macro terminates.
     assert info["primitive_action"]["agent_0"] == Actions.stay
     assert next_state.macro_action_done[0]
     assert jnp.array_equal(next_state.agents.pos.x, state.agents.pos.x)

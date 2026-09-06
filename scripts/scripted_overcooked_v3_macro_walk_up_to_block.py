@@ -8,9 +8,10 @@ flood-fill planner panel) to make the new behavior visible:
    the interaction once, discovers there is no soup, and the macro terminates.
 
 2. ``barrier_closes`` -- a barrier that is OPEN when the macro starts and CLOSES
-   partway through execution. The agent walks toward the target; the moment the
-   barrier closes it stops right at the barrier and waits (the macro stays
-   alive) instead of aborting. When the barrier reopens it finishes.
+   partway through execution. The agent walks up to the barrier and, once it is
+   stuck there, the macro ends and hands control back to the policy, which
+   switches to a different macro. It walks up to the block, then gives up rather
+   than waiting for the barrier to reopen.
 
 Reuses the flood-fill panel / GIF machinery from
 ``scripted_overcooked_v3_macro_cramped_room``.
@@ -104,11 +105,15 @@ def empty_pot_pickup_rollout(seed: int = 0):
     return env, states, labels, counts
 
 
-def barrier_closes_rollout(seed: int = 0, close_at: int = 3, reopen_at: int = 9):
-    """Open a barrier at macro start, close it mid-approach, then reopen it.
+def barrier_closes_rollout(seed: int = 0, close_at: int = 3):
+    """Open a barrier at macro start, close it mid-approach; agent gives up.
 
-    The ingredient pile is walled off except through a single barrier tile, so
-    the agent must pass through the barrier to reach it.
+    The ingredient pile is walled off except through a single barrier tile. The
+    barrier is open when ``get_ingredient_0`` starts and closes mid-approach and
+    stays closed. The agent walks up to the barrier and, once stuck, the macro
+    ends and hands control back to a tiny policy, which then switches to a
+    different macro (``get_plate``) — showing that control returned rather than
+    the agent waiting at the barrier forever.
     """
     rows = [
         "W    WWW",
@@ -124,17 +129,13 @@ def barrier_closes_rollout(seed: int = 0, close_at: int = 3, reopen_at: int = 9)
     action = MacroActions.get_ingredient_0
     step_fn = _step_fn(env)
 
-    def scheduled_active(t):
-        """Barrier closed only during the [close_at, reopen_at) window."""
-        return close_at <= t < reopen_at
-
     states = [state]
     labels = [action]
     counts = [0]
     for t in range(30):
-        # Force the scheduled barrier state (and hold its timer at 0) before the
-        # step so the planner sees exactly the open/closed grid we intend.
-        closed = jnp.array(scheduled_active(t), dtype=state.barrier_active.dtype)
+        # Barrier open before close_at, then closed and staying closed. Hold the
+        # timer at 0 so the planner sees exactly the grid we intend.
+        closed = jnp.array(t >= close_at, dtype=state.barrier_active.dtype)
         state = state.replace(
             barrier_active=jnp.full_like(state.barrier_active, closed),
             barrier_timer=jnp.zeros_like(state.barrier_timer),
@@ -144,11 +145,26 @@ def barrier_closes_rollout(seed: int = 0, close_at: int = 3, reopen_at: int = 9)
             step_key, state, jnp.array(action, dtype=jnp.int32)
         )
         states.append(state)
-        labels.append(action)
+        labels.append(action)  # the macro that produced this state
         counts.append(0)
-        if bool(jax.device_get(state.macro_action_done[0])) or bool(
-            jax.device_get(dones["__all__"])
+
+        macro_done = bool(jax.device_get(state.macro_action_done[0]))
+        holding_plate = bool(
+            jax.device_get(state.agents.inventory[0] == DynamicObject.PLATE)
+        )
+        empty_handed = bool(
+            jax.device_get(state.agents.inventory[0] == DynamicObject.EMPTY)
+        )
+        # Policy hand-back: the ingredient macro gave up at the block (done, still
+        # empty-handed) -> the policy chooses a different macro instead.
+        if (
+            action == MacroActions.get_ingredient_0
+            and macro_done
+            and empty_handed
         ):
+            action = MacroActions.get_plate
+        # Stop once the fallback macro succeeds or the episode ends.
+        if holding_plate or bool(jax.device_get(dones["__all__"])):
             break
     return env, states, labels, counts
 

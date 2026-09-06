@@ -276,21 +276,22 @@ barrier-agnostic reachability come from the agent's current tile:
 agent_distance = distances_open[agent.pos.y, agent.pos.x]
 has_path = agent_distance < INF_DISTANCE                      # open route now?
 at_goal = agent_distance == 0
-statically_reachable = distances_all[agent.pos.y, agent.pos.x] < INF_DISTANCE
 ```
 
-`has_path` now only selects the *stepping mode*; it is no longer a completion
-signal. Completion uses `statically_reachable` instead (Step 8). The possible
-outcomes are:
+`has_path` selects the *stepping mode*; completion (Step 8) ends a navigation
+macro once it is *stuck at a block* (no open route and the barrier-agnostic
+approach step cannot advance). The possible outcomes are:
 
 1. The target remains reachable through an open detour: follow `distances_open`.
 2. The target is cut off but another target is reachable through an open route:
    follow that target's `distances_open` gradient.
-3. Every route is *transiently* blocked (e.g. a closed timed barrier) but the
-   target still exists behind the block: walk up to the block along
-   `distances_all` and wait — the macro stays alive.
-4. The target is *statically* unreachable (permanent walls, or the object no
-   longer exists): emit `stay` and mark the macro done.
+3. Every route is blocked (e.g. a closed timed barrier) but the target still
+   exists behind the block: walk up to the block along `distances_all`. While
+   the agent is still advancing, the macro keeps running.
+4. The agent is stuck at the block — it has reached the closest reachable tile
+   and cannot advance (permanent walls, a closed barrier one tile away, or the
+   object no longer exists): emit `stay` and end the macro, handing control back
+   to the policy (which, in the committed variant, then selects a new macro).
 
 Other agents are deliberately not removed from the flood-fill grid. Their
 occupancy is temporary and is handled only when choosing the immediate step.
@@ -348,9 +349,12 @@ Evidence: [`_macro_to_primitive_action`](./overcooked.py#L438-L458).
 At a pressure-plate goal, the agent emits `stay` because merely occupying the
 cell activates the plate. `wait` and `wait_for_nearest_pot` also emit `stay`. A
 failed inventory prerequisite emits `stay`. Note the gate no longer requires
-`has_path`: when the target is transiently blocked, `navigation_action` is the
-blocked-approach step (which self-stays when it cannot advance), so gating on
-`has_path` here would defeat the approach-and-wait behavior:
+`has_path`: when the target is blocked, `navigation_action` is the
+blocked-approach step (which self-stays only once it cannot advance), so gating
+on `has_path` here would stop the agent from walking up to the block. The
+returned flag reports whether the navigation macro should keep running — it is
+False when the agent is stuck at a block (no open route and the approach step
+could only `stay`):
 
 ```python
 primitive_action = jnp.where(
@@ -358,7 +362,8 @@ primitive_action = jnp.where(
     navigation_action,
     Actions.stay,
 )
-macro_statically_reachable = ~navigation_macro | statically_reachable
+blocked_and_stuck = (~has_path) & (move_blocked == Actions.stay)
+macro_nav_ok = ~navigation_macro | ~blocked_and_stuck
 ```
 
 Evidence: [`_macro_to_primitive_action`](./overcooked.py).
@@ -416,12 +421,15 @@ Completion is checked after the base transition. The action-specific rules are:
 The four navigate-to-object macros complete on the "arrived and attempted"
 signal (the emitted primitive was `interact`), so an agent that reaches the
 nearest object and finds its dynamic condition unmet attempts once and finishes
-rather than looping. Every navigation macro also ends when the *barrier-agnostic*
-field says the target is statically unreachable — genuinely walled off or gone,
-never merely transiently blocked:
+rather than looping. Every navigation macro also ends when it is **stuck at a
+block** (`~macro_nav_ok`): it has walked as far as it can toward the target and
+can no longer advance — a closed barrier one tile away, a permanent wall, or a
+nonexistent target. This hands control back to the policy instead of waiting for
+the block to clear. (A teammate merely occupying the next cell keeps `has_path`
+True, so the agent keeps trying past a teammate rather than giving up.)
 
 ```python
-return done | ~macro_statically_reachable
+return done | ~macro_nav_ok
 ```
 
 Evidence: [`_macro_done_for_agent`](./overcooked.py#L517-L613).
@@ -473,11 +481,12 @@ python scripts/scripted_overcooked_v3_macro_cramped_room.py \
 ```
 
 In this demo, agent 0 requests the plate behind a closed timed barrier. Its
-open-route field (`distances_open`) is initially unreachable, so rather than
-aborting, agent 0 walks up to the barrier along the barrier-agnostic field and
-waits. Agent 1 navigates to the linked button and presses it. On the following
-tick the gate is open, agent 0's open-route field becomes finite, and agent 0
-follows it through the barrier to the plate.
+open-route field (`distances_open`) is initially unreachable, so agent 0 walks up
+to the barrier along the barrier-agnostic field; once stuck one tile short it
+hands control back, and the scripted policy simply re-requests the plate, so it
+holds at the barrier. Agent 1 navigates to the linked button and presses it. On
+the following tick the gate is open, agent 0's open-route field becomes finite,
+and agent 0 follows it through the barrier to the plate.
 
 The left panel is the normal Overcooked render. The right panel uses:
 

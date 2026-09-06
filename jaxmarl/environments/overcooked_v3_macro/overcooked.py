@@ -219,7 +219,7 @@ class OvercookedV3Macro(OvercookedV3):
             replace_macro, 0, state.macro_step_count
         )
 
-        primitive_actions, macro_statically_reachable = (
+        primitive_actions, macro_nav_ok = (
             self._macro_to_primitive_actions(state, current_macro_actions)
         )
         primitive_action_dict = {
@@ -235,7 +235,7 @@ class OvercookedV3Macro(OvercookedV3):
             next_state,
             current_macro_actions,
             primitive_actions,
-            macro_statically_reachable,
+            macro_nav_ok,
         )
         macro_done = (
             macro_done
@@ -458,12 +458,11 @@ class OvercookedV3Macro(OvercookedV3):
         agent_distance = distances_open[agent.pos.y, agent.pos.x]
         has_path = agent_distance < INF_DISTANCE
         at_goal = agent_distance == 0
-        statically_reachable = (
-            distances_all[agent.pos.y, agent.pos.x] < INF_DISTANCE
-        )
 
         # When an open route exists, move along it (detour-aware). Otherwise walk
-        # up to the blocking barrier along the barrier-agnostic gradient and hold.
+        # up to the block along the barrier-agnostic gradient; that step returns
+        # `stay` once the agent can no longer advance (it has reached the closest
+        # reachable tile and is stuck at the block).
         move_open = self._next_action_avoiding_agents(
             state, agent, walkable_mask, distances_open
         )
@@ -531,7 +530,7 @@ class OvercookedV3Macro(OvercookedV3):
         # Note: the stay gate no longer requires `has_path`. When the target is
         # transiently blocked, `navigation_action` is the blocked-approach step
         # (which self-stays when it cannot advance), so gating on `has_path` here
-        # would defeat the approach-and-wait behavior.
+        # would stop the agent from walking up to the block.
         primitive_action = jnp.where(
             navigation_macro & can_execute,
             navigation_action,
@@ -549,20 +548,24 @@ class OvercookedV3Macro(OvercookedV3):
         primitive_action = jnp.where(
             macro_action == MacroActions.right, Actions.right, primitive_action
         )
-        # A navigation macro is "statically reachable" if the target is reachable
-        # ignoring transient barriers. Only genuinely walled-off / nonexistent
-        # targets are unreachable, and only those abort the macro.
-        macro_statically_reachable = ~navigation_macro | statically_reachable
-        return primitive_action.astype(jnp.int32), macro_statically_reachable
+        # Walk up to the block, then hand control back. A navigation macro is
+        # "stuck at a block" when it has no open route and its blocked-approach
+        # step could not advance (it reached the closest reachable tile and can
+        # only `stay`). This covers permanent walls / nonexistent targets too
+        # (stuck from the first tick), while an approach still in progress keeps
+        # moving. `macro_nav_ok` is True while the macro should keep running.
+        blocked_and_stuck = (~has_path) & (move_blocked == Actions.stay)
+        macro_nav_ok = ~navigation_macro | ~blocked_and_stuck
+        return primitive_action.astype(jnp.int32), macro_nav_ok
 
     def _compute_macro_done(
         self,
         state: State,
         macro_actions: chex.Array,
         primitive_actions: chex.Array,
-        macro_statically_reachable: chex.Array,
+        macro_nav_ok: chex.Array,
     ) -> chex.Array:
-        """Evaluate action-specific completion and unreachable navigation goals."""
+        """Evaluate action-specific completion plus navigation give-up (stuck)."""
         agent_idxs = jnp.arange(self.num_agents)
         return jax.vmap(
             lambda agent_idx, macro_action, primitive_action, reachable: (
@@ -574,7 +577,7 @@ class OvercookedV3Macro(OvercookedV3):
             agent_idxs,
             macro_actions,
             primitive_actions,
-            macro_statically_reachable,
+            macro_nav_ok,
         )
 
     def _macro_done_for_agent(
@@ -583,9 +586,9 @@ class OvercookedV3Macro(OvercookedV3):
         agent_idx: chex.Array,
         macro_action: chex.Array,
         primitive_action: chex.Array,
-        macro_statically_reachable: chex.Array,
+        macro_nav_ok: chex.Array,
     ) -> chex.Array:
-        """Return whether one agent's macro has completed or become unreachable."""
+        """Return whether one agent's macro has completed or given up (stuck)."""
         agent = self._agent_at(state, agent_idx)
         inventory = agent.inventory
         counter_mask_static = self._counter_like_static_mask(state.grid[:, :, 0])
@@ -686,7 +689,10 @@ class OvercookedV3Macro(OvercookedV3):
             ready_in_view | ~cooking_in_view,
             done,
         )
-        return done | ~macro_statically_reachable
+        # ...and a navigation macro also ends when it is stuck at a block: it has
+        # walked as far as it can and cannot advance (`~macro_nav_ok`). This hands
+        # control back to the policy instead of waiting for the block to clear.
+        return done | ~macro_nav_ok
 
     # ------------------------------------------------------------------
     # Target Selection and Navigation
