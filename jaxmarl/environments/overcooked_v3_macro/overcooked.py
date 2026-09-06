@@ -219,8 +219,8 @@ class OvercookedV3Macro(OvercookedV3):
             replace_macro, 0, state.macro_step_count
         )
 
-        primitive_actions, macro_reachable = self._macro_to_primitive_actions(
-            state, current_macro_actions
+        primitive_actions, macro_nav_ok = (
+            self._macro_to_primitive_actions(state, current_macro_actions)
         )
         primitive_action_dict = {
             f"agent_{i}": primitive_actions[i] for i in range(self.num_agents)
@@ -235,7 +235,7 @@ class OvercookedV3Macro(OvercookedV3):
             next_state,
             current_macro_actions,
             primitive_actions,
-            macro_reachable,
+            macro_nav_ok,
         )
         macro_done = (
             macro_done
@@ -329,10 +329,15 @@ class OvercookedV3Macro(OvercookedV3):
     ) -> Tuple[chex.Array, chex.Array]:
         """Translate each macro into one primitive action and a reachability flag."""
         walkable_mask = self._current_walkable_mask(state)
+        barrier_agnostic_mask = self._barrier_agnostic_walkable_mask(state)
         agent_idxs = jnp.arange(self.num_agents)
         return jax.vmap(
             lambda agent_idx, macro_action: self._macro_to_primitive_action(
-                state, agent_idx, macro_action, walkable_mask
+                state,
+                agent_idx,
+                macro_action,
+                walkable_mask,
+                barrier_agnostic_mask,
             )
         )(agent_idxs, macro_actions)
 
@@ -342,11 +347,19 @@ class OvercookedV3Macro(OvercookedV3):
         agent_idx: chex.Array,
         macro_action: chex.Array,
         walkable_mask: chex.Array,
+        barrier_agnostic_mask: chex.Array,
     ) -> Tuple[chex.Array, chex.Array]:
-        """Plan one primitive action for one macro using one dynamic flood fill."""
+        """Plan one primitive action for one macro using two flood fills.
+
+        `walkable_mask` is the current barrier-aware walkability;
+        `barrier_agnostic_mask` treats closed barriers as open so a blocked but
+        statically-reachable target still yields a distance gradient the agent
+        can walk toward (approach-and-wait). Navigation targets are chosen by
+        static object existence; the dynamic outcome is discovered only when the
+        base interaction runs on arrival.
+        """
         agent = self._agent_at(state, agent_idx)
         static_layer = state.grid[:, :, 0]
-        dynamic_layer = state.grid[:, :, 1]
         counter_mask = self._counter_like_static_mask(static_layer)
 
         target_mask = jnp.zeros((self.height, self.width), dtype=jnp.bool_)
@@ -370,14 +383,19 @@ class OvercookedV3Macro(OvercookedV3):
             static_layer == StaticObject.PLATE_PILE,
             target_mask,
         )
+        # Navigation targets are chosen by STATIC existence only: any pot, any
+        # counter. The agent walks to the nearest such object and discovers the
+        # dynamic condition (pot full/ready, counter empty/occupied) only when it
+        # arrives and the base interaction runs. This avoids leaking dynamic,
+        # possibly out-of-view world state through navigation.
         target_mask = jnp.where(
             macro_action == MacroActions.put_ingredient_in_nearest_pot,
-            self._valid_pot_placement_mask(state, agent.inventory),
+            static_layer == StaticObject.POT,
             target_mask,
         )
         target_mask = jnp.where(
             macro_action == MacroActions.get_soup_from_nearest_pot,
-            self._ready_recipe_pot_mask(state),
+            static_layer == StaticObject.POT,
             target_mask,
         )
         target_mask = jnp.where(
@@ -387,12 +405,12 @@ class OvercookedV3Macro(OvercookedV3):
         )
         target_mask = jnp.where(
             macro_action == MacroActions.drop_on_nearest_counter,
-            counter_mask & (dynamic_layer == DynamicObject.EMPTY),
+            counter_mask,
             target_mask,
         )
         target_mask = jnp.where(
             macro_action == MacroActions.pickup_from_nearest_counter,
-            counter_mask & (dynamic_layer != DynamicObject.EMPTY),
+            counter_mask,
             target_mask,
         )
         target_mask = jnp.where(
@@ -410,28 +428,48 @@ class OvercookedV3Macro(OvercookedV3):
         )
         navigation_macro = interaction_macro | pressure_plate_macro
 
-        interaction_goals = (
+        # Base goal cells (before intersecting with any walkability): for an
+        # interaction macro, every cell orthogonally adjacent to a target; for
+        # the pressure-plate macro, the plate cells themselves.
+        interaction_goal_cells = (
             jnp.pad(target_mask[:-1, :], ((1, 0), (0, 0)))
             | jnp.pad(target_mask[1:, :], ((0, 1), (0, 0)))
             | jnp.pad(target_mask[:, :-1], ((0, 0), (1, 0)))
             | jnp.pad(target_mask[:, 1:], ((0, 0), (0, 1)))
-        ) & walkable_mask
-        pressure_plate_goals = (
-            (static_layer == StaticObject.PRESSURE_PLATE) & walkable_mask
         )
-        goal_mask = jnp.where(
-            interaction_macro, interaction_goals, pressure_plate_goals
+        pressure_plate_cells = static_layer == StaticObject.PRESSURE_PLATE
+        base_goal_cells = jnp.where(
+            interaction_macro, interaction_goal_cells, pressure_plate_cells
         )
-        goal_mask &= navigation_macro
+        base_goal_cells &= navigation_macro
 
-        distances = self._distance_to_goals(walkable_mask, goal_mask)
-        agent_distance = distances[agent.pos.y, agent.pos.x]
+        # Two flood fields. `distances_open` uses current (barrier-aware)
+        # walkability and drives normal movement, including detours around any
+        # currently-open route. `distances_all` treats closed barriers as open,
+        # so a target that is only transiently blocked still yields a gradient
+        # to walk toward and to judge static reachability by.
+        goal_mask_open = base_goal_cells & walkable_mask
+        goal_mask_all = base_goal_cells & barrier_agnostic_mask
+        distances_open = self._distance_to_goals(walkable_mask, goal_mask_open)
+        distances_all = self._distance_to_goals(
+            barrier_agnostic_mask, goal_mask_all
+        )
+
+        agent_distance = distances_open[agent.pos.y, agent.pos.x]
         has_path = agent_distance < INF_DISTANCE
         at_goal = agent_distance == 0
 
-        move_action = self._next_action_avoiding_agents(
-            state, agent, walkable_mask, distances
+        # When an open route exists, move along it (detour-aware). Otherwise walk
+        # up to the block along the barrier-agnostic gradient; that step returns
+        # `stay` once the agent can no longer advance (it has reached the closest
+        # reachable tile and is stuck at the block).
+        move_open = self._next_action_avoiding_agents(
+            state, agent, walkable_mask, distances_open
         )
+        move_blocked = self._step_up_to_blocked_object(
+            state, agent, walkable_mask, distances_all
+        )
+        move_action = jnp.where(has_path, move_open, move_blocked)
 
         candidate_x = agent.pos.x + self._dir_dx
         candidate_y = agent.pos.y + self._dir_dy
@@ -489,8 +527,12 @@ class OvercookedV3Macro(OvercookedV3):
             can_execute,
         )
 
+        # Note: the stay gate no longer requires `has_path`. When the target is
+        # transiently blocked, `navigation_action` is the blocked-approach step
+        # (which self-stays when it cannot advance), so gating on `has_path` here
+        # would stop the agent from walking up to the block.
         primitive_action = jnp.where(
-            navigation_macro & can_execute & has_path,
+            navigation_macro & can_execute,
             navigation_action,
             Actions.stay,
         )
@@ -506,17 +548,24 @@ class OvercookedV3Macro(OvercookedV3):
         primitive_action = jnp.where(
             macro_action == MacroActions.right, Actions.right, primitive_action
         )
-        macro_reachable = ~navigation_macro | has_path
-        return primitive_action.astype(jnp.int32), macro_reachable
+        # Walk up to the block, then hand control back. A navigation macro is
+        # "stuck at a block" when it has no open route and its blocked-approach
+        # step could not advance (it reached the closest reachable tile and can
+        # only `stay`). This covers permanent walls / nonexistent targets too
+        # (stuck from the first tick), while an approach still in progress keeps
+        # moving. `macro_nav_ok` is True while the macro should keep running.
+        blocked_and_stuck = (~has_path) & (move_blocked == Actions.stay)
+        macro_nav_ok = ~navigation_macro | ~blocked_and_stuck
+        return primitive_action.astype(jnp.int32), macro_nav_ok
 
     def _compute_macro_done(
         self,
         state: State,
         macro_actions: chex.Array,
         primitive_actions: chex.Array,
-        macro_reachable: chex.Array,
+        macro_nav_ok: chex.Array,
     ) -> chex.Array:
-        """Evaluate action-specific completion and unreachable navigation goals."""
+        """Evaluate action-specific completion plus navigation give-up (stuck)."""
         agent_idxs = jnp.arange(self.num_agents)
         return jax.vmap(
             lambda agent_idx, macro_action, primitive_action, reachable: (
@@ -524,7 +573,12 @@ class OvercookedV3Macro(OvercookedV3):
                     state, agent_idx, macro_action, primitive_action, reachable
                 )
             )
-        )(agent_idxs, macro_actions, primitive_actions, macro_reachable)
+        )(
+            agent_idxs,
+            macro_actions,
+            primitive_actions,
+            macro_nav_ok,
+        )
 
     def _macro_done_for_agent(
         self,
@@ -532,11 +586,12 @@ class OvercookedV3Macro(OvercookedV3):
         agent_idx: chex.Array,
         macro_action: chex.Array,
         primitive_action: chex.Array,
-        macro_reachable: chex.Array,
+        macro_nav_ok: chex.Array,
     ) -> chex.Array:
-        """Return whether one agent's macro has completed or become unreachable."""
+        """Return whether one agent's macro has completed or given up (stuck)."""
         agent = self._agent_at(state, agent_idx)
         inventory = agent.inventory
+        counter_mask_static = self._counter_like_static_mask(state.grid[:, :, 0])
 
         primitive_move = (macro_action >= MacroActions.up) & (
             macro_action <= MacroActions.right
@@ -570,17 +625,23 @@ class OvercookedV3Macro(OvercookedV3):
             | ~jnp.any(state.grid[:, :, 0] == StaticObject.PLATE_PILE),
             done,
         )
+        # For the navigation-to-object macros, completion is "arrived and
+        # attempted once" (`primitive_action == interact`), the inventory
+        # precondition no longer holding, or the static object being gone. The
+        # attempt signal is what stops the macro after the agent reaches the
+        # nearest object and finds out whether the interaction was valid.
         done = jnp.where(
             macro_action == MacroActions.put_ingredient_in_nearest_pot,
-            ~DynamicObject.is_ingredient(inventory)
-            | ~jnp.any(self._valid_pot_placement_mask(state, inventory)),
+            (primitive_action == Actions.interact)
+            | ~DynamicObject.is_ingredient(inventory)
+            | ~jnp.any(state.grid[:, :, 0] == StaticObject.POT),
             done,
         )
         done = jnp.where(
             macro_action == MacroActions.get_soup_from_nearest_pot,
-            ((inventory & DynamicObject.COOKED) != 0)
+            (primitive_action == Actions.interact)
             | (inventory != DynamicObject.PLATE)
-            | ~jnp.any(self._ready_recipe_pot_mask(state)),
+            | ~jnp.any(state.grid[:, :, 0] == StaticObject.POT),
             done,
         )
         done = jnp.where(
@@ -591,20 +652,16 @@ class OvercookedV3Macro(OvercookedV3):
         )
         done = jnp.where(
             macro_action == MacroActions.drop_on_nearest_counter,
-            (inventory == DynamicObject.EMPTY)
-            | ~jnp.any(
-                self._counter_like_static_mask(state.grid[:, :, 0])
-                & (state.grid[:, :, 1] == DynamicObject.EMPTY)
-            ),
+            (primitive_action == Actions.interact)
+            | (inventory == DynamicObject.EMPTY)
+            | ~jnp.any(counter_mask_static),
             done,
         )
         done = jnp.where(
             macro_action == MacroActions.pickup_from_nearest_counter,
-            (inventory != DynamicObject.EMPTY)
-            | ~jnp.any(
-                self._counter_like_static_mask(state.grid[:, :, 0])
-                & (state.grid[:, :, 1] != DynamicObject.EMPTY)
-            ),
+            (primitive_action == Actions.interact)
+            | (inventory != DynamicObject.EMPTY)
+            | ~jnp.any(counter_mask_static),
             done,
         )
         done = jnp.where(
@@ -619,13 +676,23 @@ class OvercookedV3Macro(OvercookedV3):
             | ~jnp.any(state.grid[:, :, 0] == StaticObject.PRESSURE_PLATE),
             done,
         )
+        # `wait_for_nearest_pot` legitimately needs dynamic pot state to know when
+        # to stop waiting, but only for pots the agent can actually see. Restrict
+        # the read to the agent's observation window: keep waiting only while an
+        # in-view pot is cooking-but-not-ready; finish when one becomes ready,
+        # leaves the window, or there was none in view to begin with (a noop).
+        in_view = self._in_view_mask(agent)
+        ready_in_view = jnp.any(self._ready_recipe_pot_mask(state) & in_view)
+        cooking_in_view = jnp.any(self._cooking_pot_cell_mask(state) & in_view)
         done = jnp.where(
             macro_action == MacroActions.wait_for_nearest_pot,
-            jnp.any(self._ready_recipe_pot_mask(state))
-            | ~jnp.any(state.pot_cooking_timer > 0),
+            ready_in_view | ~cooking_in_view,
             done,
         )
-        return done | ~macro_reachable
+        # ...and a navigation macro also ends when it is stuck at a block: it has
+        # walked as far as it can and cannot advance (`~macro_nav_ok`). This hands
+        # control back to the policy instead of waiting for the block to clear.
+        return done | ~macro_nav_ok
 
     # ------------------------------------------------------------------
     # Target Selection and Navigation
@@ -680,6 +747,22 @@ class OvercookedV3Macro(OvercookedV3):
             state.barrier_positions[:, 0], state.barrier_positions[:, 1]
         ].add(blocked_barriers.astype(jnp.int32))
         return walkable_mask & (blocked_cells == 0)
+
+    def _barrier_agnostic_walkable_mask(self, state: State) -> chex.Array:
+        """Return walkability treating every barrier tile as open.
+
+        Identical to the base walkability of `_current_walkable_mask` but without
+        subtracting currently-closed barriers, so the flood fill retains a
+        gradient through timed barriers. Permanent walls stay non-walkable. It is
+        purely static (no dynamic reads), so it is trivially JIT/vmap-safe.
+        """
+        static_layer = state.grid[:, :, 0]
+        return (
+            (static_layer == StaticObject.EMPTY)
+            | (static_layer == StaticObject.PLAYER_CONVEYOR)
+            | (static_layer == StaticObject.PRESSURE_PLATE)
+            | (static_layer == StaticObject.BARRIER)
+        )
 
     def _distance_to_goals(
         self, walkable_mask: chex.Array, goal_mask: chex.Array
@@ -740,6 +823,55 @@ class OvercookedV3Macro(OvercookedV3):
         action = self._move_actions[best_idx]
         return jnp.where(has_step, action, Actions.stay).astype(jnp.int32)
 
+    def _step_up_to_blocked_object(
+        self,
+        state: State,
+        agent: Agent,
+        walkable_mask: chex.Array,
+        distances_all: chex.Array,
+    ) -> chex.Array:
+        """Step toward a transiently-blocked object, then wait at the block.
+
+        Used only when no currently-open route to the target exists. The chosen
+        direction is the neighbor with the smallest barrier-agnostic distance to
+        the object, scored over ALL in-bounds cells (including closed barrier
+        cells) so it points straight at the target. The agent actually moves only
+        when that downhill neighbor is currently walkable, unoccupied, and
+        strictly closer than its own cell; otherwise it stays. This walks the
+        agent up to the blocking barrier and holds there until the barrier opens
+        (at which point `has_path` becomes true and detour-aware movement resumes).
+        """
+        ax = agent.pos.x
+        ay = agent.pos.y
+        candidate_x = ax + self._move_dx
+        candidate_y = ay + self._move_dy
+        candidate_in_bounds = (
+            (candidate_x >= 0)
+            & (candidate_x < self.width)
+            & (candidate_y >= 0)
+            & (candidate_y < self.height)
+        )
+        safe_x = jnp.clip(candidate_x, 0, self.width - 1)
+        safe_y = jnp.clip(candidate_y, 0, self.height - 1)
+        candidate_distances = jnp.where(
+            candidate_in_bounds, distances_all[safe_y, safe_x], INF_DISTANCE
+        )
+        best_idx = jnp.argmin(candidate_distances)
+        best_distance = candidate_distances[best_idx]
+        best_walkable = walkable_mask[safe_y[best_idx], safe_x[best_idx]]
+        best_unoccupied = self._cell_unoccupied_by_other_agents(
+            state, agent, safe_y, safe_x
+        )[best_idx]
+        making_progress = best_distance < distances_all[ay, ax]
+        do_move = (
+            making_progress
+            & best_walkable
+            & best_unoccupied
+            & (best_distance < INF_DISTANCE)
+        )
+        action = self._move_actions[best_idx]
+        return jnp.where(do_move, action, Actions.stay).astype(jnp.int32)
+
     def _cell_unoccupied_by_other_agents(
         self,
         state: State,
@@ -757,6 +889,39 @@ class OvercookedV3Macro(OvercookedV3):
     # ------------------------------------------------------------------
     # Object Masks and Completion Helpers
     # ------------------------------------------------------------------
+
+    def _in_view_mask(self, agent: Agent) -> chex.Array:
+        """Return a boolean grid of cells inside the agent's observation window.
+
+        Mirrors the egocentric square window used to build partial observations
+        (`overcooked_v3/observations.py`): a Chebyshev radius of
+        ``self.agent_view_size`` centered on the agent. Under full observability
+        (``agent_view_size`` is None) it returns all-True, so view-gated macros
+        behave exactly as they did before partial observability. The None check
+        is on a static attribute, so it is resolved at trace time.
+        """
+        if self.agent_view_size is None:
+            return jnp.ones((self.height, self.width), dtype=jnp.bool_)
+        ys = jnp.arange(self.height)[:, None]
+        xs = jnp.arange(self.width)[None, :]
+        within_rows = jnp.abs(ys - agent.pos.y) <= self.agent_view_size
+        within_cols = jnp.abs(xs - agent.pos.x) <= self.agent_view_size
+        return within_rows & within_cols
+
+    def _cooking_pot_cell_mask(self, state: State) -> chex.Array:
+        """Return a boolean grid marking pot cells that are currently cooking.
+
+        Scatters each active pot's 'cooking' flag onto its grid cell (mirroring
+        the pot-timer layer built in observations), so completion of
+        `wait_for_nearest_pot` can be gated by what is inside the view window.
+        """
+        cooking = state.pot_active_mask & (state.pot_cooking_timer > 0)
+        cooking_cells = jnp.zeros(
+            (self.height, self.width), dtype=jnp.int32
+        ).at[
+            state.pot_positions[:, 0], state.pot_positions[:, 1]
+        ].add(cooking.astype(jnp.int32))
+        return cooking_cells > 0
 
     def _counter_like_static_mask(self, static_layer: chex.Array) -> chex.Array:
         return (
@@ -820,10 +985,18 @@ class OvercookedV3Macro(OvercookedV3):
         return spaces.Discrete(self.num_macro_actions, dtype=jnp.uint32)
 
     def get_avail_actions(self, state: State) -> Dict[str, chex.Array]:
-        """Mask macros that cannot make progress from the current state."""
+        """Mask macros the agent knows it cannot start, without leaking state.
+
+        Gates use only the agent's own inventory and STATIC object existence.
+        They deliberately never read dynamic world state (pot contents, counter
+        contents, cook timers), so the mask cannot reveal privileged, possibly
+        out-of-view information through the action space. An action whose dynamic
+        precondition turns out to be false is still available and simply becomes
+        a no-op that terminates during execution.
+        """
         static_layer = state.grid[:, :, 0]
-        dynamic_layer = state.grid[:, :, 1]
         counter_mask = self._counter_like_static_mask(static_layer)
+        pot_exists = jnp.any(static_layer == StaticObject.POT)
 
         def agent_mask(agent_idx):
             inventory = state.agents.inventory[agent_idx]
@@ -854,24 +1027,22 @@ class OvercookedV3Macro(OvercookedV3):
             mask = mask.at[MacroActions.get_plate].set(
                 inventory_empty & jnp.any(static_layer == StaticObject.PLATE_PILE)
             )
+            # Existence + inventory only; no dynamic pot/counter/timer reads.
             mask = mask.at[MacroActions.put_ingredient_in_nearest_pot].set(
-                jnp.any(self._valid_pot_placement_mask(state, inventory))
+                DynamicObject.is_ingredient(inventory) & pot_exists
             )
             mask = mask.at[MacroActions.get_soup_from_nearest_pot].set(
-                (inventory == DynamicObject.PLATE)
-                & jnp.any(self._ready_recipe_pot_mask(state))
+                (inventory == DynamicObject.PLATE) & pot_exists
             )
             mask = mask.at[MacroActions.deliver].set(
                 ((inventory & DynamicObject.COOKED) != 0)
                 & jnp.any(static_layer == StaticObject.GOAL)
             )
             mask = mask.at[MacroActions.drop_on_nearest_counter].set(
-                ~inventory_empty
-                & jnp.any(counter_mask & (dynamic_layer == DynamicObject.EMPTY))
+                ~inventory_empty & jnp.any(counter_mask)
             )
             mask = mask.at[MacroActions.pickup_from_nearest_counter].set(
-                inventory_empty
-                & jnp.any(counter_mask & (dynamic_layer != DynamicObject.EMPTY))
+                inventory_empty & jnp.any(counter_mask)
             )
             mask = mask.at[MacroActions.press_nearest_button].set(
                 jnp.any(state.button_active_mask)
@@ -879,9 +1050,7 @@ class OvercookedV3Macro(OvercookedV3):
             mask = mask.at[MacroActions.stand_on_nearest_pressure_plate].set(
                 jnp.any(state.pressure_plate_active_mask)
             )
-            mask = mask.at[MacroActions.wait_for_nearest_pot].set(
-                jnp.any(state.pot_cooking_timer > 0)
-            )
+            mask = mask.at[MacroActions.wait_for_nearest_pot].set(pot_exists)
             return mask.astype(jnp.uint8)
 
         masks = jax.vmap(agent_mask)(jnp.arange(self.num_agents))

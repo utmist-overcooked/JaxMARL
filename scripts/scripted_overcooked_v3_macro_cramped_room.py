@@ -193,10 +193,12 @@ def navigation_snapshot(
 ):
     """Return host-side target, goal, distance, and action data for one macro."""
     static_layer = state.grid[:, :, 0]
-    dynamic_layer = state.grid[:, :, 1]
     agent = env._agent_at(state, jnp.array(agent_idx, dtype=jnp.int32))
     walkable = env._current_walkable_mask(state)
 
+    # Targets mirror execution: STATIC object existence only. The dynamic outcome
+    # (pot full/ready, counter empty/occupied) is discovered on arrival, so the
+    # planner navigates to any pot / any counter here too.
     target_mask = jnp.zeros((env.height, env.width), dtype=jnp.bool_)
     if macro_action == MacroActions.get_ingredient_0:
         target_mask = static_layer == StaticObject.ingredient_pile(0)
@@ -207,19 +209,15 @@ def navigation_snapshot(
     elif macro_action == MacroActions.get_plate:
         target_mask = static_layer == StaticObject.PLATE_PILE
     elif macro_action == MacroActions.put_ingredient_in_nearest_pot:
-        target_mask = env._valid_pot_placement_mask(state, agent.inventory)
+        target_mask = static_layer == StaticObject.POT
     elif macro_action == MacroActions.get_soup_from_nearest_pot:
-        target_mask = env._ready_recipe_pot_mask(state)
+        target_mask = static_layer == StaticObject.POT
     elif macro_action == MacroActions.deliver:
         target_mask = static_layer == StaticObject.GOAL
     elif macro_action == MacroActions.drop_on_nearest_counter:
-        target_mask = env._counter_like_static_mask(static_layer) & (
-            dynamic_layer == DynamicObject.EMPTY
-        )
+        target_mask = env._counter_like_static_mask(static_layer)
     elif macro_action == MacroActions.pickup_from_nearest_counter:
-        target_mask = env._counter_like_static_mask(static_layer) & (
-            dynamic_layer != DynamicObject.EMPTY
-        )
+        target_mask = env._counter_like_static_mask(static_layer)
     elif macro_action == MacroActions.press_nearest_button:
         target_mask = static_layer == StaticObject.BUTTON
 

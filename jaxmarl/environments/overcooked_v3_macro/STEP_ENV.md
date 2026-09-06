@@ -137,9 +137,13 @@ Therefore, a barrier opening or closing affects the next planning decision.
 
 ## Step 3: build the selected macro's valid-target mask
 
-The planner first creates one boolean grid describing all targets that are valid
-for this agent and macro. Only cheap mask construction is repeated for the
-different macro types; exactly one flood fill is performed per agent.
+The planner first creates one boolean grid describing all targets for this
+macro. Targets are chosen by **static object existence only** — never by dynamic
+world state the agent may not be able to see. The agent walks to the nearest
+such object and discovers the dynamic condition (pot full or ready, counter
+empty or occupied) only when it arrives and the base interaction runs. Only
+cheap mask construction is repeated for the different macro types; two flood
+fills are performed per agent (see Step 5).
 
 Representative target masks are:
 
@@ -150,15 +154,11 @@ static_layer == StaticObject.ingredient_pile(0)
 # Plate pile
 static_layer == StaticObject.PLATE_PILE
 
-# Pot that can accept the held ingredient
-self._valid_pot_placement_mask(state, agent.inventory)
+# Any pot (both the put and get-soup macros; validity is discovered on arrival)
+static_layer == StaticObject.POT
 
-# Pot containing the ready configured recipe
-self._ready_recipe_pot_mask(state)
-
-# Empty or occupied counter-like object
-counter_mask & (dynamic_layer == DynamicObject.EMPTY)
-counter_mask & (dynamic_layer != DynamicObject.EMPTY)
+# Any counter-like object (both the drop and pickup macros)
+counter_mask
 
 # Delivery and button targets
 static_layer == StaticObject.GOAL
@@ -177,19 +177,19 @@ Evidence: target-mask selection in
 | `wait` | None | Emit `stay`. |
 | `get_ingredient_N` | Every pile for ingredient `N` | Inventory must be empty. |
 | `get_plate` | Every plate pile | Base pickup succeeds only with empty inventory. |
-| `put_ingredient_in_nearest_pot` | Non-full, same-type or empty, uncooked and unburned pots | Must hold an ingredient. |
-| `get_soup_from_nearest_pot` | Pots containing the cooked configured recipe | Must hold a plate. |
+| `put_ingredient_in_nearest_pot` | Every pot | Must hold an ingredient; a full/finished pot is discovered on arrival. |
+| `get_soup_from_nearest_pot` | Every pot | Must hold a plate; an unready pot is discovered on arrival. |
 | `deliver` | Every delivery goal | Must hold an object with `COOKED` set. |
-| `drop_on_nearest_counter` | Empty wall, moving-wall, or conveyor counter-like cells | Inventory must be non-empty. |
-| `pickup_from_nearest_counter` | Occupied counter-like cells | Inventory must be empty. |
+| `drop_on_nearest_counter` | Every wall, moving-wall, or conveyor counter-like cell | Inventory must be non-empty; a full counter is discovered on arrival. |
+| `pickup_from_nearest_counter` | Every counter-like cell | Inventory must be empty; an empty counter is discovered on arrival. |
 | `press_nearest_button` | Every button | Navigate beside it and interact. |
 | `stand_on_nearest_pressure_plate` | Every pressure-plate cell | Navigate onto it; do not interact. |
 | `wait_for_nearest_pot` | None | Emit `stay` until the waiting condition ends. |
 
-Inventory gates are applied in
-[`_macro_to_primitive_action`](./overcooked.py#L460-L498). The actual pickup,
-placement, and delivery effects are implemented by base
-[`process_interact`](../overcooked_v3/overcooked.py#L1242-L1381).
+Inventory gates are applied in `_macro_to_primitive_action`. The actual pickup,
+placement, and delivery effects — and the harmless no-op when an interaction is
+invalid (e.g. reaching a full or unready pot) — are implemented by base
+[`process_interact`](../overcooked_v3/interactions.py).
 
 ## Step 4: turn object targets into navigation goals
 
@@ -221,11 +221,27 @@ All valid destinations participate simultaneously. There is no permanently
 stored target. If one target becomes unreachable while another remains
 reachable, the resulting field directs the agent toward the reachable one.
 
-## Step 5: flood a barrier-aware distance field
+## Step 5: flood two distance fields
 
-All goal cells start at distance zero. Each relaxation round assigns every
-walkable cell the minimum of its current distance and one plus the smallest
-neighbor distance:
+Two flood fields are computed from the same goal cells. `distances_open` uses
+the current, barrier-aware walkability and drives normal movement (including
+detours around any currently-open route). `distances_all` uses a
+**barrier-agnostic** walkability that treats every closed barrier as open (but
+still routes around permanent walls), so a target that is only *transiently*
+blocked still yields a gradient the agent can walk toward.
+
+```python
+goal_mask_open = base_goal_cells & walkable_mask
+goal_mask_all = base_goal_cells & barrier_agnostic_mask
+distances_open = self._distance_to_goals(walkable_mask, goal_mask_open)
+distances_all = self._distance_to_goals(barrier_agnostic_mask, goal_mask_all)
+```
+
+Evidence: two-field construction in `_macro_to_primitive_action` and the
+barrier-agnostic mask in `_barrier_agnostic_walkable_mask`.
+
+Each `_distance_to_goals` relaxation round assigns every walkable cell the
+minimum of its current distance and one plus the smallest neighbor distance:
 
 ```python
 distances = jnp.where(goal_mask, 0, INF_DISTANCE).astype(jnp.int32)
@@ -248,28 +264,34 @@ distances = lax.fori_loop(
 )
 ```
 
-Evidence: [`_distance_to_goals`](./overcooked.py#L661-L682).
+Evidence: [`_distance_to_goals`](./overcooked.py).
 
 This dense formulation is regular and vectorizable under `jax.jit`, `jax.vmap`,
 and batched GPU training. It performs at most `height * width` relaxation rounds.
 
-Reachability is the value at the agent's current tile:
+The open-route reachability, whether the agent is at a goal, and the
+barrier-agnostic reachability come from the agent's current tile:
 
 ```python
-agent_distance = distances[agent.pos.y, agent.pos.x]
-has_path = agent_distance < INF_DISTANCE
+agent_distance = distances_open[agent.pos.y, agent.pos.x]
+has_path = agent_distance < INF_DISTANCE                      # open route now?
 at_goal = agent_distance == 0
 ```
 
-Evidence: [`_macro_to_primitive_action`](./overcooked.py#L429-L432).
+`has_path` selects the *stepping mode*; completion (Step 8) ends a navigation
+macro once it is *stuck at a block* (no open route and the barrier-agnostic
+approach step cannot advance). The possible outcomes are:
 
-The possible outcomes are:
-
-1. The original target remains reachable through a detour: follow the detour.
-2. That target is cut off but another valid target is reachable: follow the
-   other target's distance gradient.
-3. No valid target is reachable from the agent's current connected region:
-   emit `stay` and mark the macro done.
+1. The target remains reachable through an open detour: follow `distances_open`.
+2. The target is cut off but another target is reachable through an open route:
+   follow that target's `distances_open` gradient.
+3. Every route is blocked (e.g. a closed timed barrier) but the target still
+   exists behind the block: walk up to the block along `distances_all`. While
+   the agent is still advancing, the macro keeps running.
+4. The agent is stuck at the block — it has reached the closest reachable tile
+   and cannot advance (permanent walls, a closed barrier one tile away, or the
+   object no longer exists): emit `stay` and end the macro, handing control back
+   to the policy (which, in the committed variant, then selects a new macro).
 
 Other agents are deliberately not removed from the flood-fill grid. Their
 occupancy is temporary and is handled only when choosing the immediate step.
@@ -278,9 +300,9 @@ occupancy is temporary and is handled only when choosing the immediate step.
 
 ### Moving
 
-When the agent is not yet at a goal, the planner scores its four neighboring
-cells by the new distance field. It excludes out-of-bounds, non-walkable, and
-currently occupied cells:
+When an open route exists (`has_path`), the planner scores the four neighboring
+cells by `distances_open`, excluding out-of-bounds, non-walkable, and currently
+occupied cells:
 
 ```python
 scores = jnp.where(
@@ -293,9 +315,19 @@ action = self._move_actions[best_idx]
 return jnp.where(has_step, action, Actions.stay).astype(jnp.int32)
 ```
 
-Evidence: [`_next_action_avoiding_agents`](./overcooked.py#L684-L717) and the
-occupancy check in
-[`_cell_unoccupied_by_other_agents`](./overcooked.py#L719-L731).
+Evidence: [`_next_action_avoiding_agents`](./overcooked.py) and the occupancy
+check in [`_cell_unoccupied_by_other_agents`](./overcooked.py).
+
+When no open route exists, the planner instead descends `distances_all` toward
+the transiently-blocked object, but only steps into a cell that is currently
+walkable, unoccupied, and strictly closer; otherwise it stays. This walks the
+agent up to the blocking barrier and holds there until it opens:
+
+```python
+move_action = jnp.where(has_path, move_open, move_blocked)
+```
+
+Evidence: [`_step_up_to_blocked_object`](./overcooked.py).
 
 ### Facing and interacting
 
@@ -315,19 +347,26 @@ interact_action = jnp.where(
 Evidence: [`_macro_to_primitive_action`](./overcooked.py#L438-L458).
 
 At a pressure-plate goal, the agent emits `stay` because merely occupying the
-cell activates the plate. `wait` and `wait_for_nearest_pot` also emit `stay`.
-Any failed inventory prerequisite or unreachable navigation goal emits `stay`:
+cell activates the plate. `wait` and `wait_for_nearest_pot` also emit `stay`. A
+failed inventory prerequisite emits `stay`. Note the gate no longer requires
+`has_path`: when the target is blocked, `navigation_action` is the
+blocked-approach step (which self-stays only once it cannot advance), so gating
+on `has_path` here would stop the agent from walking up to the block. The
+returned flag reports whether the navigation macro should keep running — it is
+False when the agent is stuck at a block (no open route and the approach step
+could only `stay`):
 
 ```python
 primitive_action = jnp.where(
-    navigation_macro & can_execute & has_path,
+    navigation_macro & can_execute,
     navigation_action,
     Actions.stay,
 )
-macro_reachable = ~navigation_macro | has_path
+blocked_and_stuck = (~has_path) & (move_blocked == Actions.stay)
+macro_nav_ok = ~navigation_macro | ~blocked_and_stuck
 ```
 
-Evidence: [`_macro_to_primitive_action`](./overcooked.py#L455-L500).
+Evidence: [`_macro_to_primitive_action`](./overcooked.py).
 
 ### Simultaneous agent conflicts
 
@@ -370,20 +409,27 @@ Completion is checked after the base transition. The action-specific rules are:
 | `wait` | After its one `stay` tick. |
 | `get_ingredient_N` | The agent holds ingredient `N`, holds an incompatible object, or no such pile exists. |
 | `get_plate` | The agent holds a plate, holds an incompatible object, or no plate pile exists. |
-| `put_ingredient_in_nearest_pot` | The agent no longer holds an ingredient or no valid pot remains. |
-| `get_soup_from_nearest_pot` | The agent holds a cooked dish, no longer holds a plate, or no ready pot remains. |
+| `put_ingredient_in_nearest_pot` | The emitted primitive was `interact` (arrived and attempted), the agent no longer holds an ingredient, or no pot exists. |
+| `get_soup_from_nearest_pot` | The emitted primitive was `interact` (arrived and attempted), the agent no longer holds a plate, or no pot exists. |
 | `deliver` | The agent no longer holds a cooked dish or no goal exists. |
-| `drop_on_nearest_counter` | Inventory becomes empty or no empty counter remains. |
-| `pickup_from_nearest_counter` | Inventory becomes non-empty or no occupied counter remains. |
+| `drop_on_nearest_counter` | The emitted primitive was `interact` (arrived and attempted), inventory becomes empty, or no counter exists. |
+| `pickup_from_nearest_counter` | The emitted primitive was `interact` (arrived and attempted), inventory becomes non-empty, or no counter exists. |
 | `press_nearest_button` | The emitted primitive was `interact` or no button exists. |
 | `stand_on_nearest_pressure_plate` | The agent occupies a plate or no plate exists. |
-| `wait_for_nearest_pot` | A recipe pot is ready or no pot is still cooking. |
+| `wait_for_nearest_pot` | A recipe pot **in the agent's view** is ready, or no pot **in view** is still cooking (a noop when none is in view). |
 
-Every navigation macro also ends when its pre-transition flood field says no
-valid target is reachable:
+The four navigate-to-object macros complete on the "arrived and attempted"
+signal (the emitted primitive was `interact`), so an agent that reaches the
+nearest object and finds its dynamic condition unmet attempts once and finishes
+rather than looping. Every navigation macro also ends when it is **stuck at a
+block** (`~macro_nav_ok`): it has walked as far as it can toward the target and
+can no longer advance — a closed barrier one tile away, a permanent wall, or a
+nonexistent target. This hands control back to the policy instead of waiting for
+the block to clear. (A teammate merely occupying the next cell keeps `has_path`
+True, so the agent keeps trying past a teammate rather than giving up.)
 
 ```python
-return done | ~macro_reachable
+return done | ~macro_nav_ok
 ```
 
 Evidence: [`_macro_done_for_agent`](./overcooked.py#L517-L613).
@@ -434,10 +480,13 @@ python scripts/scripted_overcooked_v3_macro_cramped_room.py \
   --output artifacts/overcooked_v3_macro_cooperative_barrier_flood_fill.gif
 ```
 
-In this demo, agent 0 requests the plate behind a closed timed barrier and
-initially receives an unreachable field. Agent 1 navigates to the linked button
-and presses it. On the following tick the gate is open, agent 0's field becomes
-finite, and agent 0 follows it through the barrier to the plate.
+In this demo, agent 0 requests the plate behind a closed timed barrier. Its
+open-route field (`distances_open`) is initially unreachable, so agent 0 walks up
+to the barrier along the barrier-agnostic field; once stuck one tile short it
+hands control back, and the scripted policy simply re-requests the plate, so it
+holds at the barrier. Agent 1 navigates to the linked button and presses it. On
+the following tick the gate is open, agent 0's open-route field becomes finite,
+and agent 0 follows it through the barrier to the plate.
 
 The left panel is the normal Overcooked render. The right panel uses:
 
