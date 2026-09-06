@@ -53,6 +53,7 @@ from pathlib import Path
 import hydra
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
@@ -206,6 +207,29 @@ def make_train(config):
             f"divisible by NUM_MINIBATCHES ({num_minibatches_cfg})."
         )
     gumbel_tau = float(config.get("COMM_GUMBEL_TAU", 1.0))
+
+    # Static tables for the protocol-accuracy DIAGNOSTIC below. Built on the
+    # host from the env's own recipe list, so they are compile-time constants.
+    # Only single-ingredient recipes (e.g. [0,0,0] / [1,1,1]) have an
+    # unambiguous "correct ingredient"; anything else is excluded from the
+    # metric rather than scored wrongly.
+    from jaxmarl.environments.overcooked_v3.common import DynamicObject
+
+    macro_names = list(env.macro_action_names)
+    _codes, _correct = [], []
+    for recipe in np.asarray(env._env._env.config.possible_recipes):
+        unique = np.unique(recipe)
+        name = f"get_ingredient_{int(unique[0])}" if unique.size == 1 else None
+        if name in macro_names:
+            _codes.append(int(DynamicObject.get_recipe_encoding(recipe)))
+            _correct.append(macro_names.index(name))
+    recipe_codes = jnp.asarray(_codes, dtype=jnp.int32)
+    recipe_correct_macro = jnp.asarray(_correct, dtype=jnp.int32)
+    ingredient_macro_ids = jnp.asarray(
+        [i for i, n in enumerate(macro_names) if n.startswith("get_ingredient_")],
+        dtype=jnp.int32,
+    )
+    track_protocol_accuracy = bool(len(_codes)) and bool(ingredient_macro_ids.size)
     hidden_size = int(config["HIDDEN_SIZE"])
     comm_hidden_size = int(config.get("COMM_HIDDEN_SIZE", config["HIDDEN_SIZE"]))
     num_actors = int(config["NUM_ACTORS"])
@@ -532,6 +556,35 @@ def make_train(config):
                 }
 
                 action = jnp.where(macro_done, proposed_action, current_macro)
+
+                # DIAGNOSTIC ONLY -- never enters any loss. The live recipe is
+                # read from the privileged env state (the listener still cannot
+                # see it); we record, at each macro boundary where an ingredient
+                # macro was chosen, whether it was the RIGHT ingredient. This is
+                # protocol accuracy with the delivery RATE divided out, which the
+                # DELIVERY reward curve cannot separate.
+                if track_protocol_accuracy:
+                    recipe_per_env = env_state.env_state.recipe
+                    recipe_per_actor = jnp.tile(recipe_per_env, env.num_agents)
+                    matches = (
+                        recipe_per_actor[:, None] == recipe_codes[None, :]
+                    ).astype(jnp.int32)
+                    correct_macro = jnp.sum(
+                        matches * recipe_correct_macro[None, :], axis=-1
+                    )
+                    known_recipe = jnp.sum(matches, axis=-1) > 0
+                    chose_ingredient = jnp.any(
+                        proposed_action[:, None] == ingredient_macro_ids[None, :],
+                        axis=-1,
+                    )
+                    ingredient_choice = macro_done & chose_ingredient & known_recipe
+                    ingredient_correct = ingredient_choice & (
+                        proposed_action == correct_macro
+                    )
+                else:
+                    ingredient_choice = jnp.zeros((num_actors,), dtype=jnp.bool_)
+                    ingredient_correct = jnp.zeros((num_actors,), dtype=jnp.bool_)
+
                 env_action = unbatchify(action, env.agents, num_envs)
                 step_keys = jax.random.split(step_rng, num_envs)
                 next_obs, next_env_state, reward, done, info = jax.vmap(
@@ -606,6 +659,8 @@ def make_train(config):
                     "shaped_reward": batchify(
                         info["shaped_reward"], env.agents, num_actors
                     ),
+                    "ingredient_choice": ingredient_choice,
+                    "ingredient_correct": ingredient_correct,
                     "shaping_coefficient": jnp.full((num_actors,), shaping_coefficient),
                     "burn_penalty_coefficient": jnp.full((num_actors,), burn_coefficient),
                     "reward_breakdown": reward_breakdown,
@@ -814,6 +869,12 @@ def make_train(config):
                 "mean_macro_duration": jnp.sum(trajectory["duration"] * event_mask)
                     / jnp.maximum(jnp.sum(event_mask), 1),
                 "macro_decisions": jnp.sum(event_mask),
+                # Fraction of ingredient decisions that matched the live recipe.
+                # 0.5 == chance with two equally likely recipes; 1.0 == a
+                # perfectly used protocol. Purely observational.
+                "protocol_accuracy": jnp.sum(trajectory["ingredient_correct"])
+                    / jnp.maximum(jnp.sum(trajectory["ingredient_choice"]), 1),
+                "ingredient_decisions": jnp.sum(trajectory["ingredient_choice"]),
                 "unfinished_macros": jnp.sum(pending["active"]),
                 "mean_shaped_reward": jnp.mean(trajectory["shaped_reward"]),
                 "shaping_coefficient": jnp.mean(trajectory["shaping_coefficient"]),

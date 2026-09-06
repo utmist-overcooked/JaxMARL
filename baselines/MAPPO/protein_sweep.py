@@ -85,6 +85,12 @@ TARGETS = {
         "overcooked_v3_macro_interruptible",
         "protein_comm",
     ),
+    "joint_comm": (
+        "mappo_macro_boundary_joint_comm",
+        "mappo_macro_boundary_joint_comm",
+        "overcooked_v3_macro",
+        "protein_joint_comm",
+    ),
 }
 
 _OPTIMIZERS = {"protein": Protein, "random": Random, "pareto_genetic": ParetoGenetic}
@@ -145,14 +151,27 @@ def _typed_merge(config: dict, hypers: dict) -> dict:
     return config
 
 
-def _read_best_eval(output_dir: Path, result) -> float:
-    """Recover a trial's score: prefer the saved best eval, else the metric array."""
-    best_path = output_dir / "best_eval.json"
-    if best_path.is_file():
-        try:
-            return float(json.loads(best_path.read_text())["eval_return"])
-        except (KeyError, ValueError, json.JSONDecodeError):
-            pass
+def _read_best_eval(output_dir: Path, result, num_seeds: int = 1) -> float:
+    """Recover a trial's score, averaged over every seed the trial ran.
+
+    Averaging matters whenever the outcome is bimodal -- as emergent
+    communication is, where a protocol either forms or does not. Scoring a
+    single seed then makes the optimizer fit seed noise: if 2 of 5 seeds reach
+    the good mode, ANY hyperparameter setting looks good 40% of the time, and
+    the GP happily explains that with whatever was suggested. The mean over
+    several seeds is what actually distinguishes configurations.
+    """
+    trial_root = output_dir.parent if output_dir.name.startswith("seed_") else output_dir
+    scores = []
+    for seed_index in range(max(1, num_seeds)):
+        best_path = trial_root / f"seed_{seed_index}" / "best_eval.json"
+        if best_path.is_file():
+            try:
+                scores.append(float(json.loads(best_path.read_text())["eval_return"]))
+            except (KeyError, ValueError, json.JSONDecodeError):
+                pass
+    if scores:
+        return float(np.mean(scores))
     # Fallback: max over the per-update eval_return array the trainer returns.
     try:
         metrics = result["metrics"] if isinstance(result, dict) else result[0]["metrics"]
@@ -221,6 +240,7 @@ def run_sweep(args) -> None:
         f"[protein_sweep] target={args.target} method={method} "
         f"max_runs={max_runs} cost_budget={args.max_suggestion_cost}s "
         f"search_dims={optimizer.hyperparameters.num} cost_param={cost_param} "
+        f"seeds_per_trial={args.seeds_per_trial} "
         f"fixed={fixed_overrides or None}"
     )
 
@@ -231,7 +251,7 @@ def run_sweep(args) -> None:
         experiment_name = f"protein_{args.target}_trial{trial_idx:03d}"
         trial_config = copy.deepcopy(base_config)
         _typed_merge(trial_config, hypers)
-        trial_config["NUM_SEEDS"] = 1
+        trial_config["NUM_SEEDS"] = int(args.seeds_per_trial)
         trial_config["SAVE_PATH"] = str(save_root / "runs")
 
         # Snap a searched TOTAL_TIMESTEPS to a whole number of update batches so
@@ -253,7 +273,7 @@ def run_sweep(args) -> None:
         try:
             result = run_experiment(trial_config, make_train, experiment_name)
             cost = time.time() - start
-            score = _read_best_eval(output_dir, result)
+            score = _read_best_eval(output_dir, result, args.seeds_per_trial)
             is_failure = not np.isfinite(score)
         except Exception as exc:  # structural / numerical failure -> report, continue
             cost = time.time() - start
@@ -321,6 +341,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--base-config", default=None,
         help="Base training config name under config/ (defaults to the target's own).",
+    )
+    parser.add_argument(
+        "--seeds-per-trial", type=int, default=1,
+        help="Seeds each trial trains; the score is their MEAN best eval return. "
+             "Use >=3 when the outcome is bimodal (emergent communication is), "
+             "or the optimizer fits seed noise rather than hyperparameters. "
+             "Cost per trial scales linearly with this.",
     )
     parser.add_argument(
         "--max-suggestion-cost", type=float, default=3600.0,
