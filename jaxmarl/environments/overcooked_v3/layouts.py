@@ -1255,7 +1255,7 @@ class Layout:
             # soup, and reach a depot. Checking each physical pot separately
             # avoids combining unrelated exclusive pots into a false path.
             recipe_is_feasible = any(
-                pot_groups & plate_groups & goal_groups
+                bool(pot_groups & plate_groups & goal_groups)
                 and all(pot_groups & groups for groups in ingredient_groups)
                 for pot_groups in station_workflow_group_instances.get(
                     pot_station, []
