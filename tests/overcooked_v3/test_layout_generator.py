@@ -1,6 +1,6 @@
 import json
 import random
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 import pytest
@@ -20,151 +20,1006 @@ from scripts.generate_overcooked_v3_layouts import (
 from scripts.play_overcooked_v3 import register_json_layouts
 
 
-def _config(**overrides):
-    generator = {
+REGION_KEYS = {
+    "ingredient_piles",
+    "pots",
+    "plate_piles",
+    "depots",
+    "recipe_indicators",
+}
+COMMON_CONFIG_KEYS = {
+    "seed",
+    "count",
+    "name_prefix",
+    "width",
+    "height",
+    "possible_recipes",
+    "counter_density",
+    "map_type",
+    "regions",
+    "randomize_agents",
+    "max_attempts",
+}
+WORKSTATION_SYMBOLS = set("0123456789PBXR")
+WALKABLE_SYMBOLS = {" ", "A", "_"}
+
+
+def _region(
+    ingredient_piles,
+    *,
+    pots=0,
+    plate_piles=0,
+    depots=0,
+    recipe_indicators=0,
+):
+    """Build one exact per-region workstation specification."""
+    return {
+        "ingredient_piles": list(ingredient_piles),
+        "pots": pots,
+        "plate_piles": plate_piles,
+        "depots": depots,
+        "recipe_indicators": recipe_indicators,
+    }
+
+
+def _asymmetric_config(**overrides):
+    """Return a feasible two-region asymmetric-information configuration."""
+    config = {
         "seed": 11,
         "count": 2,
-        "name_prefix": "test_kitchen",
-        "width": 8,
-        "height": 6,
-        "ingredient_piles": [2, 1],
+        "name_prefix": "asymmetric_kitchen",
+        "width": 14,
+        "height": 10,
         "possible_recipes": [[0, 0, 0], [1, 1, 1]],
-        "pots": 1,
-        "plate_piles": 1,
-        "depots": 1,
-        "object_placement": "boundary",
-        "counter_density": 0.1,
-        "max_attempts": 1000,
+        "counter_density": 0.38,
+        "map_type": "asymmetric_info",
+        "regions": [
+            _region([2, 0], recipe_indicators=1),
+            _region([0, 1], pots=1, plate_piles=1, depots=1),
+        ],
+        "handoff_tiles": 2,
+        "randomize_agents": False,
+        "max_attempts": 5000,
     }
-    generator.update(overrides)
-    return {"generator": generator, "layouts": {}}
+    config.update(overrides)
+    return config
 
 
-def _floor_components(grid):
-    rows = grid.splitlines()
-    walkable = {
-        (row, col)
-        for row, line in enumerate(rows)
-        for col, symbol in enumerate(line)
-        if symbol in {" ", "A"}
+def _temporal_config(**overrides):
+    """Return a Temporal configuration with one pot shared by both regions."""
+    config = {
+        "seed": 17,
+        "count": 1,
+        "name_prefix": "temporal_kitchen",
+        "width": 14,
+        "height": 10,
+        "possible_recipes": [[0, 0, 0], [1, 1, 1]],
+        "counter_density": 0.45,
+        "map_type": "temporal",
+        "regions": [
+            _region([0, 0], pots=1),
+            _region(
+                [1, 1],
+                plate_piles=1,
+                depots=1,
+                recipe_indicators=1,
+            ),
+        ],
+        "signal_tiles": 1,
+        "randomize_agents": False,
+        "max_attempts": 5000,
     }
-    components = []
-    while walkable:
-        start = next(iter(walkable))
-        component = {start}
-        queue = deque([start])
-        walkable.remove(start)
-        while queue:
-            row, col = queue.popleft()
-            for adjacent in (
-                (row - 1, col),
-                (row + 1, col),
-                (row, col - 1),
-                (row, col + 1),
-            ):
-                if adjacent in walkable:
-                    walkable.remove(adjacent)
-                    component.add(adjacent)
-                    queue.append(adjacent)
-        components.append(component)
-    return rows, components
+    config.update(overrides)
+    return config
 
 
-def _accessible_symbols(rows, component):
-    symbols = set()
-    for row, col in component:
-        for station_row, station_col in (
+def _selection_config(**overrides):
+    """Return a feasible control/main/two-gated-room configuration."""
+    config = {
+        "seed": 23,
+        "count": 1,
+        "name_prefix": "selection_kitchen",
+        "width": 18,
+        "height": 14,
+        "possible_recipes": [[0, 0, 0], [1, 1, 1]],
+        "counter_density": 0.38,
+        "map_type": "selection",
+        "regions": [
+            _region([0, 0]),
+            _region(
+                [0, 0],
+                pots=1,
+                plate_piles=1,
+                depots=1,
+                recipe_indicators=1,
+            ),
+            _region([1, 0]),
+            _region([0, 1]),
+        ],
+        "control_handoff_tiles": 1,
+        "pressure_plates_per_barrier": 1,
+        "buttons_per_barrier": 1,
+        "randomize_agents": False,
+        "max_attempts": 5000,
+    }
+    config.update(overrides)
+    return config
+
+
+def _document(config):
+    """Wrap generator settings in the public JSON document shape."""
+    return {"generator": config, "layouts": {}}
+
+
+def _neighbours(rows, position):
+    """Return the in-bounds four-neighbours of a grid position."""
+    row, col = position
+    height, width = len(rows), len(rows[0])
+    return [
+        (next_row, next_col)
+        for next_row, next_col in (
             (row - 1, col),
             (row + 1, col),
             (row, col - 1),
             (row, col + 1),
-        ):
-            symbol = rows[station_row][station_col]
-            if symbol in set("012PBX"):
-                symbols.add(symbol)
-    return symbols
+        )
+        if 0 <= next_row < height and 0 <= next_col < width
+    ]
 
 
-def _shared_tiles(grid):
-    rows, components = _floor_components(grid)
+def _floor_components(grid):
+    """Return rows, floor components, and a position-to-component index."""
+    rows = grid.splitlines()
+    remaining = {
+        (row, col)
+        for row, line in enumerate(rows)
+        for col, symbol in enumerate(line)
+        if symbol in WALKABLE_SYMBOLS
+    }
+    components = []
+    while remaining:
+        start = min(remaining)
+        component = {start}
+        queue = deque([start])
+        remaining.remove(start)
+        while queue:
+            position = queue.popleft()
+            for adjacent in _neighbours(rows, position):
+                if adjacent in remaining:
+                    remaining.remove(adjacent)
+                    component.add(adjacent)
+                    queue.append(adjacent)
+        components.append(component)
     component_by_position = {
         position: component_idx
         for component_idx, component in enumerate(components)
         for position in component
     }
+    return rows, components, component_by_position
+
+
+def _adjacent_components(rows, component_by_position, position):
+    """Return floor-component indexes adjacent to one static grid tile."""
+    return {
+        component_by_position[adjacent]
+        for adjacent in _neighbours(rows, position)
+        if adjacent in component_by_position
+    }
+
+
+def _positions_with_symbol(rows, symbols):
+    """Return positions containing any requested ASCII symbol."""
     return {
         (row, col)
+        for row, line in enumerate(rows)
+        for col, symbol in enumerate(line)
+        if symbol in symbols
+    }
+
+
+def _agent_component_indexes(layout, component_by_position):
+    """Map Layout agent order to the floor component containing each agent."""
+    return [
+        component_by_position[(agent_y, agent_x)]
+        for agent_x, agent_y in layout.agent_positions
+    ]
+
+
+def _accessible_workstation_positions(rows, component):
+    """Return unique workstation tiles interactable from a floor component."""
+    return {
+        adjacent
+        for floor_position in component
+        for adjacent in _neighbours(rows, floor_position)
+        if rows[adjacent[0]][adjacent[1]] in WORKSTATION_SYMBOLS
+    }
+
+
+def _workstation_signature(rows, component):
+    """Count workstation symbols interactable from a floor component."""
+    return Counter(
+        rows[row][col]
+        for row, col in _accessible_workstation_positions(rows, component)
+    )
+
+
+def _expected_workstation_signature(region):
+    """Translate a region dictionary into its expected ASCII symbol counts."""
+    signature = Counter()
+    for ingredient_idx, count in enumerate(region["ingredient_piles"]):
+        signature[str(ingredient_idx)] = count
+    signature["P"] = region["pots"]
+    signature["B"] = region["plate_piles"]
+    signature["X"] = region["depots"]
+    signature["R"] = region["recipe_indicators"]
+    return +signature
+
+
+def _shared_static_tiles(
+    rows,
+    component_by_position,
+    first_component,
+    second_component,
+    symbols,
+):
+    """Find static tiles interactable from exactly two specified regions."""
+    expected = {first_component, second_component}
+    return {
+        position
+        for position in _positions_with_symbol(rows, symbols)
+        if _adjacent_components(rows, component_by_position, position) == expected
+    }
+
+
+def _assert_exact_region_workstations(rows, components, assignments, regions):
+    """Assert exact per-region workstation placement for component indexes."""
+    assert len(assignments) == len(regions)
+    for component_idx, region in zip(assignments, regions):
+        assert _workstation_signature(
+            rows,
+            components[component_idx],
+        ) == _expected_workstation_signature(region)
+
+
+def _only_entry(document):
+    """Return the sole generated layout entry in a one-layout document."""
+    assert len(document["layouts"]) == 1
+    return next(iter(document["layouts"].values()))
+
+
+def _assert_exact_interior_counter_density(rows, config):
+    """Assert that mandatory and decorative counters share one exact budget."""
+    actual = sum(
+        rows[row][col] == "W"
         for row in range(1, len(rows) - 1)
         for col in range(1, len(rows[0]) - 1)
-        if rows[row][col] == "W"
-        and {
-            component_by_position[position]
-            for position in (
-                (row - 1, col),
-                (row + 1, col),
-                (row, col - 1),
-                (row, col + 1),
-            )
-            if position in component_by_position
+    )
+    expected = round(
+        (config["width"] - 2)
+        * (config["height"] - 2)
+        * config["counter_density"]
+    )
+    assert actual == expected
+
+
+def test_normalized_configs_contain_only_common_and_relevant_mode_fields():
+    """Validation does not reintroduce removed or irrelevant schema fields."""
+    cases = [
+        (_asymmetric_config(), {"handoff_tiles"}),
+        (_temporal_config(), {"signal_tiles"}),
+        (
+            _selection_config(),
+            {
+                "control_handoff_tiles",
+                "pressure_plates_per_barrier",
+                "buttons_per_barrier",
+            },
+        ),
+    ]
+    for raw_config, mode_keys in cases:
+        config = validate_config(raw_config)
+        assert set(config) == COMMON_CONFIG_KEYS | mode_keys
+        assert all(set(region) == REGION_KEYS for region in config["regions"])
+
+
+def test_common_defaults_apply_without_injecting_other_mode_fields():
+    """Only genuinely common convenience settings receive defaults."""
+    config = validate_config(
+        {
+            "map_type": "asymmetric_info",
+            "regions": [
+                _region([1]),
+                _region([0], pots=1, plate_piles=1, depots=1),
+            ],
+            "handoff_tiles": 1,
         }
-        == {0, 1}
-    }
+    )
+
+    assert config["seed"] == 0
+    assert config["count"] == 1
+    assert config["name_prefix"] == "generated"
+    assert config["width"] == 8
+    assert config["height"] == 6
+    assert config["counter_density"] == 0.1
+    assert config["randomize_agents"] is False
+    assert config["max_attempts"] == 1000
+    assert config["possible_recipes"] == [[0, 0, 0]]
+    assert set(config) == COMMON_CONFIG_KEYS | {"handoff_tiles"}
 
 
-def _barrier_positions(grid):
-    return {
-        (row, col)
-        for row, line in enumerate(grid.splitlines())
-        for col, symbol in enumerate(line)
-        if symbol == "#"
-    }
+@pytest.mark.parametrize(
+    ("factory", "required_key"),
+    [
+        (_asymmetric_config, "map_type"),
+        (_asymmetric_config, "regions"),
+        (_asymmetric_config, "handoff_tiles"),
+        (_temporal_config, "signal_tiles"),
+        (_selection_config, "control_handoff_tiles"),
+        (_selection_config, "pressure_plates_per_barrier"),
+        (_selection_config, "buttons_per_barrier"),
+    ],
+)
+def test_map_identity_and_mode_specific_fields_are_required(factory, required_key):
+    """The structural settings cannot silently acquire cross-mode defaults."""
+    config = factory()
+    config.pop(required_key)
+
+    with pytest.raises(ValueError, match=required_key):
+        validate_config(config)
 
 
-def _button_positions(grid):
-    return {
-        (row, col)
-        for row, line in enumerate(grid.splitlines())
-        for col, symbol in enumerate(line)
-        if symbol == "!"
-    }
+@pytest.mark.parametrize(
+    ("old_key", "value"),
+    [
+        ("ingredient_piles", [1]),
+        ("pots", 1),
+        ("plate_piles", 1),
+        ("depots", 1),
+        ("object_placement", "anywhere"),
+        ("num_regions", 2),
+        ("num_shared_tiles", 1),
+        ("workflow_mode", "shared"),
+        ("barriers", 1),
+        ("barrier_placement", "shared"),
+    ],
+)
+def test_generator_rejects_removed_top_level_settings(old_key, value):
+    """The breaking schema rejects every superseded top-level setting."""
+    config = _asymmetric_config()
+    config[old_key] = value
+
+    with pytest.raises(ValueError, match=old_key):
+        validate_config(config)
 
 
-def _assert_pressure_plates_are_agent_accessible(grid):
-    rows, components = _floor_components(grid)
-    assert grid.count("_") > 0
-    for component in components:
-        if any(rows[row][col] == "_" for row, col in component):
-            assert any(rows[row][col] == "A" for row, col in component)
+@pytest.mark.parametrize(
+    ("factory", "irrelevant_key", "value"),
+    [
+        (_asymmetric_config, "signal_tiles", 1),
+        (_asymmetric_config, "control_handoff_tiles", 1),
+        (_asymmetric_config, "pressure_plates_per_barrier", 1),
+        (_asymmetric_config, "buttons_per_barrier", 0),
+        (_temporal_config, "handoff_tiles", 1),
+        (_temporal_config, "control_handoff_tiles", 1),
+        (_temporal_config, "pressure_plates_per_barrier", 1),
+        (_temporal_config, "buttons_per_barrier", 0),
+        (_selection_config, "handoff_tiles", 1),
+        (_selection_config, "signal_tiles", 1),
+    ],
+)
+def test_generator_rejects_fields_from_another_map_type(
+    factory,
+    irrelevant_key,
+    value,
+):
+    """Mode-specific settings are accepted only by their owning map type."""
+    config = factory()
+    config[irrelevant_key] = value
+
+    with pytest.raises(ValueError, match=irrelevant_key):
+        validate_config(config)
 
 
-def test_generator_is_deterministic_and_produces_valid_exact_size_layouts():
-    first = generate_document(_config())
-    second = generate_document(_config())
+@pytest.mark.parametrize("map_type", ["shared", "complete_each", "unknown", 1])
+def test_generator_rejects_invalid_map_type(map_type):
+    """Only the three deliberate map types are accepted."""
+    config = _asymmetric_config(map_type=map_type)
+
+    with pytest.raises(ValueError, match="map_type"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("value", [0, 1, None, "false", []])
+def test_randomize_agents_must_be_boolean(value):
+    """Agent-role randomization does not accept truthy integer substitutes."""
+    config = _asymmetric_config(randomize_agents=value)
+
+    with pytest.raises(ValueError, match="randomize_agents"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("missing_key", sorted(REGION_KEYS))
+def test_every_region_requires_every_workstation_count(missing_key):
+    """Region dictionaries are strict and cannot omit zero-valued fields."""
+    config = _asymmetric_config()
+    config["regions"][0].pop(missing_key)
+
+    with pytest.raises(ValueError, match=missing_key):
+        validate_config(config)
+
+
+def test_region_dictionaries_reject_unknown_fields():
+    """Typos in a region workstation dictionary fail validation."""
+    config = _asymmetric_config()
+    config["regions"][0]["pot"] = 1
+
+    with pytest.raises(ValueError, match="pot"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["pots", "plate_piles", "depots", "recipe_indicators"],
+)
+@pytest.mark.parametrize("value", [-1, 1.5, True, "1"])
+def test_region_scalar_counts_must_be_non_negative_integers(field, value):
+    """All scalar workstation amounts are strict non-negative integers."""
+    config = _asymmetric_config()
+    config["regions"][0][field] = value
+
+    with pytest.raises(ValueError, match=field):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, [], [1, -1], [1, True], [1, 0.5], ["1", 0]],
+)
+def test_region_ingredient_counts_are_strict_non_negative_integer_lists(value):
+    """Ingredient counts retain their indexed fixed-length list representation."""
+    config = _asymmetric_config()
+    config["regions"][0]["ingredient_piles"] = value
+
+    with pytest.raises(ValueError, match="ingredient_piles"):
+        validate_config(config)
+
+
+def test_all_regions_must_define_the_same_ingredient_array_length():
+    """Ingredient indexes have one consistent meaning across all regions."""
+    config = _asymmetric_config()
+    config["regions"][1]["ingredient_piles"] = [1]
+
+    with pytest.raises(ValueError, match="ingredient_piles"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("factory", "region_count"),
+    [
+        (_asymmetric_config, 1),
+        (_asymmetric_config, 3),
+        (_temporal_config, 1),
+        (_temporal_config, 3),
+        (_selection_config, 2),
+    ],
+)
+def test_map_types_enforce_their_region_count(factory, region_count):
+    """Two-region modes and the three-or-more-region mode reject bad arity."""
+    config = factory()
+    if region_count < len(config["regions"]):
+        config["regions"] = config["regions"][:region_count]
+        config["possible_recipes"] = [[0, 0, 0]]
+    else:
+        while len(config["regions"]) < region_count:
+            config["regions"].append(_region([0, 0]))
+
+    with pytest.raises(ValueError, match="regions"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("value", [-1, 0, 1.5, True, "2"])
+def test_asymmetric_handoff_count_must_be_a_positive_integer(value):
+    """Asymmetric information always has an explicit nonempty handoff."""
+    config = _asymmetric_config(handoff_tiles=value)
+
+    with pytest.raises(ValueError, match="handoff_tiles"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("value", [-1, 0, 2, 1.5, True, "1"])
+def test_temporal_signal_count_must_equal_region_zero_pots(value):
+    """Each Temporal region-zero pot consumes exactly one shared signal tile."""
+    config = _temporal_config(signal_tiles=value)
+
+    with pytest.raises(ValueError, match="signal_tiles"):
+        validate_config(config)
+
+
+def test_temporal_requires_a_region_zero_shared_pot():
+    """Region-one-only pots cannot replace the required shared interface pot."""
+    config = _temporal_config(
+        regions=[
+            _region([0, 0]),
+            _region(
+                [1, 1],
+                pots=1,
+                plate_piles=1,
+                depots=1,
+                recipe_indicators=1,
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="at least one region 0 pot"):
+        validate_config(config)
+
+
+def test_temporal_rejects_non_pot_stations_split_between_regions():
+    """A plated soup cannot cross the interface between plate and depot."""
+    config = _temporal_config(
+        regions=[
+            _region([1, 1], pots=1, plate_piles=1),
+            _region(
+                [0, 0],
+                depots=1,
+                recipe_indicators=1,
+            ),
+        ],
+        signal_tiles=1,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"cannot complete recipe \[0, 0, 0\].*"
+            r"region 0 is missing depot.*"
+            r"region 1 is missing plate pile"
+        ),
+    ):
+        validate_config(config)
+
+
+def test_temporal_example_configuration_generates_successfully():
+    """The shipped Temporal example uses its signal pot from region one."""
+    example_path = Path(layout_generator.__file__).with_name(
+        "overcooked_v3_layouts.example.json"
+    )
+    document = json.loads(example_path.read_text(encoding="utf-8"))
+    config = validate_config(document["generator"])
+
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+
+    assert grid.count("P") == 1
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_temporal_shared_pot_joins_ingredient_and_delivery_workflows():
+    """One side may fill a shared pot while the other plates and delivers."""
+    config = validate_config(
+        _temporal_config(
+            possible_recipes=[[0, 0, 0]],
+            regions=[
+                _region([1], pots=1),
+                _region([0], plate_piles=1, depots=1),
+            ],
+        )
+    )
+
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows, components, component_by_position = _floor_components(grid)
+    region_zero, region_one = _agent_component_indexes(
+        layout, component_by_position
+    )
+
+    assert _shared_static_tiles(
+        rows,
+        component_by_position,
+        region_zero,
+        region_one,
+        {"P"},
+    )
+    assert validate_generated_layout(layout) == (True, [])
+
+
+@pytest.mark.parametrize("value", [-1, 0, 1.5, True, "1"])
+def test_selection_control_handoff_count_must_be_a_positive_integer(value):
+    """The control and main rooms always have an explicit counter handoff."""
+    config = _selection_config(control_handoff_tiles=value)
+
+    with pytest.raises(ValueError, match="control_handoff_tiles"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("value", [-1, 3, 1.5, True, "2"])
+def test_selection_rejects_invalid_pressure_plate_multiplicity(value):
+    """Pressure-plate multiplicity retains the supported zero/one/two values."""
+    config = _selection_config(pressure_plates_per_barrier=value)
+
+    with pytest.raises(ValueError, match="pressure_plates_per_barrier"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True, "2"])
+def test_selection_rejects_invalid_button_multiplicity(value):
+    """Button multiplicity must be a strict non-negative integer."""
+    config = _selection_config(buttons_per_barrier=value)
+
+    with pytest.raises(ValueError, match="buttons_per_barrier"):
+        validate_config(config)
+
+
+def test_selection_requires_at_least_one_control_per_derived_barrier():
+    """Every gated room's derived barrier must have a generated control."""
+    config = _selection_config(
+        pressure_plates_per_barrier=0,
+        buttons_per_barrier=0,
+    )
+
+    with pytest.raises(ValueError, match="pressure plate or button"):
+        validate_config(config)
+
+
+def test_generator_is_deterministic_and_produces_exact_valid_layouts():
+    """A seed reproduces exact-size maps and exact requested object totals."""
+    first = generate_document(_document(_asymmetric_config()))
+    second = generate_document(_document(_asymmetric_config()))
 
     assert first == second
     assert len(first["layouts"]) == 2
+    expected = sum(
+        (
+            _expected_workstation_signature(region)
+            for region in first["generator"]["regions"]
+        ),
+        Counter(),
+    )
     for entry in first["layouts"].values():
         grid = entry["ascii"]
         rows = grid.splitlines()
-        assert len(rows) == 6
-        assert all(len(row) == 8 for row in rows)
+        actual = Counter(symbol for symbol in grid if symbol in WORKSTATION_SYMBOLS)
+
+        assert len(rows) == first["generator"]["height"]
+        assert all(len(row) == first["generator"]["width"] for row in rows)
         assert grid.count("A") == 2
-        assert grid.count("0") == 2
-        assert grid.count("1") == 1
-        assert grid.count("P") == 1
-        assert grid.count("B") == 1
-        assert grid.count("X") == 1
-        assert grid.count("R") == 1
+        assert actual == expected
 
         layout = Layout.from_string(
             grid,
             possible_recipes=entry["possible_recipes"],
+            swap_agents=entry["swap_agents"],
         )
         assert validate_generated_layout(layout) == (True, [])
         assert entry["validation"] == {"valid": True, "errors": []}
 
 
+def test_asymmetric_information_has_two_exact_regions_and_handoff_tiles():
+    """Asymmetric maps isolate agents but expose exact single-counter handoffs."""
+    config = validate_config(_asymmetric_config(count=1))
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows, components, component_by_position = _floor_components(grid)
+    agent_components = _agent_component_indexes(layout, component_by_position)
+
+    assert len(components) == 2
+    assert len(set(agent_components)) == 2
+    _assert_exact_region_workstations(
+        rows,
+        components,
+        agent_components,
+        config["regions"],
+    )
+    handoffs = _shared_static_tiles(
+        rows,
+        component_by_position,
+        agent_components[0],
+        agent_components[1],
+        {"W"},
+    )
+    assert len(handoffs) == config["handoff_tiles"]
+    assert not _positions_with_symbol(rows, {"#", "_", "!"})
+    _assert_exact_interior_counter_density(rows, config)
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_temporal_pots_are_the_only_shared_tiles_between_regions():
+    """Region-zero pots bridge both rooms while every other tile stays private."""
+    config = validate_config(
+        _temporal_config(
+            regions=[
+                _region(
+                    [1, 0],
+                    pots=2,
+                    plate_piles=1,
+                    depots=1,
+                    recipe_indicators=1,
+                ),
+                _region(
+                    [1, 1],
+                    plate_piles=1,
+                    depots=1,
+                    recipe_indicators=1,
+                ),
+            ],
+            signal_tiles=2,
+        )
+    )
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows, components, component_by_position = _floor_components(grid)
+    agent_components = _agent_component_indexes(layout, component_by_position)
+    region_zero, region_one = agent_components
+
+    assert len(components) == 2
+    assert len(set(agent_components)) == 2
+    assert _workstation_signature(
+        rows,
+        components[region_zero],
+    ) == _expected_workstation_signature(config["regions"][0])
+    assert _workstation_signature(
+        rows,
+        components[region_one],
+    ) == (
+        _expected_workstation_signature(config["regions"][1])
+        + Counter({"P": config["regions"][0]["pots"]})
+    )
+
+    shared_pots = _shared_static_tiles(
+        rows,
+        component_by_position,
+        region_zero,
+        region_one,
+        {"P"},
+    )
+    assert len(shared_pots) == config["signal_tiles"]
+    assert len(shared_pots) == config["regions"][0]["pots"]
+    assert _shared_static_tiles(
+        rows,
+        component_by_position,
+        region_zero,
+        region_one,
+        WORKSTATION_SYMBOLS,
+    ) == shared_pots
+
+    for pot_position in shared_pots:
+        neighbours_by_component = {
+            component: [
+                position
+                for position in _neighbours(rows, pot_position)
+                if component_by_position.get(position) == component
+            ]
+            for component in (region_zero, region_one)
+        }
+        assert all(neighbours_by_component.values())
+        assert any(
+            first_row + second_row == 2 * pot_position[0]
+            and first_col + second_col == 2 * pot_position[1]
+            for first_row, first_col in neighbours_by_component[region_zero]
+            for second_row, second_col in neighbours_by_component[region_one]
+        )
+        assert _adjacent_components(
+            rows,
+            component_by_position,
+            pot_position,
+        ) == {region_zero, region_one}
+
+    # No ordinary counter may form a one-tile item-passing interface.
+    assert not _shared_static_tiles(
+        rows,
+        component_by_position,
+        region_zero,
+        region_one,
+        {"W"},
+    )
+    assert not _positions_with_symbol(rows, {"#", "_", "!"})
+    _assert_exact_interior_counter_density(rows, config)
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_selection_builds_control_main_and_one_barrier_per_gated_room():
+    """Selection topology is a controlled star rooted at the main room."""
+    config = validate_config(_selection_config())
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows, components, component_by_position = _floor_components(grid)
+    control_component, main_component = _agent_component_indexes(
+        layout,
+        component_by_position,
+    )
+    gated_components = set(range(len(components))) - {
+        control_component,
+        main_component,
+    }
+
+    assert len(components) == len(config["regions"])
+    assert len(gated_components) == len(config["regions"]) - 2
+    assert _workstation_signature(
+        rows,
+        components[control_component],
+    ) == _expected_workstation_signature(config["regions"][0])
+    assert _workstation_signature(
+        rows,
+        components[main_component],
+    ) == _expected_workstation_signature(config["regions"][1])
+    actual_gated_signatures = Counter(
+        tuple(sorted(_workstation_signature(rows, components[idx]).items()))
+        for idx in gated_components
+    )
+    expected_gated_signatures = Counter(
+        tuple(sorted(_expected_workstation_signature(region).items()))
+        for region in config["regions"][2:]
+    )
+    assert actual_gated_signatures == expected_gated_signatures
+
+    barrier_positions = sorted(_positions_with_symbol(rows, {"#"}))
+    gated_barrier_counts = Counter()
+    for barrier_position in barrier_positions:
+        adjacent = _adjacent_components(
+            rows,
+            component_by_position,
+            barrier_position,
+        )
+        assert main_component in adjacent
+        assert control_component not in adjacent
+        assert len(adjacent) == 2
+        gated_component = next(iter(adjacent - {main_component}))
+        assert gated_component in gated_components
+        gated_barrier_counts[gated_component] += 1
+    assert len(barrier_positions) == len(gated_components)
+    assert gated_barrier_counts == Counter({idx: 1 for idx in gated_components})
+
+    handoffs = _shared_static_tiles(
+        rows,
+        component_by_position,
+        control_component,
+        main_component,
+        {"W"},
+    )
+    assert len(handoffs) == config["control_handoff_tiles"]
+    for first_component in range(len(components)):
+        for second_component in range(first_component + 1, len(components)):
+            shared = _shared_static_tiles(
+                rows,
+                component_by_position,
+                first_component,
+                second_component,
+                {"W"},
+            )
+            if {first_component, second_component} == {
+                control_component,
+                main_component,
+            }:
+                assert shared == handoffs
+            else:
+                assert not shared
+    for counter_position in _positions_with_symbol(rows, {"W"}):
+        adjacent = _adjacent_components(
+            rows,
+            component_by_position,
+            counter_position,
+        )
+        if len(adjacent) > 1:
+            assert adjacent == {control_component, main_component}
+    _assert_exact_interior_counter_density(rows, config)
+    assert validate_generated_layout(layout) == (True, [])
+
+
+def test_selection_controls_are_all_in_control_room_and_wired_one_to_one():
+    """Every control is reachable only by agent zero and targets one barrier."""
+    config = validate_config(_selection_config())
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows, components, component_by_position = _floor_components(grid)
+    control_component = _agent_component_indexes(layout, component_by_position)[0]
+    barrier_count = len(config["regions"]) - 2
+
+    pressure_plate_positions = _positions_with_symbol(rows, {"_"})
+    assert len(pressure_plate_positions) == (
+        barrier_count * config["pressure_plates_per_barrier"]
+    )
+    assert all(
+        component_by_position[position] == control_component
+        for position in pressure_plate_positions
+    )
+
+    button_positions = _positions_with_symbol(rows, {"!"})
+    assert len(button_positions) == barrier_count * config["buttons_per_barrier"]
+    assert all(
+        _adjacent_components(rows, component_by_position, position)
+        == {control_component}
+        for position in button_positions
+    )
+
+    pressure_targets = Counter()
+    for _, _, targets, action_type in layout.pressure_plate_info:
+        assert len(targets) == 1
+        assert action_type == int(layout_generator.ButtonAction.TOGGLE_BARRIER)
+        pressure_targets[targets[0]] += 1
+    assert pressure_targets == Counter(
+        {
+            barrier_idx: config["pressure_plates_per_barrier"]
+            for barrier_idx in range(barrier_count)
+        }
+    )
+
+    button_targets = Counter()
+    for _, _, targets, action_type in layout.button_info:
+        assert len(targets) == 1
+        assert action_type == int(layout_generator.ButtonAction.TIMED_BARRIER)
+        button_targets[targets[0]] += 1
+    assert button_targets == Counter(
+        {
+            barrier_idx: config["buttons_per_barrier"]
+            for barrier_idx in range(barrier_count)
+        }
+    )
+    assert [targets[0] for _, _, targets, _ in layout.pressure_plate_info] == list(
+        range(barrier_count)
+    )
+    assert [targets[0] for _, _, targets, _ in layout.button_info] == list(
+        range(barrier_count)
+    )
+    assert [active for _, _, active in layout.barrier_info] == [True] * barrier_count
+
+
+def test_temporal_rejects_a_counter_budget_too_small_for_isolation():
+    """Double-counter isolation is charged to, and constrained by, density."""
+    config = _temporal_config(
+        width=8,
+        height=6,
+        counter_density=0,
+        max_attempts=2,
+    )
+
+    with pytest.raises((ValueError, RuntimeError), match="counter|mandatory|separat"):
+        generate_document(_document(config))
+
+
+def test_fixed_agent_roles_follow_region_order():
+    """Without randomization, agent IDs map to region dictionaries in order."""
+    config = validate_config(_asymmetric_config(count=1, randomize_agents=False))
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
+    rows, components, component_by_position = _floor_components(grid)
+    assignments = _agent_component_indexes(layout, component_by_position)
+
+    _assert_exact_region_workstations(
+        rows,
+        components,
+        assignments,
+        config["regions"],
+    )
+
+
+def test_randomized_agent_roles_can_swap_between_the_two_regions():
+    """Randomization produces both possible agent-zero region assignments."""
+    raw_config = _asymmetric_config(count=1, randomize_agents=True)
+    expected = {
+        tuple(sorted(_expected_workstation_signature(region).items()))
+        for region in raw_config["regions"]
+    }
+    observed = set()
+
+    for seed in range(16):
+        config = validate_config({**raw_config, "seed": seed})
+        grid, layout, _ = generate_layout(config, random.Random(seed))
+        rows, components, component_by_position = _floor_components(grid)
+        agent_zero_component = _agent_component_indexes(
+            layout,
+            component_by_position,
+        )[0]
+        observed.add(
+            tuple(
+                sorted(
+                    _workstation_signature(
+                        rows,
+                        components[agent_zero_component],
+                    ).items()
+                )
+            )
+        )
+        if observed == expected:
+            break
+
+    assert observed == expected
+
+
 def test_shipped_example_is_supported_and_generates_a_layout():
+    """The checked-in example stays synchronized with the public schema."""
     example_path = (
         Path(__file__).parents[2]
         / "scripts"
@@ -173,519 +1028,99 @@ def test_shipped_example_is_supported_and_generates_a_layout():
     document = json.loads(example_path.read_text(encoding="utf-8"))
     config = validate_config(document["generator"])
 
-    grid, layout, _ = generate_layout(
-        config,
-        random.Random(config["seed"]),
-    )
+    grid, layout, _ = generate_layout(config, random.Random(config["seed"]))
 
-    assert config["num_regions"] == 2
+    assert config["map_type"] in {"asymmetric_info", "selection", "temporal"}
     assert grid.count("A") == 2
     assert validate_generated_layout(layout) == (True, [])
 
 
-def test_frontier_generation_constructs_dense_connected_map_on_first_attempt():
-    config = validate_config(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            counter_density=0.4,
-        )["generator"]
-    )
-
-    grid, layout, attempts = generate_layout(
-        config,
-        random.Random(config["seed"]),
-    )
-
-    _, components = _floor_components(grid)
-    assert attempts == 1
-    assert len(components) == 1
-    assert validate_generated_layout(layout) == (True, [])
-
-
-def test_complete_each_constructs_one_complete_workflow_per_agent_region():
-    config = validate_config(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            ingredient_piles=[2, 2],
-            pots=2,
-            plate_piles=2,
-            depots=2,
-            counter_density=0.4,
-            num_regions=2,
-            workflow_mode="complete_each",
-        )["generator"]
-    )
-
-    grid, layout, _ = generate_layout(
-        config,
-        random.Random(config["seed"]),
-    )
-    rows, components = _floor_components(grid)
-
-    assert len(components) == 2
-    for component in components:
-        assert sum(rows[row][col] == "A" for row, col in component) == 1
-        assert set("01PBX") <= _accessible_symbols(rows, component)
-    assert validate_generated_layout(layout) == (True, [])
-
-
-def test_shared_workflow_constructs_two_regions_with_counter_handoff():
-    config = validate_config(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            counter_density=0.4,
-            num_regions=2,
-            workflow_mode="shared",
-        )["generator"]
-    )
-
-    grid, layout, _ = generate_layout(
-        config,
-        random.Random(config["seed"]),
-    )
-    rows, components = _floor_components(grid)
-    component_by_position = {
-        position: component_idx
-        for component_idx, component in enumerate(components)
-        for position in component
-    }
-
-    assert len(components) == 2
-    assert grid.count("R") == 1
-    accessible = [_accessible_symbols(rows, component) for component in components]
-    for stations in accessible:
-        for recipe in config["possible_recipes"]:
-            required = {str(ingredient_idx) for ingredient_idx in recipe}
-            required.update({"P", "B", "X"})
-            assert not required <= stations
-
-    handoff_counters = []
-    for row in range(1, len(rows) - 1):
-        for col in range(1, len(rows[0]) - 1):
-            if rows[row][col] != "W":
-                continue
-            adjacent_components = {
-                component_by_position[position]
-                for position in (
-                    (row - 1, col),
-                    (row + 1, col),
-                    (row, col - 1),
-                    (row, col + 1),
-                )
-                if position in component_by_position
-            }
-            if adjacent_components == {0, 1}:
-                handoff_counters.append((row, col))
-
-    assert handoff_counters
-    assert validate_generated_layout(layout) == (True, [])
-
-
-def test_two_region_generation_enforces_exact_shared_tile_count():
-    config = validate_config(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            counter_density=0.4,
-            num_regions=2,
-            num_shared_tiles=3,
-            workflow_mode="complete_each",
-            ingredient_piles=[2, 2],
-            pots=2,
-            plate_piles=2,
-            depots=2,
-        )["generator"]
-    )
-
-    grid, layout, _ = generate_layout(
-        config,
-        random.Random(config["seed"]),
-    )
-
-    assert len(_shared_tiles(grid)) == 3
-    assert validate_generated_layout(layout) == (True, [])
-
-
-@pytest.mark.parametrize("value", [-1, 1.5, True, "2"])
-def test_generator_rejects_invalid_shared_tile_count(value):
-    with pytest.raises(ValueError, match="num_shared_tiles"):
-        generate_document(_config(num_regions=2, num_shared_tiles=value))
-
-
-def test_shared_tile_count_requires_two_regions():
-    with pytest.raises(ValueError, match="requires generator.num_regions = 2"):
-        generate_document(_config(num_shared_tiles=1))
-
-
-def test_shared_workflow_rejects_zero_shared_tiles():
-    with pytest.raises(ValueError, match="requires at least one shared tile"):
-        generate_document(
-            _config(
-                num_regions=2,
-                workflow_mode="shared",
-                num_shared_tiles=0,
-            )
-        )
-
-
-@pytest.mark.parametrize("value", [-1, 1.5, True, "2"])
-def test_generator_rejects_invalid_barrier_count(value):
-    with pytest.raises(ValueError, match="barriers"):
-        generate_document(_config(barriers=value))
-
-
-@pytest.mark.parametrize("value", [-1, 3, 1.5, True, "2"])
-def test_generator_rejects_invalid_pressure_plate_multiplicity(value):
-    with pytest.raises(ValueError, match="pressure_plates_per_barrier"):
-        generate_document(_config(pressure_plates_per_barrier=value))
-
-
-@pytest.mark.parametrize("value", [-1, 1.5, True, "2"])
-def test_generator_rejects_invalid_button_multiplicity(value):
-    with pytest.raises(ValueError, match="buttons_per_barrier"):
-        generate_document(_config(buttons_per_barrier=value))
-
-
-def test_generator_requires_at_least_one_control_per_barrier():
-    with pytest.raises(ValueError, match="at least one pressure plate or button"):
-        generate_document(
-            _config(
-                barriers=1,
-                pressure_plates_per_barrier=0,
-                buttons_per_barrier=0,
-            )
-        )
-
-
-def test_generator_rejects_button_count_above_environment_capacity():
-    with pytest.raises(ValueError, match="MAX_BUTTONS"):
-        generate_document(_config(barriers=16, buttons_per_barrier=2))
-
-    with pytest.raises(ValueError, match="buttons_per_barrier"):
-        generate_document(_config(buttons_per_barrier=17))
-
-
-def test_shared_barrier_placement_requires_two_regions():
-    with pytest.raises(ValueError, match="requires generator.num_regions = 2"):
-        generate_document(
-            _config(
-                barriers=1,
-                barrier_placement="shared",
-            )
-        )
-
-
-@pytest.mark.parametrize(
-    "barrier_placement",
-    ["anywhere", "action_adjacent", "shared_or_action_adjacent"],
-)
-def test_generator_rejects_barriers_that_leave_too_few_floor_tiles(
-    barrier_placement,
-):
-    """Validation accounts for barriers forced onto otherwise walkable tiles."""
-    with pytest.raises(ValueError, match="pressure plates and 2 agent spawns"):
-        validate_config(
-            _config(
-                width=5,
-                height=5,
-                ingredient_piles=[9],
-                possible_recipes=[[0, 0, 0]],
-                counter_density=0,
-                barriers=4,
-                barrier_placement=barrier_placement,
-                pressure_plates_per_barrier=1,
-            )["generator"]
-        )
-
-
-def test_single_region_barrier_placement_requires_two_spawn_tiles():
-    """A single floor component still reserves space for both generated agents."""
-    config = validate_config(
-        _config(
-            width=5,
-            height=5,
-            ingredient_piles=[1],
-            possible_recipes=[[0, 0, 0]],
-            barriers=1,
-            barrier_placement="action_adjacent",
-        )["generator"]
-    )
-    grid = [
-        list("W0WWW"),
-        list("W   W"),
-        list("WWWWW"),
-        list("WWWWW"),
-        list("WWWWW"),
-    ]
-    region = {(1, 1), (1, 2), (1, 3)}
-
-    with pytest.raises(
-        layout_generator.CandidateGenerationError,
-        match="two agent spawns",
-    ):
-        layout_generator._place_barriers_and_controls(
-            grid,
-            config,
-            [region],
-            [],
-            random.Random(0),
-        )
-
-
-@pytest.mark.parametrize("plates_per_barrier", [1, 2])
-def test_generator_spawns_exact_barriers_with_single_or_paired_reachable_plates(
-    plates_per_barrier,
-):
-    document = generate_document(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            counter_density=0.4,
-            barriers=3,
-            pressure_plates_per_barrier=plates_per_barrier,
-            max_attempts=5000,
-        )
-    )
-    entry = next(iter(document["layouts"].values()))
-
-    assert entry["ascii"].count("#") == 3
-    assert entry["ascii"].count("_") == 3 * plates_per_barrier
-    assert entry["barrier_config"] == [True, True, True]
-    target_counts = [0, 0, 0]
-    for targets, _ in entry["pressure_plate_config"]:
-        assert len(targets) == 1
-        target_counts[targets[0]] += 1
-    assert target_counts == [plates_per_barrier] * 3
-    _assert_pressure_plates_are_agent_accessible(entry["ascii"])
-
-
-@pytest.mark.parametrize("buttons_per_barrier", [0, 1, 2])
-def test_generator_spawns_and_wires_exact_timed_buttons_per_barrier(
-    buttons_per_barrier,
-):
-    document = generate_document(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            counter_density=0.2,
-            barriers=3,
-            pressure_plates_per_barrier=0 if buttons_per_barrier else 1,
-            buttons_per_barrier=buttons_per_barrier,
-            max_attempts=5000,
-        )
-    )
-    entry = next(iter(document["layouts"].values()))
-
-    assert entry["ascii"].count("!") == 3 * buttons_per_barrier
-    assert entry["ascii"].count("_") == (0 if buttons_per_barrier else 3)
-    target_counts = [0, 0, 0]
-    for targets, action_type in entry["button_config"]:
-        assert len(targets) == 1
-        assert action_type == int(layout_generator.ButtonAction.TIMED_BARRIER)
-        target_counts[targets[0]] += 1
-    assert target_counts == [buttons_per_barrier] * 3
-
-
-@pytest.mark.parametrize("placement", ["boundary", "interior"])
-def test_generated_buttons_follow_workstation_placement(placement):
-    document = generate_document(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            object_placement=placement,
-            barriers=2,
-            buttons_per_barrier=1,
-            max_attempts=5000,
-        )
-    )
-    grid = next(iter(document["layouts"].values()))["ascii"]
-    rows = grid.splitlines()
-
-    assert len(_button_positions(grid)) == 2
-    for row, col in _button_positions(grid):
-        is_boundary = row in {0, len(rows) - 1} or col in {
-            0,
-            len(rows[0]) - 1,
-        }
-        assert is_boundary == (placement == "boundary")
-
-
-def test_shared_barrier_placement_uses_only_two_region_interface_tiles():
-    document = generate_document(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            counter_density=0.4,
-            num_regions=2,
-            num_shared_tiles=4,
-            workflow_mode="shared",
-            barriers=2,
-            barrier_placement="shared",
-            max_attempts=5000,
-        )
-    )
-    grid = next(iter(document["layouts"].values()))["ascii"]
-    rows, components = _floor_components(grid)
-    component_by_position = {
-        position: component_idx
-        for component_idx, component in enumerate(components)
-        for position in component
-    }
-
-    assert len(components) == 2
-    for row, col in _barrier_positions(grid):
-        adjacent_components = {
-            component_by_position[position]
-            for position in (
-                (row - 1, col),
-                (row + 1, col),
-                (row, col - 1),
-                (row, col + 1),
-            )
-            if position in component_by_position
-        }
-        assert adjacent_components == {0, 1}
-
-
-@pytest.mark.parametrize(
-    "placement",
-    ["action_adjacent", "shared_or_action_adjacent"],
-)
-def test_action_barrier_placements_are_adjacent_to_action_items(placement):
-    document = generate_document(
-        _config(
-            count=1,
-            width=10,
-            height=10,
-            counter_density=0.4,
-            num_regions=2,
-            workflow_mode="shared",
-            barriers=2,
-            barrier_placement=placement,
-            max_attempts=5000,
-        )
-    )
-    grid = next(iter(document["layouts"].values()))["ascii"]
-    rows = grid.splitlines()
-    action_symbols = set("0123456789PBX")
-
-    for row, col in _barrier_positions(grid):
-        is_shared = len(
-            {
-                component_idx
-                for component_idx, component in enumerate(_floor_components(grid)[1])
-                for position in (
-                    (row - 1, col),
-                    (row + 1, col),
-                    (row, col - 1),
-                    (row, col + 1),
-                )
-                if position in component
-            }
-        ) == 2
-        is_action_adjacent = any(
-            rows[adjacent_row][adjacent_col] in action_symbols
-            for adjacent_row, adjacent_col in (
-                (row - 1, col),
-                (row + 1, col),
-                (row, col - 1),
-                (row, col + 1),
-            )
-        )
-        assert is_action_adjacent if placement == "action_adjacent" else (
-            is_shared or is_action_adjacent
-        )
-
-
-def test_json_loader_preserves_generated_barrier_controls(tmp_path):
-    document = generate_document(
-        _config(
-            count=1,
-            barriers=2,
-            buttons_per_barrier=2,
-            pressure_plates_per_barrier=2,
-            max_attempts=5000,
-        )
-    )
-    path = tmp_path / "barrier-layouts.json"
-    path.write_text(json.dumps(document), encoding="utf-8")
-
-    layout = load_layouts_from_json(path)["test_kitchen_0"]
-
-    assert [active for _, _, active in layout.barrier_info] == [True, True]
-    button_targets = [
-        target
-        for _, _, target_idxs, _ in layout.button_info
-        for target in target_idxs
-    ]
-    assert button_targets.count(0) == 2
-    assert button_targets.count(1) == 2
-    assert all(
-        action_type == int(layout_generator.ButtonAction.TIMED_BARRIER)
-        for _, _, _, action_type in layout.button_info
-    )
-    targets = [
-        target
-        for _, _, target_idxs, _ in layout.pressure_plate_info
-        for target in target_idxs
-    ]
-    assert targets.count(0) == 2
-    assert targets.count(1) == 2
-
-
-def test_complete_each_rejects_insufficient_workstation_copies():
-    with pytest.raises(ValueError, match="pots >= num_regions"):
-        generate_document(
-            _config(
-                num_regions=2,
-                workflow_mode="complete_each",
-                ingredient_piles=[2, 2],
-                pots=1,
-                plate_piles=2,
-                depots=2,
-            )
-        )
-
-
 def test_json_loader_reads_and_runs_generated_layout(tmp_path):
-    document = generate_document(_config(count=1))
+    """Generated JSON remains directly consumable by Overcooked V3."""
+    document = generate_document(_document(_asymmetric_config(count=1)))
     path = tmp_path / "layouts.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
     loaded = load_layouts_from_json(path)
-    layout = loaded["test_kitchen_0"]
+    layout = loaded["asymmetric_kitchen_0"]
 
-    assert layout.height == 6
-    assert layout.width == 8
+    assert layout.height == 10
+    assert layout.width == 14
     assert len(layout.agent_positions) == 2
     assert layout.get_info()["num_ingredient_piles"] == {0: 2, 1: 1}
     assert OvercookedV3(layout=layout).layout is layout
 
 
+def test_json_loader_preserves_generated_agent_role_order(tmp_path):
+    """The serialized swap flag preserves randomized agent IDs on reload."""
+    entry = None
+    original_layout = None
+    for seed in range(16):
+        config = validate_config(
+            _asymmetric_config(count=1, randomize_agents=True, seed=seed)
+        )
+        grid, candidate_layout, _ = generate_layout(config, random.Random(seed))
+        candidate_entry = layout_generator._layout_entry(
+            grid,
+            candidate_layout,
+            config,
+        )
+        if candidate_entry["swap_agents"]:
+            entry = candidate_entry
+            original_layout = candidate_layout
+            break
+
+    assert entry is not None
+    assert original_layout is not None
+    document = {"layouts": {"roles": entry}}
+    path = tmp_path / "agent-roles.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded_layout = load_layouts_from_json(path)["roles"]
+
+    assert "swap_agents" in entry
+    assert loaded_layout.agent_positions == original_layout.agent_positions
+
+
+def test_json_loader_preserves_generated_selection_controls(tmp_path):
+    """Barrier and control metadata survive generated JSON round trips."""
+    document = generate_document(_document(_selection_config()))
+    path = tmp_path / "barrier-layouts.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    layout = load_layouts_from_json(path)["selection_kitchen_0"]
+    barrier_count = len(document["generator"]["regions"]) - 2
+
+    assert [active for _, _, active in layout.barrier_info] == [True] * barrier_count
+    button_targets = [
+        target
+        for _, _, target_idxs, _ in layout.button_info
+        for target in target_idxs
+    ]
+    pressure_targets = [
+        target
+        for _, _, target_idxs, _ in layout.pressure_plate_info
+        for target in target_idxs
+    ]
+    assert Counter(button_targets) == Counter(range(barrier_count))
+    assert Counter(pressure_targets) == Counter(range(barrier_count))
+
+
 def test_json_loader_accepts_legacy_grid_key(tmp_path):
-    document = generate_document(_config(count=1))
-    entry = document["layouts"]["test_kitchen_0"]
+    """The historical grid alias remains accepted for generated layouts."""
+    document = generate_document(_document(_asymmetric_config(count=1)))
+    entry = document["layouts"]["asymmetric_kitchen_0"]
     entry["grid"] = entry.pop("ascii")
     path = tmp_path / "legacy-layouts.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
     loaded = load_layouts_from_json(path)
 
-    assert loaded["test_kitchen_0"].width == 8
+    assert loaded["asymmetric_kitchen_0"].width == 14
 
 
 def test_json_loader_error_mentions_both_supported_grid_keys(tmp_path):
+    """Malformed JSON reports both current and legacy ASCII field names."""
     document = {
         "layouts": {
             "bad": {
@@ -705,6 +1140,7 @@ def test_json_loader_error_mentions_both_supported_grid_keys(tmp_path):
 
 
 def test_accessibility_rejects_disconnected_floor_and_workstations():
+    """The general layout validator still rejects unusable disconnected maps."""
     grid = "\n".join(
         [
             "WWPWW",
@@ -724,6 +1160,30 @@ def test_accessibility_rejects_disconnected_floor_and_workstations():
     assert any("cannot be completed" in error for error in errors)
 
 
+def test_accessibility_does_not_combine_unrelated_exclusive_pots():
+    """Stations around different private pots cannot form one false workflow."""
+    grid = "\n".join(
+        [
+            "WW0PWWW",
+            "W A   W",
+            "WWWWWWW",
+            "WWWWWWW",
+            "W A   W",
+            "WWPBXWW",
+            "WWWWWWW",
+        ]
+    )
+    layout = Layout.from_string(grid, possible_recipes=[[0, 0, 0]])
+
+    valid, errors = validate_generated_layout(layout)
+
+    assert not valid
+    assert errors == [
+        "Recipe [0, 0, 0] cannot be completed within one "
+        "agent-accessible pot workflow"
+    ]
+
+
 def test_accessibility_accepts_floor_reachable_through_controlled_barrier():
     """A reachable pressure plate makes the floor beyond its barrier reachable."""
     grid = "\n".join(
@@ -738,13 +1198,16 @@ def test_accessibility_accepts_floor_reachable_through_controlled_barrier():
         grid,
         possible_recipes=[[0, 0, 0]],
         barrier_config=[True],
-        pressure_plate_config=[(0, layout_generator.ButtonAction.TOGGLE_BARRIER)],
+        pressure_plate_config=[
+            (0, layout_generator.ButtonAction.TOGGLE_BARRIER)
+        ],
     )
 
     assert validate_generated_layout(layout) == (True, [])
 
 
-def test_loader_rejects_invalid_map_even_if_validation_metadata_says_valid(tmp_path):
+def test_loader_rejects_invalid_map_even_if_metadata_says_valid(tmp_path):
+    """Loader validation trusts the grid rather than cached validation metadata."""
     document = {
         "layouts": {
             "bad": {
@@ -762,91 +1225,52 @@ def test_loader_rejects_invalid_map_even_if_validation_metadata_says_valid(tmp_p
 
 
 def test_generator_rejects_mixed_recipes():
+    """PMG retains Overcooked V3's homogeneous three-item recipe constraint."""
+    config = _asymmetric_config(possible_recipes=[[0, 0, 1]])
+
     with pytest.raises(ValueError, match="currently supports same-ingredient"):
-        generate_document(
-            _config(possible_recipes=[[0, 0, 1]])
-        )
+        generate_document(_document(config))
 
 
-def test_generator_omits_recipe_indicator_for_one_fixed_recipe():
-    document = generate_document(
-        _config(
-            count=1,
-            ingredient_piles=[1],
-            possible_recipes=[[0, 0, 0]],
-        )
-    )
+def test_generator_derives_recipes_from_global_region_ingredients():
+    """Omitted recipes derive once from ingredient availability across regions."""
+    config = _asymmetric_config()
+    config.pop("possible_recipes")
 
-    assert "R" not in document["layouts"]["test_kitchen_0"]["ascii"]
+    validated = validate_config(config)
+
+    assert validated["possible_recipes"] == [[0, 0, 0], [1, 1, 1]]
 
 
-def test_generator_can_place_all_workstations_in_the_interior():
-    document = generate_document(
-        _config(
-            count=1,
-            object_placement="interior",
-            counter_density=0.1,
-        )
-    )
-    grid = document["layouts"]["test_kitchen_0"]["ascii"]
-    rows = grid.splitlines()
-    workstation_symbols = set("012PBXR")
-    workstation_positions = [
-        (row, col)
-        for row, line in enumerate(rows)
-        for col, symbol in enumerate(line)
-        if symbol in workstation_symbols
+def test_generator_respects_explicit_zero_recipe_indicators():
+    """A fixed recipe permits exact zero recipe-indicator workstations."""
+    regions = [
+        _region([1]),
+        _region([0], pots=1, plate_piles=1, depots=1),
     ]
-
-    assert workstation_positions
-    assert all(
-        0 < row < len(rows) - 1 and 0 < col < len(rows[0]) - 1
-        for row, col in workstation_positions
-    )
-    layout = Layout.from_string(
-        grid,
-        possible_recipes=document["layouts"]["test_kitchen_0"][
-            "possible_recipes"
-        ],
-    )
-    assert validate_generated_layout(layout) == (True, [])
-
-
-def test_anywhere_mode_generates_valid_interior_and_boundary_workstations():
     document = generate_document(
-        _config(
-            count=4,
-            object_placement="anywhere",
-            counter_density=0.1,
+        _document(
+            _asymmetric_config(
+                count=1,
+                possible_recipes=[[0, 0, 0]],
+                regions=regions,
+                handoff_tiles=1,
+            )
         )
     )
-    saw_interior = False
-    saw_boundary = False
 
-    for entry in document["layouts"].values():
-        rows = entry["ascii"].splitlines()
-        for row, line in enumerate(rows):
-            for col, symbol in enumerate(line):
-                if symbol not in set("012PBXR"):
-                    continue
-                if row in {0, len(rows) - 1} or col in {0, len(line) - 1}:
-                    saw_boundary = True
-                else:
-                    saw_interior = True
-
-        layout = Layout.from_string(
-            entry["ascii"],
-            possible_recipes=entry["possible_recipes"],
-        )
-        assert validate_generated_layout(layout) == (True, [])
-
-    assert saw_interior
-    assert saw_boundary
+    assert "R" not in _only_entry(document)["ascii"]
 
 
 def test_interactive_player_registers_json_layouts(tmp_path):
+    """The play script can register a generated layout document."""
     document = generate_document(
-        _config(count=1, name_prefix="interactive_test_kitchen")
+        _document(
+            _asymmetric_config(
+                count=1,
+                name_prefix="interactive_test_kitchen",
+            )
+        )
     )
     path = tmp_path / "interactive-layouts.json"
     path.write_text(json.dumps(document), encoding="utf-8")
@@ -865,11 +1289,13 @@ def test_incremental_generation_checkpoints_and_continues_after_failure(
     tmp_path,
     monkeypatch,
 ):
+    """The CLI backend preserves completed layouts around an isolated failure."""
     output_path = tmp_path / "checkpointed-layouts.json"
     original_generate_layout = layout_generator.generate_layout
     call_count = 0
 
     def fail_second_layout(config, rng):
+        """Raise only for the second requested layout."""
         nonlocal call_count
         call_count += 1
         if call_count == 2:
@@ -883,7 +1309,9 @@ def test_incremental_generation_checkpoints_and_continues_after_failure(
     )
     messages = []
     result, failures = layout_generator.generate_to_file(
-        _config(count=3, name_prefix="checkpoint_test"),
+        _document(
+            _asymmetric_config(count=3, name_prefix="checkpoint_test")
+        ),
         output_path,
         emit=messages.append,
     )
