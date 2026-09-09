@@ -18,7 +18,7 @@ USE_RNN: true
 
 ENV_NAME: overcooked_v3_macro
 ENV_KWARGS:
-  layout: cramped_room
+  layout: time_rush
   max_steps: 400
   max_macro_steps: 150  # must exceed pot_cook_time + pot_burn_time (90+60=150 by default) or
                          # wait_for_nearest_pot always times out before the pot is ever ready
@@ -48,3 +48,11 @@ RESUME_FROM: null
 # setup, not the channel. Widens the actor observation, so oracle and non-oracle
 # checkpoints are not interchangeable.
 ORACLE_RECIPE_OBS: false
+
+# Same idea as ORACLE_RECIPE_OBS, for pot-readiness instead of recipe:
+# appends a single scalar (1.0 if ANY active pot is cooked-and-ready, else
+# 0.0) to every agent's observation, bypassing the need to be standing near
+# a pot to know it just finished. Does not touch MacroActions or either
+# environment file. Widens the actor observation like ORACLE_RECIPE_OBS, so
+# it is not interchangeable with a checkpoint trained without it.
+ORACLE_POT_READY_OBS: true
