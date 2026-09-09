@@ -22,16 +22,18 @@ ENV_NAME: overcooked_v3_macro
 # every obs-affecting entry (layout, agent_view_size, and anything changing the
 # macro action count) must be identical across the runs being compared.
 ENV_KWARGS:
-  layout: follow_the_leader_nerfed
+  layout: time_rush
   max_steps: 400
   max_macro_steps: 150  # must exceed pot_cook_time + pot_burn_time (90+60=150 by default) or
                          # wait_for_nearest_pot always times out before the pot is ever ready
+  pot_cook_time_range: [20, 90]  # randomize cook time per pot-start event instead of the
+                                  # fixed 90-step default (sample_pot_cook_time)
   agent_view_size: 2  # 3x3 window -- matches mappo_macro_boundary.yaml, which
                        # produced the frozen actor this builds on
   dense_task_shaping: true  # TASK_PROGRESS/TASK_FACING/INVALID_MOVE -- dense guidance
                              # toward whatever the current useful target is, on top of
                              # the discrete event rewards in SHAPED_REWARDS
-  resample_recipe_on_delivery: true  # after a delivery, pick a new recipe at random (default: false)
+  resample_recipe_on_delivery: false  # after a delivery, pick a new recipe at random (default: false)
 
 SEED: 0
 NUM_SEEDS: 1

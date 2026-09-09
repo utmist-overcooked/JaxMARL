@@ -218,6 +218,15 @@ X     W
 WW1W0WW
 """
 
+time_rush = """
+WWWWWWWWWWWWWXW
+W  WWWWWWWWWW W
+W  WW      A  W
+W AWP         P
+W  WW         W
+WWWWWWWWWWW0BWW
+"""
+
 # List of All Pressure Plate & Button Levels:
 
 # pressure_plate_demo, pressure_gated_conveyor_access, pressure_gated_circuit, pressure_gated_zones, twin_movement
@@ -1535,6 +1544,10 @@ overcooked_v3_layouts = {
 
     "follow_the_leader_nerfed": Layout.from_string(
         follow_the_leader_nerfed, possible_recipes=[[0, 0, 0], [1, 1, 1]],
+    ),    
+
+    "time_rush": Layout.from_string(
+        time_rush, possible_recipes=[[0, 0, 0]],
     ),    
 
     "around_the_island": Layout.from_string(
