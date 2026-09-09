@@ -42,9 +42,7 @@ def _initial_best_eval_return(output_dir, resume_from):
 class MacroWorldStateWrapper(JaxMARLWrapper):
     """Add macro context for actors and a global state for the MAPPO critic."""
 
-    def __init__(
-        self, env, oracle_recipe_obs: bool = False, oracle_pot_ready_obs: bool = False
-    ):
+    def __init__(self, env, oracle_recipe_obs: bool = False):
         super().__init__(env)
         base_shape = env.observation_space(env.agents[0]).shape
         self.base_obs_size = int(np.prod(base_shape))
@@ -78,25 +76,8 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
             self._recipe_encodings.shape[0]
         )
 
-        # ORACLE CONTROL, same rationale as oracle_recipe_obs. A pot's cooked
-        # state IS already present in every agent's obs whenever the pot's
-        # cell is inside its cropped view: get_obs/get_obs_default's
-        # ingredient layers include the COOKED bit (see observations.py's
-        # _ingredient_layers, which shifts DynamicObject.COOKED to layer index
-        # 1). The asymmetry this control removes is purely a VISIBILITY one --
-        # an agent standing away from every pot has no way to know one just
-        # finished, and would otherwise need the partner to say so. Setting
-        # this appends a single scalar, shared identically by both agents:
-        # 1.0 if ANY active pot is currently cooked-and-not-yet-burned, else
-        # 0.0. Does not touch MacroActions or either environment file --
-        # get_soup_from_nearest_pot/wait_for_nearest_pot already operate on
-        # the privileged env state and are unaffected either way.
-        self.oracle_pot_ready_obs = bool(oracle_pot_ready_obs)
-        pot_ready_obs_size = 1 if self.oracle_pot_ready_obs else 0
-
         self.actor_obs_size = (
-            self.base_obs_size + env.num_macro_actions + 2
-            + recipe_obs_size + pot_ready_obs_size
+            self.base_obs_size + env.num_macro_actions + 2 + recipe_obs_size
         )
 
         # The critic input is built from get_obs_default(state) below, which
@@ -134,20 +115,6 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
             else None
         )
 
-        # Oracle control: whether any pot is cooked-and-ready, regardless of
-        # whether either agent's cropped view currently includes it. Read
-        # straight off the privileged grid via each pot's fixed slot position,
-        # masked to only the slots this layout actually uses.
-        pot_ready_scalar = None
-        if self.oracle_pot_ready_obs:
-            pot_y = state.pot_positions[:, 0]
-            pot_x = state.pot_positions[:, 1]
-            pot_contents = state.grid[pot_y, pot_x, 1]
-            pot_cooked = (
-                (pot_contents & DynamicObject.COOKED) != 0
-            ) & state.pot_active_mask
-            pot_ready_scalar = jnp.any(pot_cooked).astype(jnp.float32)
-
         augmented = {}
         for index, agent in enumerate(self._env.agents):
             actor_obs = (
@@ -158,8 +125,6 @@ class MacroWorldStateWrapper(JaxMARLWrapper):
             )
             if recipe_one_hot is not None:
                 actor_obs = actor_obs + (recipe_one_hot,)
-            if pot_ready_scalar is not None:
-                actor_obs = actor_obs + (pot_ready_scalar[None],)
             augmented[agent] = jnp.concatenate(actor_obs)
 
         # Privileged critic input, built from the true state rather than
@@ -462,16 +427,13 @@ def validate_frozen_actor_matches_env(frozen_actor_params, env, config: Dict):
 def build_env(config: Dict):
     """Build the macro env with the MAPPO actor/critic observation wrappers.
 
-    ORACLE_RECIPE_OBS appends the true recipe to every actor observation, and
-    ORACLE_POT_READY_OBS appends whether any pot is cooked-and-ready; see
-    MacroWorldStateWrapper for both. Either widens the actor observation, so a
-    checkpoint trained with one set cannot be evaluated with it unset.
+    ORACLE_RECIPE_OBS appends the true recipe to every actor observation; see
+    MacroWorldStateWrapper. It widens the actor observation, so a checkpoint
+    trained with it set cannot be evaluated with it unset.
     """
     env = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
     env = MacroWorldStateWrapper(
-        env,
-        oracle_recipe_obs=bool(config.get("ORACLE_RECIPE_OBS", False)),
-        oracle_pot_ready_obs=bool(config.get("ORACLE_POT_READY_OBS", False)),
+        env, oracle_recipe_obs=bool(config.get("ORACLE_RECIPE_OBS", False))
     )
     return LogWrapper(env)
 
