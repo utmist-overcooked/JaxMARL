@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple, Union
 
+
 @dataclass(eq=False)
 class OvercookedV3Config:
     """Static environment configuration used by JAX-traceable step functions."""
@@ -20,11 +21,12 @@ class OvercookedV3Config:
     pot_cook_time: int
     pot_cook_time_range: Tuple[int, ...]
     pot_burn_time: int
+    recipe_mode: str
+    recipe_probs: Any
     enable_order_queue: bool
     max_orders: int
     order_generation_rate: float
     order_expiration_time: int
-    order_queue_mode: str
     order_recipe_encodings: Any
     enable_item_conveyors: bool
     enable_player_conveyors: bool

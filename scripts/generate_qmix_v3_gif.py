@@ -40,7 +40,7 @@ def main():
             "max_orders": 5,
             "order_generation_rate": 1.0,
             "order_expiration_time": 0,
-            "order_queue_mode": "alternating",
+            "recipe_mode": "alternating",
             "plate_pickup_guard": 1,
             "enable_item_conveyors": True,
             "enable_player_conveyors": False,

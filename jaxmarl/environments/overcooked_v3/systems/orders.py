@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from jaxmarl.environments.overcooked_v3.common import SoupType
 from jaxmarl.environments.overcooked_v3.config import OvercookedV3Config
+from jaxmarl.environments.overcooked_v3.initialization import select_recipe_type
 from jaxmarl.environments.overcooked_v3.settings import ORDER_EXPIRED_PENALTY
 from jaxmarl.environments.overcooked_v3.state import State
 
@@ -68,24 +69,41 @@ def process_order_queue(
     order_expirations = state.order_expirations
     order_active_mask = state.order_active_mask
 
-    # A successful delivery fulfills the oldest active order. The queue is
-    # compacted afterward so the recipe indicator always points at the
-    # current front order.
-    front_idx = jnp.argmax(order_active_mask)
-    has_front_order = jnp.any(order_active_mask)
-    should_clear_front = state.new_correct_delivery & has_front_order
-    order_types = jax.lax.select(
-        should_clear_front, order_types.at[front_idx].set(0), order_types
-    )
-    order_expirations = jax.lax.select(
-        should_clear_front,
-        order_expirations.at[front_idx].set(0),
-        order_expirations,
-    )
-    order_active_mask = jax.lax.select(
-        should_clear_front,
-        order_active_mask.at[front_idx].set(False),
-        order_active_mask,
+    # Each correct delivery consumes the oldest active slot with that recipe.
+    # Scanning per-agent delivery types also handles multiple valid deliveries
+    # during one environment step without clearing unrelated duplicate orders.
+    def _fulfill_oldest_matching_order(carry, delivered_recipe_type):
+        """Remove the first active slot matching one delivered recipe type."""
+        types, expirations, active_mask = carry
+        matching_slots = (
+            active_mask
+            & (types == delivered_recipe_type)
+            & (delivered_recipe_type > 0)
+        )
+        matching_slot_idx = jnp.argmax(matching_slots)
+        should_fulfill = jnp.any(matching_slots)
+
+        types = jax.lax.select(
+            should_fulfill,
+            types.at[matching_slot_idx].set(0),
+            types,
+        )
+        expirations = jax.lax.select(
+            should_fulfill,
+            expirations.at[matching_slot_idx].set(0),
+            expirations,
+        )
+        active_mask = jax.lax.select(
+            should_fulfill,
+            active_mask.at[matching_slot_idx].set(False),
+            active_mask,
+        )
+        return (types, expirations, active_mask), None
+
+    (order_types, order_expirations, order_active_mask), _ = jax.lax.scan(
+        _fulfill_oldest_matching_order,
+        (order_types, order_expirations, order_active_mask),
+        state.new_correct_delivery_types,
     )
 
     order_expiration_enabled = config.order_expiration_time > 0
@@ -123,30 +141,15 @@ def process_order_queue(
     first_empty_idx = jnp.argmax(empty_slots)
     has_empty_slot = jnp.any(empty_slots)
 
-    # Generate either a random order or a deterministic onion/tomato
-    # alternation. For the alternating mode, alternate from the current
-    # newest visible order so the queue reads onion, tomato, onion, tomato
-    # even after deliveries or expirations compact the front.
+    # Generate from the same fixed/random/alternating recipe stream used by
+    # queue-off environments. Alternating state advances only when an order is
+    # actually inserted, so failed generation attempts do not skip recipes.
     key, subkey = jax.random.split(key)
-    if config.order_queue_mode == "alternating":
-        num_active_orders = jnp.sum(new_active_mask)
-        newest_order_idx = jnp.maximum(num_active_orders - 1, 0)
-        newest_order_type = new_order_types[newest_order_idx]
-        has_active_order = num_active_orders > 0
-        next_after_newest = jnp.where(
-            newest_order_type == SoupType.ONION_SOUP,
-            jnp.array(SoupType.TOMATO_SOUP, dtype=jnp.int32),
-            jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
-        )
-        new_order_type = jnp.where(
-            has_active_order,
-            next_after_newest,
-            jnp.array(SoupType.ONION_SOUP, dtype=jnp.int32),
-        )
-    else:
-        new_order_type = jax.random.randint(
-            subkey, (), 1, min(config.layout.num_ingredients + 1, 3)
-        )
+    new_order_type, candidate_next_recipe_idx = select_recipe_type(
+        subkey,
+        state.next_recipe_idx,
+        config,
+    )
 
     should_add = should_generate & has_empty_slot
     new_order_types = jax.lax.select(
@@ -161,6 +164,11 @@ def process_order_queue(
     )
     new_active_mask = jax.lax.select(
         should_add, new_active_mask.at[first_empty_idx].set(True), new_active_mask
+    )
+    new_next_recipe_idx = jnp.where(
+        should_add,
+        candidate_next_recipe_idx,
+        state.next_recipe_idx,
     )
 
     current_front_order = front_order_type(new_order_types, new_active_mask)
@@ -180,6 +188,7 @@ def process_order_queue(
             order_expirations=new_expirations,
             order_active_mask=new_active_mask,
             recipe=new_recipe,
+            next_recipe_idx=new_next_recipe_idx,
         ),
         reward,
         order_events,

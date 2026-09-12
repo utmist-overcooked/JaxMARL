@@ -1729,6 +1729,9 @@ overcooked_v3_layouts = {
     "cramped_room_v2": Layout.from_string(
         cramped_room_v2, possible_recipes=[[0, 0, 0]]
     ),
+    "random_recipe_demo": Layout.from_string(
+        cramped_room_v2, possible_recipes=[[0, 0, 0], [1, 1, 1]]
+    ),
 
     # Demo layouts with conveyors
     "conveyor_demo": Layout.from_string(

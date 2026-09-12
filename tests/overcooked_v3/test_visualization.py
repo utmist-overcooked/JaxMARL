@@ -49,7 +49,11 @@ class TestOvercookedV3Visualization:
         key = jax.random.PRNGKey(42)
 
         for layout_name in overcooked_v3_layouts.keys():
-            env = OvercookedV3(layout=layout_name)
+            layout = overcooked_v3_layouts[layout_name]
+            recipe_mode = (
+                "fixed" if len(layout.possible_recipes) == 1 else "alternating"
+            )
+            env = OvercookedV3(layout=layout_name, recipe_mode=recipe_mode)
             viz = OvercookedV3Visualizer(env)
 
             key, subkey = jax.random.split(key)

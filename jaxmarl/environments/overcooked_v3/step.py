@@ -68,6 +68,7 @@ def partition_step_key(
 
     return key, None
 
+
 def advance_dynamic_environment_systems(
     state: State, config: OvercookedV3Config
 ) -> State:

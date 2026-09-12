@@ -1,6 +1,6 @@
 # Overcooked V3 Environment
 
-A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, order queues, and conveyor belts.
+A GPU-accelerated implementation of the Overcooked cooperative cooking game with additional features like pot burning, order queues, random active recipes, and conveyor belts.
 
 ## 🎨 Visual Level Editor
 
@@ -156,6 +156,65 @@ overcooked_v3_layouts["my_layout"] = Layout.from_string(
 )
 ```
 
+**Recipe generation modes:**
+
+Layouts define the available recipe set through `possible_recipes`. The
+environment uses one `recipe_mode` with or without an order queue:
+
+- `fixed` requires exactly one possible recipe and no `recipe_probs`.
+- `random` requires one or more possible recipes and an explicit probability
+  for each recipe.
+- `alternating` requires at least two possible recipes and cycles through all
+  of them in their declared order.
+
+```python
+env = OvercookedV3(
+    layout="random_recipe_demo",
+    recipe_mode="random",
+    recipe_probs=[0.7, 0.3],
+)
+```
+
+`recipe_probs` must be the same length and order as
+`layout.possible_recipes`, must be finite and non-negative, and must sum to
+`1.0`. The active recipe is stored in `state.recipe`, so recipe indicators
+update automatically when the selected recipe changes.
+
+Without a queue, a successful delivery selects the next recipe from the chosen
+mode. With `enable_order_queue=True`, reset seeds one order and each later order
+generation event uses the same mode. Any active queued recipe may be delivered
+out of order; when duplicate recipes are queued, a delivery fulfills only the
+oldest matching slot. The front order still controls `state.recipe` for shaping
+and display compatibility.
+
+The default grid observation exposes recipe information as ordered blocks of
+`[plate, cooked, ingredient_0_count, ...]` channels. Queue-off environments
+have one block for `state.recipe`. Queue-enabled environments have
+`max_orders` blocks, ordered front-to-back, with inactive slots filled with
+zeros. Consequently, queue-enabled observation depth is
+`28 + 4 * num_ingredients + max_orders * (2 + num_ingredients)`.
+
+Recipe visibility follows the layout:
+
+- With an `R` tile, recipe or queue blocks are nonzero only at that tile, so
+  partially observable agents must have the tile in view.
+- Without an `R` tile, recipe or queue blocks are repeated at every grid cell,
+  making them available in every agent's visible crop.
+
+Order expiration timers are not part of these recipe blocks. An expired order
+is removed, records `event/order_expired`, and applies the existing `-10` team
+penalty.
+
+For training runs, pass these values through YAML `ENV_KWARGS`:
+
+```yaml
+"ENV_NAME": "overcooked_v3"
+"ENV_KWARGS":
+  "layout": "random_recipe_demo"
+  "recipe_mode": "random"
+  "recipe_probs": [0.7, 0.3]
+```
+
 ### `overcooked.py` - Public Environment Wrapper
 
 The `OvercookedV3` class implements `MultiAgentEnv`, validates constructor
@@ -167,7 +226,7 @@ JAX-traceable implementation lives in `reset.py`, `step.py`, `agent_step.py`,
 | Method | Description |
 |--------|-------------|
 | `reset(key) -> Tuple[Dict[str, Array], State]` | Reset the environment and return initial observations and state |
-| `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, orders, and check termination |
+| `step_env(key, state, actions) -> Tuple[obs, State, rewards, dones, info]` | Perform a single timestep: process actions, conveyors, recipes, orders, and check termination |
 | `step_agents(key, state, actions) -> Tuple[State, float, Array]` | Process agent movement (with collision resolution) and interact actions |
 | `process_interact(grid, agent, all_inventories, recipe, pot_timers, pot_positions, pot_active_mask, pot_cook_time=None) -> Tuple[grid, agent, correct_delivery, reward, shaped_reward, event_metrics, pot_timers]` | Handle a single agent's interact action (pickup, drop, cook, deliver) |
 | `is_terminal(state) -> bool` | Check whether the episode is done (max steps reached) |
@@ -189,14 +248,16 @@ class State:
     pot_cooking_timer: chex.Array    # [MAX_POTS] - cooking countdown
     pot_cook_durations: chex.Array   # [MAX_POTS] - sampled steps until ready
     pot_active_mask: chex.Array      # [MAX_POTS] - which pots are valid
-    order_types: chex.Array          # [MAX_ORDERS] - order queue
-    order_expirations: chex.Array    # [MAX_ORDERS] - time until expiry
-    order_active_mask: chex.Array    # [MAX_ORDERS] - active orders
+    order_types: chex.Array          # [max_orders] - queued recipe indices
+    order_expirations: chex.Array    # [max_orders] - remaining lifetimes
+    order_active_mask: chex.Array    # [max_orders] - occupied queue slots
     item_conveyor_*: chex.Array      # Conveyor state arrays
     player_conveyor_*: chex.Array    # Player conveyor state arrays
     time: chex.Array                 # Current timestep
     terminal: bool                   # Episode done flag
     recipe: int                      # Current target recipe (bit-encoded)
+    next_recipe_idx: chex.Array      # Alternating stream position
+    new_correct_delivery_types: chex.Array  # Per-agent fulfilled recipe IDs
 ```
 
 ### `utils.py` - Helper Functions
@@ -368,6 +429,7 @@ env = OvercookedV3(
     # Optional ready-time range. Omit or pass [] to keep fixed pot_cook_time behavior.
     pot_cook_time_range=[65, 90],
     pot_burn_time=60,
+    recipe_mode="fixed",
     enable_order_queue=False,
     shaped_rewards=True,
 )

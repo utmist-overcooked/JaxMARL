@@ -27,6 +27,7 @@ from jaxmarl.environments.overcooked_v3.layouts import (
 
 # Curated list to cycle with N/P keys.
 PLAYABLE = [
+    "random_recipe_demo",
     "pressure_plate_demo",
     "pressure_gated_conveyor_access",
     "pressure_gated_circuit",
@@ -48,17 +49,22 @@ POT_COOK_TIME_RANGE = [15, 25]
 
 def build(layout_name):
     """Create env + viz, auto-enabling all interactive features."""
-    env = make(
-        "overcooked_v3",
-        layout=layout_name,
-        pot_cook_time=20,
-        pot_cook_time_range=POT_COOK_TIME_RANGE,
-        pot_burn_time=10,
+    env_kwargs = {
+        "layout": layout_name,
+        "pot_cook_time": 20,
+        "pot_cook_time_range": POT_COOK_TIME_RANGE,
+        "pot_burn_time": 10,
         # None => auto-enable from the layout (walls/buttons/plates).
-        enable_moving_walls=None,
-        enable_buttons=None,
-        enable_pressure_plates=None,
-    )
+        "enable_moving_walls": None,
+        "enable_buttons": None,
+        "enable_pressure_plates": None,
+    }
+    if layout_name == "random_recipe_demo":
+        env_kwargs.update(
+            recipe_mode="random",
+            recipe_probs=[0.5, 0.5],
+        )
+    env = make("overcooked_v3", **env_kwargs)
     viz = OvercookedV3Visualizer(env, tile_size=TILE)
     return env, viz
 
@@ -147,6 +153,8 @@ def main():
         print(f"    enable_moving_walls={env.enable_moving_walls} "
               f"enable_buttons={env.enable_buttons} "
               f"enable_pressure_plates={env.enable_pressure_plates}")
+        if env.recipe_mode == "random":
+            print("    recipe target resamples between onion and tomato after delivery")
         return env, viz, state, screen, name
 
     env, viz, state, screen, name = load(idx)
