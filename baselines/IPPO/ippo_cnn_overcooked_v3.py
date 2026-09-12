@@ -32,11 +32,13 @@ from jaxmarl.environments.overcooked_v3.settings import (
     SHAPED_REWARDS,
 )
 from jaxmarl.wrappers.baselines import LogWrapper
-from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 import hydra
 from omegaconf import OmegaConf
 import wandb
 from baselines.IC3Net.monitor import TrainingMonitorInterface
+from baselines.overcooked_v3.models.ippo import IPPOCNNRolloutPolicy
+from baselines.overcooked_v3.rollout import rollout_episode
+from baselines.overcooked_v3.training import OvercookedV3Training
 
 
 def _save_model_params(params, save_path):
@@ -437,34 +439,23 @@ def _make_network(action_dim, config):
     )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Rollout (inference)
-# ──────────────────────────────────────────────────────────────────────────────
-
 def get_rollout(params, config):
-    """Run one greedy/sampled episode after training for GIF generation."""
+    """Return states from one deterministic episode for compatibility."""
+
     env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
-    network = _make_network(env.action_space("agent_0").n, config)
-    key = jax.random.PRNGKey(0)
-    key, key_r = jax.random.split(key)
-
-    obs, state = env.reset(key_r)
-    state_seq = [state]
-    done = False
-    while not done:
-        key, key_a, key_s = jax.random.split(key, 3)
-        # Render/eval uses the same network as training, but a single env.
-        obs_batch = jnp.stack([obs[a] for a in env.agents]).reshape(
-            -1, *env.observation_space("agent_0").shape
-        )
-        pi, _ = network.apply(params, obs_batch)
-        action = pi.sample(seed=key_a)
-        env_act = {a: action[i] for i, a in enumerate(env.agents)}
-        obs, state, reward, done, info = env.step(key_s, state, env_act)
-        done = done["__all__"]
-        state_seq.append(state)
-
-    return state_seq
+    episode = rollout_episode(
+        env,
+        IPPOCNNRolloutPolicy(env, config, _make_network),
+        params,
+        seed=int(config.get("ROLLOUT_GIF_ENV_SEED", 0)),
+        max_steps=int(
+            config.get(
+                "ROLLOUT_GIF_MAX_STEPS",
+                config.get("ENV_KWARGS", {}).get("max_steps", 400),
+            )
+        ),
+    )
+    return list(episode.states)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -472,6 +463,8 @@ def get_rollout(params, config):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def make_train(config):
+    """Create the fully JIT-compiled IPPO CNN training function."""
+
     env = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
 
     # Derived PPO sizes. NUM_ACTORS is agents x parallel envs. Each PPO update
@@ -513,6 +506,8 @@ def make_train(config):
         return config["LR"] * frac
 
     def train(rng):
+        """Train one random seed and return its final runner state."""
+
         # Build and initialize the shared actor-critic network.
         network = _make_network(env.action_space("agent_0").n, config)
         rng, _rng = jax.random.split(rng)
@@ -769,6 +764,8 @@ def make_train(config):
 
 @hydra.main(version_base=None, config_path="config", config_name="ippo_cnn_overcooked_v3")
 def main(config):
+    """Run IPPO CNN training, checkpointing, and rollout GIF logging."""
+
     global _ACTIVE_MONITOR
 
     config = OmegaConf.to_container(config)
@@ -776,12 +773,15 @@ def main(config):
     # W&B receives both config and per-update metrics. The actual x-axis is
     # env_step rather than W&B's implicit row number, which makes runs with
     # different NUM_ENVS/NUM_STEPS comparable.
+    config["RUN_NAME"] = config.get("WANDB_NAME") or (
+        f'ippo_cnn_v3_{config["ENV_KWARGS"]["layout"]}'
+    )
     wandb.init(
         entity=config.get("ENTITY", ""),
         project=config.get("PROJECT", "ippo_v3_cnn"),
         config=config,
         mode=config.get("WANDB_MODE", "online"),
-        name=config.get("WANDB_NAME") or f'ippo_cnn_v3_{config["ENV_KWARGS"]["layout"]}',
+        name=config["RUN_NAME"],
     )
     if wandb.run is not None:
         wandb.define_metric("env_step")
@@ -790,6 +790,15 @@ def main(config):
     rng = jax.random.PRNGKey(config["SEED"])
     rngs = jax.random.split(rng, config["NUM_SEEDS"])
     train_fn = make_train(config)
+    config["NUM_CHECKPOINTS"] = 1
+    checkpoint_logging = OvercookedV3Training(
+        config,
+        lambda rollout_env: IPPOCNNRolloutPolicy(
+            rollout_env,
+            config,
+            _make_network,
+        ),
+    )
     if wandb.run is not None:
         # make_train mutates config with derived dimensions after env creation,
         # so push those values back into W&B for easier audit/debugging.
@@ -838,23 +847,22 @@ def main(config):
                 f'ippo_cnn_v3_{config["ENV_KWARGS"]["layout"]}',
             )
             model_path = _save_model_params(train_state.params, save_path)
+            checkpoint_logging.checkpoint_saved(
+                train_state.params,
+                checkpoint_index=1,
+                update_step=config["NUM_UPDATES"],
+                env_step=(
+                    config["NUM_UPDATES"]
+                    * config["NUM_STEPS"]
+                    * config["NUM_ENVS"]
+                ),
+                training_seed=int(rngs[0][0]),
+                run_name=config["RUN_NAME"],
+            )
             if wandb.run is not None:
                 completed_env_steps = config["NUM_UPDATES"] * config["NUM_STEPS"] * config["NUM_ENVS"]
                 wandb.log({"saved_model_path": model_path}, step=int(completed_env_steps))
 
-            # Generate one rollout from the saved policy and animate it. This is
-            # the GIF we inspect after training to see what behavior emerged.
-            state_seq_list = get_rollout(train_state.params, config)
-            state_seq = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq_list)
-
-            gif_path = config.get("SAVE_GIF_PATH") or os.path.join(
-                os.getcwd(),
-                f'overcooked_v3_{config["ENV_KWARGS"]["layout"]}_seed{config["SEED"]}.gif',
-            )
-            env_viz = jaxmarl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
-            viz = OvercookedV3Visualizer(env_viz)
-            viz.animate(state_seq, filename=gif_path)
-            print(f"** GIF saved to: {gif_path} **", flush=True)
     finally:
         _ACTIVE_MONITOR = None
         wandb.finish()

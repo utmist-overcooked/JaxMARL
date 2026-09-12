@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 from omegaconf import OmegaConf
 
-from mappo_macro_common import (
+from baselines.MAPPO.mappo_macro_common import (
     Actor,
     Critic,
     add_annealed_shaped_reward,

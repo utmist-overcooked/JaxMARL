@@ -29,7 +29,6 @@ from flax import serialization
 import distrax
 import jaxmarl
 from jaxmarl.wrappers.baselines import LogWrapper
-from jaxmarl.viz.overcooked_v3_visualizer import OvercookedV3Visualizer
 import hydra
 from omegaconf import OmegaConf
 import wandb
@@ -38,6 +37,9 @@ from baselines.IPPO.ippo_cnn_overcooked_v3 import (
     EVENT_METRIC_NAMES,
     _log_reward_structure_to_wandb,
 )
+from baselines.overcooked_v3.models.ippo import IPPORNNRolloutPolicy
+from baselines.overcooked_v3.rollout import rollout_episode
+from baselines.overcooked_v3.training import OvercookedV3Training
 
 
 def _save_model_params(params, save_path):
@@ -264,34 +266,22 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
 
 
 def get_rollout(params, config):
-    """Run one sampled episode after training for GIF generation."""
+    """Return states from one deterministic episode for compatibility."""
+
     env = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
-    hidden_dim = config.get("GRU_HIDDEN_DIM", 128)
-    network = ActorCriticRNN(env.action_space(env.agents[0]).n, config=config)
-
-    key = jax.random.PRNGKey(0)
-    key, key_r = jax.random.split(key)
-    obs, state = env.reset(key_r)
-    hstate = jnp.zeros((env.num_agents, hidden_dim))
-    done_batch = jnp.zeros((env.num_agents,), dtype=bool)
-    state_seq = [state]
-    done = False
-
-    while not done:
-        key, key_a, key_s = jax.random.split(key, 3)
-        obs_batch = jnp.stack([obs[a] for a in env.agents]).reshape(
-            -1, *env.observation_space(env.agents[0]).shape
-        )
-        ac_in = (obs_batch[np.newaxis, :], done_batch[np.newaxis, :])
-        hstate, pi, _ = network.apply(params, hstate, ac_in)
-        action = pi.sample(seed=key_a).squeeze(0)
-        env_act = {a: action[i] for i, a in enumerate(env.agents)}
-        obs, state, reward, done, info = env.step(key_s, state, env_act)
-        done_batch = jnp.array([done[a] for a in env.agents])
-        done = done["__all__"]
-        state_seq.append(state)
-
-    return state_seq
+    episode = rollout_episode(
+        env,
+        IPPORNNRolloutPolicy(env, config, ActorCriticRNN),
+        params,
+        seed=int(config.get("ROLLOUT_GIF_ENV_SEED", 0)),
+        max_steps=int(
+            config.get(
+                "ROLLOUT_GIF_MAX_STEPS",
+                config.get("ENV_KWARGS", {}).get("max_steps", 400),
+            )
+        ),
+    )
+    return list(episode.states)
 
 
 # ── Training ───────────────────────────────────────────────────────────
@@ -344,6 +334,8 @@ def make_train(config):
         return config["LR"] * frac
 
     def train(rng):
+        """Train one random seed and return its final runner state."""
+
         # INIT NETWORK
         hidden_dim = config.get("GRU_HIDDEN_DIM", 128)
         network = ActorCriticRNN(action_dim, config=config)
@@ -759,6 +751,15 @@ def run_wandb_sweep(base_config):
             train_config = dict(base_config)
             train_config.update(run_config)
             train_config["WANDB_MODE"] = "online"
+            train_config["NUM_CHECKPOINTS"] = 1
+            checkpoint_logging = OvercookedV3Training(
+                train_config,
+                lambda rollout_env: IPPORNNRolloutPolicy(
+                    rollout_env,
+                    train_config,
+                    ActorCriticRNN,
+                ),
+            )
 
             train_jit = jax.jit(make_train(train_config))
             rng = jax.random.PRNGKey(train_config.get("SEED", 42))
@@ -771,6 +772,19 @@ def run_wandb_sweep(base_config):
             base_save_path = train_config.get("SAVE_PATH", "checkpoints/ippo_overcooked_v3")
             run_save_path = os.path.join(base_save_path, f"sweep_{run.id}")
             model_path = _save_model_params(params, run_save_path)
+            completed_env_steps = (
+                train_config["NUM_UPDATES"]
+                * train_config["NUM_STEPS"]
+                * train_config["NUM_ENVS"]
+            )
+            checkpoint_logging.checkpoint_saved(
+                params,
+                checkpoint_index=1,
+                update_step=train_config["NUM_UPDATES"],
+                env_step=completed_env_steps,
+                training_seed=int(train_config.get("SEED", 42)),
+                run_name=run.name,
+            )
             wandb.log({"saved_model_path": model_path})
 
     sweep_id = wandb.sweep(sweep=sweep_configuration, project=project)
@@ -791,6 +805,9 @@ def main(config):
         return
 
     layout_name = config.get("ENV_KWARGS", {}).get("layout", "unknown")
+    config["RUN_NAME"] = config.get("WANDB_NAME") or (
+        f"ippo_rnn_overcooked_v3_{layout_name}"
+    )
 
     wandb.init(
         entity=config.get("ENTITY", ""),
@@ -798,7 +815,7 @@ def main(config):
         tags=["IPPO", "RNN", "OvercookedV3"],
         config=config,
         mode=config.get("WANDB_MODE", "disabled"),
-        name=config.get("WANDB_NAME") or f"ippo_rnn_overcooked_v3_{layout_name}",
+        name=config["RUN_NAME"],
     )
     if wandb.run is not None:
         wandb.define_metric("env_step")
@@ -806,6 +823,15 @@ def main(config):
 
     rng = jax.random.PRNGKey(config.get("SEED", 42))
     train_fn = make_train(config)
+    config["NUM_CHECKPOINTS"] = 1
+    checkpoint_logging = OvercookedV3Training(
+        config,
+        lambda rollout_env: IPPORNNRolloutPolicy(
+            rollout_env,
+            config,
+            ActorCriticRNN,
+        ),
+    )
     if wandb.run is not None:
         wandb.config.update(
             {
@@ -847,17 +873,17 @@ def main(config):
             print(f"Saved model checkpoint to: {model_path}", flush=True)
 
             completed_env_steps = config["NUM_UPDATES"] * config["NUM_STEPS"] * config["NUM_ENVS"]
+            checkpoint_logging.checkpoint_saved(
+                params,
+                checkpoint_index=1,
+                update_step=config["NUM_UPDATES"],
+                env_step=completed_env_steps,
+                training_seed=int(config.get("SEED", 42)),
+                run_name=config["RUN_NAME"],
+            )
             if wandb.run is not None:
                 wandb.log({"saved_model_path": model_path}, step=int(completed_env_steps))
 
-            gif_path = config.get("SAVE_GIF_PATH")
-            if gif_path:
-                state_seq_list = get_rollout(params, config)
-                state_seq = jax.tree.map(lambda *xs: jnp.stack(xs), *state_seq_list)
-                env_viz = jaxmarl.make(config["ENV_NAME"], **config.get("ENV_KWARGS", {}))
-                viz = OvercookedV3Visualizer(env_viz)
-                viz.animate(state_seq, filename=gif_path)
-                print(f"Saved GIF to: {gif_path}", flush=True)
     finally:
         _ACTIVE_MONITOR = None
         wandb.finish()

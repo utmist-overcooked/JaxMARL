@@ -53,8 +53,20 @@ ENTITY: "dannyb3334-university-of-toronto"
 WANDB_PROJECT: "jaxmarl-ippo"
 WANDB_NAME: "ippo_rnn_overcooked_v3_cramped_room"
 SAVE_PATH: "checkpoints/ippo_overcooked_v3_cramped_room"
-SAVE_GIF_PATH: null
 LOG_EVERY: 100
 CHECKPOINT_EVERY: 5000
+
+# This trainer currently saves one final checkpoint.
+NUM_CHECKPOINTS: 1
+ROLLOUT_GIF_ENABLED: true
+ROLLOUT_GIF_COUNT: 1
+ROLLOUT_GIF_MAX_STEPS: 400
+ROLLOUT_GIF_SEED_INDEX: 0
+ROLLOUT_GIF_ENV_SEED: 0
+ROLLOUT_GIF_DIR: "rollouts"
+ROLLOUT_GIF_WANDB_KEY: "rollouts/policy"
+ROLLOUT_GIF_STRICT: false
+# Deprecated compatibility key used by historical launch scripts.
+SAVE_GIF_PATH: null
 
 SEED: 42
